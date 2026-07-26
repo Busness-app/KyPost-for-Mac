@@ -46,6 +46,9 @@ final class AppLockManager {
     private let authenticator: any DeviceAuthenticating
 
     private(set) var isLocked: Bool
+    /// Observable mirror of `store.lockEnabled` so settings toggles track it
+    /// (the Keychain-backed store itself is not observation-tracked).
+    private(set) var isLockEnabled: Bool
 
     /// Runs after a successful unlock — the lock-trigger task wires the
     /// deferred foreground sync here.
@@ -60,15 +63,14 @@ final class AppLockManager {
     ) {
         self.store = store
         self.authenticator = authenticator
+        isLockEnabled = store.lockEnabled
         isLocked = store.lockEnabled
     }
-
-    var lockEnabled: Bool { store.lockEnabled }
 
     /// Engages the lock (backgrounding on iOS, screen lock on macOS).
     /// No-op while the feature is off.
     func lock() {
-        guard store.lockEnabled, !isLocked else { return }
+        guard isLockEnabled, !isLocked else { return }
         isLocked = true
         onLock?()
     }
@@ -104,6 +106,7 @@ final class AppLockManager {
             Log.app.error("Could not persist app-lock setting: \(error.localizedDescription)")
             return false
         }
+        isLockEnabled = enabled
         if !enabled {
             isLocked = false
         }

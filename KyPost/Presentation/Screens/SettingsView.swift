@@ -95,6 +95,13 @@ struct SettingsView: View {
             }
             .listRowBackground(theme.panel)
 
+            Section("Security") {
+                NavigationLink("Security Settings") {
+                    SecuritySettingsView()
+                }
+            }
+            .listRowBackground(theme.panel)
+
             Section {
                 Toggle("Sync with Apple Contacts", isOn: $viewModel.exportContactsToSystem)
                 if viewModel.contactsExportDenied {

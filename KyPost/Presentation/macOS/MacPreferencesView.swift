@@ -45,9 +45,12 @@ struct MacPreferencesView: View {
 
             EncryptionPane()
                 .tabItem { Label("Encryption", systemImage: "lock.shield") }
+
+            SecurityPane()
+                .tabItem { Label("Security", systemImage: "lock") }
         }
-        // Widened from 560 for the sixth tab, and so the QR code has room.
-        .frame(width: 620, height: 460)
+        // Widened from 620 for the seventh tab, and so the QR code has room.
+        .frame(width: 700, height: 460)
         .tint(themeManager.palette.accent)
         .environment(\.theme, themeManager.palette)
         .preferredColorScheme(themeManager.palette.preferredColorScheme)
@@ -260,6 +263,17 @@ private struct KeywordsPane: View {
 private struct EncryptionPane: View {
     var body: some View {
         MyPgpQrCodeView()
+    }
+}
+
+// MARK: - Security
+
+private struct SecurityPane: View {
+    var body: some View {
+        Form {
+            SecuritySettingsContent()
+        }
+        .formStyle(.grouped)
     }
 }
 
