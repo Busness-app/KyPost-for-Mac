@@ -115,9 +115,9 @@ struct EmailDetailView: View {
             }
         }
         .task {
+            resolveWebmailURL()
             await inboxViewModel.markRead(email)
             attachments = await inboxViewModel.attachments(for: email)
-            resolveWebmailURL()
         }
     }
 
