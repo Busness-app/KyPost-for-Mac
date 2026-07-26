@@ -46,18 +46,20 @@ private func makeEnvironment(
     ))
     await contactsViewModel.load()
 
-    let sendClient = stubClient(json: #"{"ok": true}"#, onRequest: onSend)
     let sendEmail = SendEmailUseCase(repository: MailRepository(
         securePairingStore: pairingStore,
         emailDAO: EmailDAO(modelContainer: db.container),
-        httpClient: sendClient
+        httpClient: stubClient(json: #"{"ok": true}"#, onRequest: onSend)
     ))
     return Environment(
         viewModel: ComposeViewModel(
             sendEmail: sendEmail,
             contacts: contactsViewModel,
+            // Its own transport, never the send stub: `onSend` is a
+            // last-write-wins capture, so sharing one would let a preflight
+            // request overwrite the send these tests assert on.
             pgp: PgpSendService(
-                client: PgpSendClient(httpClient: sendClient),
+                client: PgpSendClient(httpClient: stubClient()),
                 securePairingStore: pairingStore
             ),
             draft: draft,

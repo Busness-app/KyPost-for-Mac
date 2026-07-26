@@ -44,7 +44,7 @@ nonisolated enum RecipientField: Hashable, CaseIterable, Sendable {
 /// Holds the exact `OutgoingEmail` that was refused: the re-send must be
 /// byte-identical apart from `allowPickupFallback`, so nothing is rebuilt from
 /// live compose state (Client_Encrypted_Send.md "Required behavior" 5).
-struct PendingPickup: Identifiable {
+nonisolated struct PendingPickup: Identifiable {
     let id = UUID()
     var addresses: [String]
     var email: OutgoingEmail
@@ -159,8 +159,13 @@ final class ComposeViewModel {
 
     /// Verbatim from Client_Encrypted_Send.md — the wording carries the
     /// security property. Names every address; never "some recipients".
-    var pickupConfirmationMessage: String {
-        let names = (pendingPickup?.addresses ?? []).joined(separator: ", ")
+    ///
+    /// Takes the pickup rather than reading the optional property: the copy is
+    /// only ever correct when there are addresses to name, and `conflictError`
+    /// only builds a refusal from a non-empty list, so there is no such thing
+    /// as a keyless confirmation with nobody in it.
+    func pickupConfirmationMessage(for pickup: PendingPickup) -> String {
+        let names = pickup.addresses.joined(separator: ", ")
         return """
         We don't have a PGP key for \(names). They'll get an email with a one-time link instead.
 
@@ -184,10 +189,16 @@ final class ComposeViewModel {
     /// Client-custody account: the key exists only in the user's browser, so
     /// save the composed message as a server-side draft and send them there.
     func handOffToWebmail(fontTraits: @escaping RichTextHTML.FontTraits) async {
-        guard !isSending, !isSent else { return }
+        guard !isSending, !isSent, !didSend else { return }
         for field in RecipientField.allCases where !commitPendingInput(for: field) {
             return
         }
+        // `handOff` deliberately doesn't own this flag — when `deliver` calls
+        // it the in-flight send already holds it, and a nested defer would
+        // clear it early. This is the only caller outside `deliver`, so it
+        // guards here; otherwise a double-tap saves two drafts.
+        isSending = true
+        defer { isSending = false }
         await handOff(draft: outgoingEmail(fontTraits: fontTraits))
     }
 
@@ -412,18 +423,21 @@ final class ComposeViewModel {
     /// Sends the draft. `fontTraits` resolves bold/italic on body runs (from
     /// the view's font resolution context) so formatted text goes out as HTML.
     func send(fontTraits: @escaping RichTextHTML.FontTraits) async {
-        guard !isSending, !isSent else { return }
+        // `didSend` as well as `isSent`: the window dismisses on `didSend`
+        // through an onChange, and a second ⌘↩ in that gap would post the
+        // message twice.
+        guard !isSending, !isSent, !didSend else { return }
         // A recipient typed but not committed is still a recipient the user
         // means to mail. Bail on invalid text rather than dropping it.
         for field in RecipientField.allCases where !commitPendingInput(for: field) {
             return
         }
         let email = outgoingEmail(fontTraits: fontTraits)
-        if encrypt {
-            keylessWarning = await pgp.keylessRecipients(
-                among: email.to + email.cc + email.bcc
-            )
-        }
+        // Reassigned either way, so turning Encrypt off clears a warning left
+        // by an earlier encrypted attempt.
+        keylessWarning = encrypt
+            ? await pgp.keylessRecipients(among: email.to + email.cc + email.bcc)
+            : []
         await deliver(email)
     }
 
@@ -453,6 +467,9 @@ final class ComposeViewModel {
     private func deliver(_ email: OutgoingEmail) async {
         isSending = true
         defer { isSending = false }
+        // This attempt's outcome is the only one that counts: an earlier
+        // refusal must not outlive it and keep a stale dialog answerable.
+        pendingPickup = nil
 
         switch await sendEmail(email) {
         case .success:

@@ -254,13 +254,17 @@ private final class ComposeStub {
                 json = #"{"ok":true}"#
             case "/api/mail/send":
                 sends.mutate { $0.append(body) }
-                var current = 0
-                sendIndex.mutate {
-                    current = min($0, sendResponses.count - 1)
-                    $0 = current + 1
+                // Walks the script and then repeats its last entry. An empty
+                // script answers 200 {} rather than trapping on the index.
+                if !sendResponses.isEmpty {
+                    var current = 0
+                    sendIndex.mutate {
+                        current = min($0, sendResponses.count - 1)
+                        $0 = current + 1
+                    }
+                    status = sendResponses[current].status
+                    json = sendResponses[current].json
                 }
-                status = sendResponses[current].status
-                json = sendResponses[current].json
             default:
                 json = "{}"
             }
@@ -308,6 +312,12 @@ private func makeCompose(
 }
 
 private let noTraits: RichTextHTML.FontTraits = { _ in (false, false) }
+
+/// A recorded request body as its parsed JSON fields, so assertions compare
+/// what was sent rather than how the encoder happened to order it.
+private func fields(_ body: String) throws -> [String: Any] {
+    try JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any] ?? [:]
+}
 
 @Suite @MainActor struct ComposeEncryptedSendTests {
     @Test func encryptAndSignTravelOnTheSendBody() async throws {
@@ -370,7 +380,7 @@ private let noTraits: RichTextHTML.FontTraits = { _ in (false, false) }
         #expect(!compose.didSend)
         #expect(compose.pendingPickup?.addresses == ["bob@example.com"])
         #expect(compose.errorMessage == nil)
-        let message = compose.pickupConfirmationMessage
+        let message = compose.pickupConfirmationMessage(for: try #require(compose.pendingPickup))
         #expect(message.contains("bob@example.com"))
         #expect(message.contains("one-time link"))
         #expect(message.contains("unencrypted"))
@@ -414,9 +424,14 @@ private let noTraits: RichTextHTML.FontTraits = { _ in (false, false) }
         #expect(stub.sends.value.count == 2)
         let first = stub.sends.value[0]
         let second = stub.sends.value[1]
-        #expect(second.contains(#""allowPickupFallback":true"#))
-        // Identical apart from the flag.
-        #expect(second.replacingOccurrences(of: #","allowPickupFallback":true"#, with: "") == first)
+        // Identical apart from the flag. Compared as parsed objects, not as
+        // strings: JSON key order is no part of Encodable's contract, and a
+        // spurious red on the branch's most load-bearing assertion is exactly
+        // the pressure that gets the re-send rule weakened instead. Do not
+        // simplify this back to a string comparison.
+        var secondFields = try fields(second)
+        #expect(secondFields.removeValue(forKey: "allowPickupFallback") as? Bool == true)
+        #expect(NSDictionary(dictionary: secondFields) == NSDictionary(dictionary: try fields(first)))
         #expect(compose.didSend)
         #expect(compose.pendingPickup == nil)
     }
