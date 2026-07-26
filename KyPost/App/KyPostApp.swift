@@ -19,11 +19,12 @@ struct KyPostApp: App {
 #endif
 
     @State private var themeManager = ThemeManager()
-    @State private var router = NavigationRouter(
-        deepLinkHandler: SingletonGraph.shared.deepLinkHandler
-    )
+    // The router deliberately outlives graph rebuilds (it holds navigation
+    // state, not graph state); DeepLinkHandler is a stateless parser.
+    @State private var router = NavigationRouter()
 
     private var graph: SingletonGraph { .shared }
+    private var environment: AppEnvironment { .shared }
 
     var body: some Scene {
 #if os(macOS)
@@ -35,6 +36,7 @@ struct KyPostApp: App {
         // Pop-out reader: one window per email, keyed by relay server id.
         WindowGroup("Email", id: "email", for: String.self) { $serverId in
             EmailWindowView(serverId: serverId ?? "")
+                .id(environment.generation)
                 .environment(themeManager)
                 .environment(router)
                 .environment(\.theme, themeManager.palette)
@@ -48,6 +50,7 @@ struct KyPostApp: App {
         // pass a prefill draft, plain compose opens with none.
         WindowGroup("New Email", id: "compose", for: ComposeDraft.self) { $draft in
             ComposeView(draft: draft)
+                .id(environment.generation)
                 .environment(themeManager)
                 .environment(router)
                 .environment(\.theme, themeManager.palette)
@@ -59,6 +62,7 @@ struct KyPostApp: App {
 
         Settings {
             MacPreferencesView()
+                .id(environment.generation)
                 .environment(themeManager)
                 .environment(router)
         }
@@ -70,6 +74,9 @@ struct KyPostApp: App {
     private var mainWindow: some Scene {
         WindowGroup {
             rootView
+                // Rebuilds (Hostile Location Protection) tear down the whole
+                // tree, so no view model outlives its graph.
+                .id(environment.generation)
                 .environment(themeManager)
                 .environment(router)
                 .environment(\.theme, themeManager.palette)
@@ -89,7 +96,7 @@ struct KyPostApp: App {
                 }
                 .overlay { LockedOverlay().environment(\.theme, themeManager.palette) }
         }
-        .modelContainer(graph.database.container)
+        .modelContainer(environment.graph.database.container)
     }
 
     @ViewBuilder

@@ -19,6 +19,12 @@ private enum PushLifecycle {
         // While locked, onForeground is skipped; run the deferred sync the
         // moment the user unlocks instead.
         graph.appLockManager.onUnlock = { onForeground() }
+        // A graph rebuild (Hostile Location Protection toggle) needs the
+        // launch wiring re-run against the new graph.
+        AppEnvironment.shared.onRebuild = {
+            onLaunch()
+            onForeground()
+        }
         Task {
             await graph.pushNotificationDispatcher.requestAuthorization()
         }

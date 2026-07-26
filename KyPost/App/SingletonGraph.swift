@@ -12,13 +12,11 @@ import os
 
 @MainActor
 final class SingletonGraph {
-    static let shared: SingletonGraph = {
-        do {
-            return try SingletonGraph()
-        } catch {
-            fatalError("Could not build dependency graph: \(error)")
-        }
-    }()
+    /// The current graph. An alias into AppEnvironment so Hostile Location
+    /// Protection can swap the graph wholesale — re-read this per use;
+    /// never capture it (or a child) into long-lived state outside the
+    /// .id(generation)-scoped view trees.
+    static var shared: SingletonGraph { AppEnvironment.shared.graph }
 
     // MARK: - Data
 
@@ -142,9 +140,18 @@ final class SingletonGraph {
 
     lazy var appLockManager = AppLockManager(store: appLockStore)
 
-    // MARK: - Navigation
+    // MARK: - Lifecycle
 
-    let deepLinkHandler = DeepLinkHandler()
+    /// Stops every long-lived task this graph owns, so a superseded graph
+    /// can't keep polling or writing to its database after
+    /// AppEnvironment.rebuild swaps it out. Touching the lazy vars may
+    /// construct them first — harmless, a freshly built scheduler/monitor
+    /// stops as a no-op.
+    func shutdown() {
+        pullPollingScheduler.stopForegroundPolling()
+        systemContactsChangeMonitor.stop()
+        inboxViewModel.stopAutoRefresh()
+    }
 
     // MARK: - Startup migrations
 

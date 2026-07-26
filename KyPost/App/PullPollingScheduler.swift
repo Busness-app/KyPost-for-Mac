@@ -45,6 +45,9 @@ final class PullPollingScheduler {
         pollingTask = nil
     }
 
+    /// Whether the 90s cadence is running (shutdown assertions in tests).
+    var isPolling: Bool { pollingTask != nil }
+
     /// One poll: fetch, persist, present local notifications for new arrivals.
     func pollNow() async {
         guard pushSettingsStore.deliveryMode == .pull else { return }

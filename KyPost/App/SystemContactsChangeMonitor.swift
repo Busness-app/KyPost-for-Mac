@@ -36,6 +36,17 @@ final class SystemContactsChangeMonitor {
         }
     }
 
+    /// Unregisters the observer and cancels any pending debounce
+    /// (AppEnvironment.rebuild shutdown path).
+    func stop() {
+        if let observer {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        observer = nil
+        debounce?.cancel()
+        debounce = nil
+    }
+
     /// Immediate pass, used on launch/foreground to catch cards added while
     /// the app wasn't running.
     func reconcileNow() async {
