@@ -32,6 +32,9 @@ Package.resolved
 *.profraw
 *.profdata
 
+# Agent scratch (subagent-driven-development ledgers, briefs, review packages)
+.superpowers/
+
 # Environment / secrets (never commit APNs keys or credentials)
 *.p8
 *.p12
