@@ -10,7 +10,7 @@
 import Foundation
 
 /// Shared failure model for all backend calls.
-enum NetworkError: Error, Equatable {
+enum NetworkError: Error, Equatable, LocalizedError {
     case invalidURL
     /// 401/403 — pairing credentials rejected; prompt re-scan (spec §3).
     case unauthorized
@@ -18,11 +18,26 @@ enum NetworkError: Error, Equatable {
     case conflict(body: String)
     /// 429 — rate limited (e.g. too many desktop pairing attempts); wait, then retry.
     case rateLimited
+    /// The relay presented a different key than the one pinned at pairing
+    /// (TOFU). Deliberately distinct from `.transport`: either a legitimate
+    /// certificate rotation (clear the pairing and re-pair) or interception.
+    case certificateMismatch
     /// 503 — backend config issue; persistent error, cannot retry (spec §3).
     case serviceUnavailable
     case server(statusCode: Int)
     case transport(description: String)
     case decoding(description: String)
+
+    /// User-facing text for the errors that reach toasts/list banners via
+    /// localizedDescription; the rest keep their default rendering.
+    var errorDescription: String? {
+        switch self {
+        case .certificateMismatch:
+            String(localized: "The server's security certificate changed and no longer matches this pairing. If you rotated your server's certificate, remove the pairing in Settings → Connection and re-pair; otherwise the connection may be intercepted.")
+        default:
+            nil
+        }
+    }
 
     /// Maps a non-2xx HTTP status to its error. 2xx returns nil. `body` is
     /// retained only for 409, where the relay distinguishes a client-protected

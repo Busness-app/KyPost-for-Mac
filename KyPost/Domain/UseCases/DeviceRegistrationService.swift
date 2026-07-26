@@ -25,6 +25,10 @@ final class DeviceRegistrationService {
     private let client: NativeRegistrationClient
     private let securePairingStore: SecurePairingStore
     private let pushSettingsStore: PushSettingsStore
+    /// TOFU pinning capture: the SPKI hash the transport saw on its latest
+    /// handshake with the given host. Wired by SingletonGraph to the pinned
+    /// session's delegate; nil in tests (no pin is recorded).
+    var observedSpkiHash: ((_ host: String) -> String?)?
 
     /// One registration per (pairing token, device token). A pairing deep
     /// link is delivered to every open main window and each auto-pairs, so
@@ -97,6 +101,13 @@ final class DeviceRegistrationService {
             pushSettingsStore.deliveryMode = response.deliveryMode ?? .push
             pushSettingsStore.pullEndpoint = response
                 .resolvedPullEndpoint(srv: params.srv)?.absoluteString
+            // Trust on first use: pin the key this successful pairing
+            // handshake presented. Best effort — a Keychain hiccup here must
+            // not fail an otherwise successful registration.
+            if let host = URL(string: params.srv)?.host(),
+               let hash = observedSpkiHash?(host) {
+                try? securePairingStore.setPinnedSpkiHash(hash)
+            }
         }
         return outcome
     }

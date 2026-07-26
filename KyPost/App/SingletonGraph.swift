@@ -46,7 +46,33 @@ final class SingletonGraph {
 
     // MARK: - Networking
 
-    lazy var httpClient = HTTPClient()
+    /// TOFU pinning (security-hardening plan, Task 9): enforce the pinned
+    /// SPKI only for the paired relay's host — scanned foreign key-exchange
+    /// URLs keep default TLS handling. Reads go straight to KeychainStorage
+    /// because the delegate runs off the main actor.
+    lazy var pinnedSessionDelegate = PinnedSessionDelegate { [keychain] host in
+        guard
+            let pin = try? keychain.string(forKey: SecurePairingStore.pinnedSpkiHashKey),
+            !pin.isEmpty,
+            let srv = try? keychain.string(forKey: SecurePairingStore.srvKey),
+            let relayHost = URL(string: srv)?.host(),
+            relayHost.caseInsensitiveCompare(host) == .orderedSame
+        else { return nil }
+        return pin
+    }
+    lazy var httpClient: HTTPClient = {
+        let delegate = pinnedSessionDelegate
+        let session = URLSession(
+            configuration: .default, delegate: delegate, delegateQueue: nil
+        )
+        return HTTPClient { request in
+            do {
+                return try await session.data(for: request)
+            } catch let error as URLError where error.code == .cancelled && delegate.consumePinFailure() {
+                throw NetworkError.certificateMismatch
+            }
+        }
+    }()
     lazy var nativeRegistrationClient = NativeRegistrationClient(httpClient: httpClient)
     lazy var desktopRegistrationClient = DesktopRegistrationClient(httpClient: httpClient)
     lazy var pushNotificationClient = PushNotificationClient(httpClient: httpClient)
@@ -106,11 +132,19 @@ final class SingletonGraph {
         client: deregisterClient,
         securePairingStore: securePairingStore
     )
-    lazy var deviceRegistrationService = DeviceRegistrationService(
-        client: nativeRegistrationClient,
-        securePairingStore: securePairingStore,
-        pushSettingsStore: pushSettingsStore
-    )
+    lazy var deviceRegistrationService: DeviceRegistrationService = {
+        let service = DeviceRegistrationService(
+            client: nativeRegistrationClient,
+            securePairingStore: securePairingStore,
+            pushSettingsStore: pushSettingsStore
+        )
+        // TOFU: a successful pairing persists the SPKI hash its handshake
+        // presented (see PinnedSessionDelegate).
+        service.observedSpkiHash = { [pinnedSessionDelegate] host in
+            pinnedSessionDelegate.lastSeenHash(forHost: host)
+        }
+        return service
+    }()
     lazy var desktopPairingService = DesktopPairingService(
         client: desktopRegistrationClient,
         sessionStore: desktopSessionStore

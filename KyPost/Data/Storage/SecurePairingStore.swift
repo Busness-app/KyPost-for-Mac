@@ -45,8 +45,17 @@ final class SecurePairingStore {
         static let pairingToken = "pairingToken"
         static let lastDeviceId = "lastDeviceId"
         static let pairedAtTimestamp = "pairedAtTimestamp"
-        static let all = [sub, deviceSecret, srv, registrationUrl, pairingToken, lastDeviceId, pairedAtTimestamp]
+        static let pinnedSpkiHash = "pinnedSpkiHash"
+        static let all = [
+            sub, deviceSecret, srv, registrationUrl, pairingToken,
+            lastDeviceId, pairedAtTimestamp, pinnedSpkiHash,
+        ]
     }
+
+    /// Keychain accounts the pinned session's nonisolated delegate reads
+    /// straight off KeychainStorage (it runs off the main actor).
+    static let pinnedSpkiHashKey = Key.pinnedSpkiHash
+    static let srvKey = Key.srv
 
     private let keychain: KeychainStorage
     /// Set by CredentialGateService while "Require unlock for notifications
@@ -126,6 +135,21 @@ final class SecurePairingStore {
     /// Restores a plain-item secret (credential gate turning off).
     func setDeviceSecret(_ secret: String) throws {
         try keychain.set(secret, forKey: Key.deviceSecret)
+    }
+
+    /// The relay's leaf SPKI SHA-256, captured at pairing (TOFU pinning).
+    /// Cleared with the pairing, so "clear pairing and re-pair" is the
+    /// recovery path for a legitimate certificate rotation.
+    var pinnedSpkiHash: String? {
+        try? keychain.string(forKey: Key.pinnedSpkiHash)
+    }
+
+    func setPinnedSpkiHash(_ hash: String?) throws {
+        if let hash {
+            try keychain.set(hash, forKey: Key.pinnedSpkiHash)
+        } else {
+            try keychain.remove(Key.pinnedSpkiHash)
+        }
     }
 
     func clear() throws {
