@@ -228,6 +228,12 @@ final class InboxViewModel {
             let directory = Self.attachmentTempRoot
                 .appending(path: "\(cacheKey)/\(attachment.index)")
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            // tmp is not normally backed up anyway; excluding explicitly
+            // costs nothing and removes any doubt (belt and suspenders).
+            var root = Self.attachmentTempRoot
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            try? root.setResourceValues(values)
             let safeName = attachment.name
                 .replacingOccurrences(of: "/", with: "_")
                 .replacingOccurrences(of: "\0", with: "")

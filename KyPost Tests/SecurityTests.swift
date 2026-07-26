@@ -275,6 +275,30 @@ private final class StubGatedStore: GatedCredentialStoring {
     }
 }
 
+// MARK: - Backup exclusion (Task 8)
+
+@Suite struct BackupExclusionTests {
+    @Test func marksTheStoreTrioExcluded() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "backupexclude.\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = directory.appending(path: "default.store")
+        for suffix in ["", "-wal"] {
+            FileManager.default.createFile(atPath: store.path + suffix, contents: Data("x".utf8))
+        }
+
+        // The missing -shm sibling must not be an error.
+        try AppDatabase.excludeStoreFromBackup(at: store)
+
+        for suffix in ["", "-wal"] {
+            let values = try URL(fileURLWithPath: store.path + suffix)
+                .resourceValues(forKeys: [.isExcludedFromBackupKey])
+            #expect(values.isExcludedFromBackup == true)
+        }
+    }
+}
+
 // MARK: - AppLockManager
 
 @MainActor

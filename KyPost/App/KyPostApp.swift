@@ -43,6 +43,7 @@ struct KyPostApp: App {
                 .preferredColorScheme(themeManager.palette.preferredColorScheme)
                 .background(themeManager.palette.bg.ignoresSafeArea())
                 .overlay { LockedOverlay().environment(\.theme, themeManager.palette) }
+                .protectedFromCapture()
         }
         .defaultSize(width: 680, height: 620)
 
@@ -57,6 +58,7 @@ struct KyPostApp: App {
                 .preferredColorScheme(themeManager.palette.preferredColorScheme)
                 .background(themeManager.palette.bg.ignoresSafeArea())
                 .overlay { LockedOverlay().environment(\.theme, themeManager.palette) }
+                .protectedFromCapture()
         }
         .defaultSize(width: 640, height: 560)
 
@@ -65,6 +67,7 @@ struct KyPostApp: App {
                 .id(environment.generation)
                 .environment(themeManager)
                 .environment(router)
+                .protectedFromCapture()
         }
 #else
         mainWindow
@@ -95,6 +98,7 @@ struct KyPostApp: App {
                     await graph.runStartupMigrationsIfNeeded()
                 }
                 .overlay { LockedOverlay().environment(\.theme, themeManager.palette) }
+                .protectedFromCapture()
         }
         .modelContainer(environment.graph.database.container)
     }

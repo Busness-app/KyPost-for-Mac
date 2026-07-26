@@ -41,6 +41,21 @@ final class AppDatabase: Sendable {
         ModelConfiguration(schema: Self.schema, isStoredInMemoryOnly: false).url
     }
 
+    /// Excludes the store files from iCloud/Finder backups — Apple has no
+    /// allowBackup=false equivalent; it's per-file. Best effort: a failure
+    /// is logged upstream, never fatal. Re-run after Hostile Location
+    /// Protection recreates the file. Keychain items need nothing — the
+    /// ThisDeviceOnly class is already excluded by construction.
+    static func excludeStoreFromBackup(at url: URL = storeURL) throws {
+        for suffix in ["", "-wal", "-shm"] {
+            var file = URL(fileURLWithPath: url.path + suffix)
+            guard FileManager.default.fileExists(atPath: file.path) else { continue }
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            try file.setResourceValues(values)
+        }
+    }
+
     /// Removes the SQLite store plus its -wal/-shm siblings so nothing
     /// pre-toggle survives a Hostile Location Protection switch. Plain
     /// delete, not a secure overwrite (explicitly out of scope in the

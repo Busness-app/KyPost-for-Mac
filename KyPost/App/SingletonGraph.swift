@@ -216,6 +216,13 @@ final class SingletonGraph {
         // Hostile Location Protection keeps the whole cache in memory.
         self.database = try database
             ?? AppDatabase(inMemory: hostileLocationProtectionStore.enabled)
+        if !self.database.isInMemory {
+            do {
+                try AppDatabase.excludeStoreFromBackup()
+            } catch {
+                Log.storage.error("Could not exclude the store from backup: \(error.localizedDescription)")
+            }
+        }
         self.keychain = keychain
         appLockStore = AppLockStore(keychain: keychain)
         securePairingStore = SecurePairingStore(keychain: keychain)
