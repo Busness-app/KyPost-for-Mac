@@ -225,8 +225,8 @@ final class InboxViewModel {
         }
         guard let data = await attachmentData(attachment, of: email) else { return nil }
         do {
-            let directory = FileManager.default.temporaryDirectory
-                .appending(path: "attachments/\(cacheKey)/\(attachment.index)")
+            let directory = Self.attachmentTempRoot
+                .appending(path: "\(cacheKey)/\(attachment.index)")
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let safeName = attachment.name
                 .replacingOccurrences(of: "/", with: "_")
@@ -238,6 +238,18 @@ final class InboxViewModel {
             errorMessage = "Could not download attachment: \(error.localizedDescription)"
             return nil
         }
+    }
+
+    /// Root of the Quick Look staging area for downloaded attachments.
+    static var attachmentTempRoot: URL {
+        FileManager.default.temporaryDirectory.appending(path: "attachments")
+    }
+
+    /// Deletes every staged attachment file. Run when Hostile Location
+    /// Protection toggles (both directions), so no pre-toggle bytes survive
+    /// the mode switch. Missing directory is fine.
+    static func purgeAttachmentTempFiles() {
+        try? FileManager.default.removeItem(at: attachmentTempRoot)
     }
 
     /// The relay-supplied `serverId` must never be trusted as a path

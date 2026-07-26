@@ -52,4 +52,23 @@ final class AppEnvironment {
         generation += 1
         onRebuild?()
     }
+
+    /// Flips Hostile Location Protection: persists the flag, wipes the
+    /// on-disk store and attachment temp files, and swaps in a graph built
+    /// for the new mode (in-memory when enabled). On enable nothing
+    /// pre-toggle survives; on disable the in-memory contents are simply
+    /// dropped and the fresh disk store starts empty.
+    func setHostileLocationProtection(_ enabled: Bool) throws {
+        let store = graph.hostileLocationProtectionStore
+        store.enabled = enabled
+        do {
+            try AppDatabase.deleteStoreFiles()
+            InboxViewModel.purgeAttachmentTempFiles()
+            try rebuild { try SingletonGraph() }
+        } catch {
+            // Leave the app in the mode it was actually built for.
+            store.enabled = !enabled
+            throw error
+        }
+    }
 }

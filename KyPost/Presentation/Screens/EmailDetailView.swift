@@ -101,6 +101,12 @@ struct EmailDetailView: View {
         }
 #endif
         .quickLookPreview($quickLookURL)
+        // Hostile Location Protection: the preview file must not outlive
+        // the Quick Look session (the disclosed brief-disk-touch gap).
+        .onChange(of: quickLookURL) { old, new in
+            guard new == nil, let old, hostileLocationProtectionActive else { return }
+            try? FileManager.default.removeItem(at: old.deletingLastPathComponent())
+        }
         .fileExporter(
             isPresented: Binding(
                 get: { attachmentExport != nil },
@@ -203,10 +209,16 @@ struct EmailDetailView: View {
                     .disabled(downloadingIndex != nil)
                     .help("Click to preview; right-click to save")
                     .contextMenu {
-                        Button {
-                            saveAttachment(attachment)
-                        } label: {
-                            Label("Save As…", systemImage: "square.and.arrow.down")
+                        if hostileLocationProtectionActive {
+                            // Visible, not silent: say why saving is gone.
+                            Button("Saving is off during Hostile Location Protection") {}
+                                .disabled(true)
+                        } else {
+                            Button {
+                                saveAttachment(attachment)
+                            } label: {
+                                Label("Save As…", systemImage: "square.and.arrow.down")
+                            }
                         }
                     }
                 }
@@ -229,6 +241,10 @@ struct EmailDetailView: View {
     /// Our own relay address (the pairing's sub), excluded from Reply All.
     private var ownAddress: String? {
         (try? SingletonGraph.shared.securePairingStore.loadPairing())?.sub
+    }
+
+    private var hostileLocationProtectionActive: Bool {
+        SingletonGraph.shared.hostileLocationProtectionStore.enabled
     }
 
     private func openAttachment(_ attachment: EmailAttachment) {

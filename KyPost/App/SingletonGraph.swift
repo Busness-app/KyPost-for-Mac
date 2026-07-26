@@ -26,6 +26,7 @@ final class SingletonGraph {
     // MARK: - Storage
 
     let appLockStore: AppLockStore
+    let hostileLocationProtectionStore: HostileLocationProtectionStore
     let securePairingStore: SecurePairingStore
     let keywordSettingsStore: KeywordSettingsStore
     let notificationCursorStore: NotificationCursorStore
@@ -205,7 +206,10 @@ final class SingletonGraph {
         database: AppDatabase? = nil
     ) throws {
         self.userDefaults = userDefaults
-        self.database = try database ?? AppDatabase()
+        hostileLocationProtectionStore = HostileLocationProtectionStore(defaults: userDefaults)
+        // Hostile Location Protection keeps the whole cache in memory.
+        self.database = try database
+            ?? AppDatabase(inMemory: hostileLocationProtectionStore.enabled)
         self.keychain = keychain
         appLockStore = AppLockStore(keychain: keychain)
         securePairingStore = SecurePairingStore(keychain: keychain)

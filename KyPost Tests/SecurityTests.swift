@@ -50,6 +50,67 @@ private func makeLockStore() -> AppLockStore {
     }
 }
 
+// MARK: - Hostile Location Protection (Task 5)
+
+@Suite struct HostileLocationProtectionTests {
+    @Test func storeFlagRoundTrips() {
+        let store = HostileLocationProtectionStore(
+            defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        )
+        #expect(!store.enabled)
+        store.enabled = true
+        #expect(store.enabled)
+        store.enabled = false
+        #expect(!store.enabled)
+    }
+
+    @Test func deleteStoreFilesRemovesTheSqliteTrio() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "storewipe.\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = directory.appending(path: "default.store")
+        for suffix in ["", "-wal", "-shm"] {
+            FileManager.default.createFile(
+                atPath: store.path + suffix, contents: Data("x".utf8)
+            )
+        }
+
+        try AppDatabase.deleteStoreFiles(at: store)
+
+        for suffix in ["", "-wal", "-shm"] {
+            #expect(!FileManager.default.fileExists(atPath: store.path + suffix))
+        }
+        // Deleting again with nothing there is not an error.
+        try AppDatabase.deleteStoreFiles(at: store)
+    }
+
+    @Test @MainActor func graphBuildsInMemoryWhenTheFlagIsSet() throws {
+        let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        HostileLocationProtectionStore(defaults: defaults).enabled = true
+
+        let graph = try SingletonGraph(
+            userDefaults: defaults,
+            keychain: KeychainStorage(service: "com.urlxl.mail.tests.\(UUID().uuidString)")
+        )
+
+        #expect(graph.database.isInMemory)
+    }
+
+    @Test @MainActor func purgeRemovesTheAttachmentStagingArea() throws {
+        let root = InboxViewModel.attachmentTempRoot
+        let file = root.appending(path: "m-1/0/report.pdf")
+        try FileManager.default.createDirectory(
+            at: file.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        FileManager.default.createFile(atPath: file.path, contents: Data("x".utf8))
+
+        InboxViewModel.purgeAttachmentTempFiles()
+
+        #expect(!FileManager.default.fileExists(atPath: root.path))
+    }
+}
+
 // MARK: - AppLockManager
 
 @MainActor
