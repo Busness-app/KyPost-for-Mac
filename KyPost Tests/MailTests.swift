@@ -481,41 +481,94 @@ private func makeOutgoing(
     }
 }
 
-// MARK: - Client-side-needed send refusal
+// MARK: - The relay's two PGP 409s
 
-@Suite struct ClientSideNeededTests {
-    @Test func recognizesTheRelaysClientSideNeededConflict() {
-        #expect(RelayMailSource.isClientSideNeeded(
-            conflictBody: #"{"error":"end-to-end protected","clientSideNeeded":true}"#
+@Suite struct RelayConflictTests {
+    /// Discrimination is by field. The prose is user-facing copy and may be
+    /// reworded at any time.
+    @Test func clientSideNeededIsRecognisedByItsField() {
+        #expect(RelayMailSource.conflictError(
+            body: #"{"error":"end-to-end protected","clientSideNeeded":true}"#
+        ) == .clientSideNeeded)
+    }
+
+    @Test func keylessRecipientsCarriesTheAddressesAndTheFallbackFlag() {
+        let body = """
+        {"error": "some recipients have no usable PGP key; sending them a one-time link stores this message's plaintext on the server for 7 days",
+         "keylessRecipients": ["bob@example.com", "carol@example.com"],
+         "pickupFallbackAvailable": true}
+        """
+        #expect(RelayMailSource.conflictError(body: body) == .keylessRecipients(
+            addresses: ["bob@example.com", "carol@example.com"],
+            pickupFallbackAvailable: true
         ))
     }
 
-    @Test func otherConflictsAreNotClientSideNeeded() {
-        #expect(RelayMailSource.isClientSideNeeded(conflictBody: #"{"error":"duplicate"}"#) == false)
-        #expect(RelayMailSource.isClientSideNeeded(conflictBody: #"{"clientSideNeeded":false}"#) == false)
-        #expect(RelayMailSource.isClientSideNeeded(conflictBody: "") == false)
-        #expect(RelayMailSource.isClientSideNeeded(conflictBody: "not json") == false)
+    /// A server with pickup links turned off refuses and offers nothing.
+    @Test func aKeylessConflictWithoutTheFallbackFlagIsNotOfferable() {
+        let body = #"{"keylessRecipients":["bob@example.com"]}"#
+        #expect(RelayMailSource.conflictError(body: body) == .keylessRecipients(
+            addresses: ["bob@example.com"],
+            pickupFallbackAvailable: false
+        ))
     }
 
-    @Test func sendMapsTheConflictToItsOwnOutcome() async {
+    /// A 409 carrying neither field must not inherit PGP wording.
+    @Test func anOrdinaryConflictMapsToNoPgpError() {
+        #expect(RelayMailSource.conflictError(body: #"{"error":"duplicate"}"#) == nil)
+        #expect(RelayMailSource.conflictError(body: #"{"clientSideNeeded":false}"#) == nil)
+        #expect(RelayMailSource.conflictError(body: #"{"keylessRecipients":[]}"#) == nil)
+    }
+
+    /// Every non-409 error body is plain text, and a 409 body may still be
+    /// malformed. Decoding must never trap.
+    @Test func aMalformedConflictBodyDoesNotCrash() {
+        #expect(RelayMailSource.conflictError(body: "") == nil)
+        #expect(RelayMailSource.conflictError(body: "failed to send email: dial tcp") == nil)
+        #expect(RelayMailSource.conflictError(body: #"{"keylessRecipients":"bob@example.com"}"#) == nil)
+        #expect(RelayMailSource.conflictError(body: "[1,2,3]") == nil)
+    }
+
+    @Test func sendMapsTheClientSideConflictToItsOwnOutcome() async {
         let source = RelayMailSource(
             httpClient: stubClient(status: 409, json: #"{"clientSideNeeded":true}"#),
-            serverUrl: "https://relay.example.com",
+            serverUrl: server,
             auth: auth
         )
         var outcome: MailOutcome = .success
         do {
             try await source.send(email: makeOutgoing())
+            Issue.record("a 409 should throw")
         } catch {
             outcome = MailOutcome.from(error)
         }
         #expect(outcome == .clientSideNeeded)
     }
 
+    @Test func sendMapsTheKeylessConflictToItsOwnOutcome() async {
+        let json = #"{"keylessRecipients":["bob@example.com"],"pickupFallbackAvailable":true}"#
+        let source = RelayMailSource(
+            httpClient: stubClient(status: 409, json: json),
+            serverUrl: server,
+            auth: auth
+        )
+        var outcome: MailOutcome = .success
+        do {
+            try await source.send(email: makeOutgoing())
+            Issue.record("a 409 should throw")
+        } catch {
+            outcome = MailOutcome.from(error)
+        }
+        #expect(outcome == .keylessRecipients(
+            addresses: ["bob@example.com"],
+            pickupFallbackAvailable: true
+        ))
+    }
+
     @Test func anUnrelatedConflictStaysAGenericFailure() async {
         let source = RelayMailSource(
             httpClient: stubClient(status: 409, json: #"{"error":"duplicate"}"#),
-            serverUrl: "https://relay.example.com",
+            serverUrl: server,
             auth: auth
         )
         var outcome: MailOutcome = .clientSideNeeded          // must be overwritten
@@ -525,7 +578,9 @@ private func makeOutgoing(
         } catch {
             outcome = MailOutcome.from(error)
         }
-        #expect(outcome != .clientSideNeeded)
+        if case .failure = outcome {} else {
+            Issue.record("an ordinary 409 should be a generic failure, got \(outcome)")
+        }
     }
 }
 

@@ -159,10 +159,19 @@ struct RelaySendResponse: Decodable, Sendable {
     var warning: String?
 }
 
-/// Shape of a relay 409 body, used only to tell the client-protected send
-/// refusal apart from an ordinary conflict (see `RelayMailSource.isClientSideNeeded`).
+/// Shape of a relay 409 body. Both PGP refusals are told apart from an
+/// ordinary conflict — and from each other — by which of these fields is
+/// present, never by the error prose (see `RelayMailSource.conflictError`).
+/// Every field is optional because a 409 body may be neither shape, and
+/// because non-409 errors return plain text.
 struct RelayConflictDTO: Decodable, Sendable {
     var clientSideNeeded: Bool?
+    /// Recipients with no usable PGP key. Nothing was delivered — the refusal
+    /// happens before any SMTP, so re-sending with `allowPickupFallback` cannot
+    /// duplicate the message.
+    var keylessRecipients: [String]?
+    /// Whether re-sending with `allowPickupFallback: true` is available at all.
+    var pickupFallbackAvailable: Bool?
 }
 
 /// Bulk action body (Mobile_Mail_Relay.md /api/inbox/actions).
@@ -383,19 +392,31 @@ final class RelayMailSource: MailSource {
                 jsonBody: RelaySendRequest(from: email)
             )
             return response.warning ?? ""
-        } catch NetworkError.conflict(let body) where Self.isClientSideNeeded(conflictBody: body) {
-            throw MailSourceError.clientSideNeeded
+        } catch NetworkError.conflict(let body) {
+            throw Self.conflictError(body: body) ?? NetworkError.conflict(body: body)
         }
     }
 
-    /// Whether a relay 409 body is the client-protected send refusal rather
-    /// than an ordinary conflict. Pure so it is testable without a transport;
-    /// the relay-specific knowledge stays here rather than in HTTPClient.
-    static func isClientSideNeeded(conflictBody: String) -> Bool {
-        guard let data = conflictBody.data(using: .utf8),
+    /// Which PGP refusal a relay 409 body represents, or nil for an ordinary
+    /// conflict the caller should surface generically.
+    ///
+    /// Pure so it is testable without a transport, and so the relay-specific
+    /// knowledge stays here rather than in HTTPClient. Discriminates by field:
+    /// the error strings are user-facing copy and may be reworded.
+    static func conflictError(body: String) -> MailSourceError? {
+        guard let data = body.data(using: .utf8),
               let dto = try? JSONDecoder().decode(RelayConflictDTO.self, from: data)
-        else { return false }
-        return dto.clientSideNeeded == true
+        else { return nil }
+        if dto.clientSideNeeded == true {
+            return .clientSideNeeded
+        }
+        if let addresses = dto.keylessRecipients, !addresses.isEmpty {
+            return .keylessRecipients(
+                addresses: addresses,
+                pickupFallbackAvailable: dto.pickupFallbackAvailable ?? false
+            )
+        }
+        return nil
     }
 
     // MARK: - Private

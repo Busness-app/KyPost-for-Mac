@@ -351,6 +351,10 @@ final class ComposeViewModel {
         // final behavior.
         case .sentWithWarning(let warning):
             errorMessage = warning
+        // Task 7 placeholder: the real flow re-sends with allowPickupFallback
+        // after the user confirms; this stopgap only surfaces the refusal.
+        case .keylessRecipients:
+            errorMessage = "Some recipients have no usable key."
         case .failure(let message):
             errorMessage = message
         }

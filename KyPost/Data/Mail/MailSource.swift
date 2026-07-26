@@ -56,6 +56,13 @@ enum MailSourceError: Error, Equatable {
     /// server to sign or encrypt and it refused rather than silently sending
     /// in the clear.
     case clientSideNeeded
+    /// Relay 409 + keylessRecipients: at least one recipient has no usable
+    /// key. **Nothing was delivered** — the refusal happens before any SMTP.
+    /// Re-sending the identical request with `allowPickupFallback: true` is
+    /// safe and cannot duplicate. `pickupFallbackAvailable` is false when the
+    /// server has one-time links turned off, in which case there is nothing to
+    /// offer the user.
+    case keylessRecipients(addresses: [String], pickupFallbackAvailable: Bool)
 }
 
 /// User-facing result of a mail operation (spec §11 relay response mapping).
@@ -75,6 +82,10 @@ enum MailOutcome: Equatable, Sendable {
     /// would duplicate the message. Treat the text as opaque human-readable
     /// prose — never pattern-match its wording.
     case sentWithWarning(String)
+    /// Some recipients have no usable key and nothing was sent. Confirming
+    /// mails them a one-time link and stores this message's plaintext on the
+    /// server for 7 days.
+    case keylessRecipients(addresses: [String], pickupFallbackAvailable: Bool)
 
     static func from(_ error: Error) -> MailOutcome {
         switch error {
@@ -84,6 +95,11 @@ enum MailOutcome: Equatable, Sendable {
             .notPaired
         case MailSourceError.clientSideNeeded:
             .clientSideNeeded
+        case MailSourceError.keylessRecipients(let addresses, let pickupFallbackAvailable):
+            .keylessRecipients(
+                addresses: addresses,
+                pickupFallbackAvailable: pickupFallbackAvailable
+            )
         default:
             .failure("\(error)")
         }
