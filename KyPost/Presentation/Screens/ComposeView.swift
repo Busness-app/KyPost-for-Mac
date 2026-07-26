@@ -121,24 +121,32 @@ struct ComposeView: View {
                 .environment(\.theme, theme)
         }
         // Copy is verbatim from Client_Encrypted_Send.md — the wording carries
-        // the security property. Cancel is the default action; the confirm
+        // the security property. Cancel is the default action (.defaultAction,
+        // so Return fires it rather than the destructive button); the confirm
         // button is destructive because it puts plaintext on the server.
+        //
+        // `presenting:` hands the pickup value into both closures instead of
+        // reading it back off the view model after the dialog is dismissed:
+        // SwiftUI writes `false` through the `isPresented` binding
+        // synchronously when a button is tapped, before the button's own
+        // `Task { }` action body runs, so by the time that action read
+        // `viewModel.pendingPickup` it was already nil (Critical 1).
         .confirmationDialog(
             "Send an unencrypted link?",
             isPresented: Binding(
                 get: { viewModel.pendingPickup != nil },
                 set: { if !$0 { viewModel.cancelPickupFallback() } }
             ),
-            titleVisibility: .visible
-        ) {
+            titleVisibility: .visible,
+            presenting: viewModel.pendingPickup
+        ) { pickup in
             Button("Send link anyway", role: .destructive) {
-                Task { await viewModel.confirmPickupFallback() }
+                Task { await viewModel.confirmPickupFallback(pickup) }
             }
             Button("Cancel", role: .cancel) { viewModel.cancelPickupFallback() }
-        } message: {
-            if let pickup = viewModel.pendingPickup {
-                Text(viewModel.pickupConfirmationMessage(for: pickup))
-            }
+                .keyboardShortcut(.defaultAction)
+        } message: { pickup in
+            Text(viewModel.pickupConfirmationMessage(for: pickup))
         }
         // The handoff opens the user's browser, never an in-app web view: it
         // shares no session and would put an account-password field in here

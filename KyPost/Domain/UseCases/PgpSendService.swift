@@ -47,7 +47,10 @@ final class PgpSendService {
                 protection: response.protection
             )
         } catch {
-            Log.mail.debug("PGP bootstrap failed: \(error.localizedDescription, privacy: .public)")
+            // .error, not .debug: this failure silently disables every PGP
+            // toggle with no visible sign to the user, so it must be the kind
+            // of thing a customer sysdiagnose actually captures.
+            Log.mail.error("PGP bootstrap failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 

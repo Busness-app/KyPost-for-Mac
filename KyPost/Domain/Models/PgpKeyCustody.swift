@@ -41,7 +41,7 @@ nonisolated enum PgpKeyCustody: Equatable, Sendable {
 nonisolated func pgpKeyCustody(hasIdentity: Bool?, protection: String?) -> PgpKeyCustody {
     guard hasIdentity == true else { return .noIdentity }
     guard let protection else { return .clientHeld }
-    switch protection.trimmingCharacters(in: .whitespaces).lowercased() {
+    return switch protection.trimmingCharacters(in: .whitespaces).lowercased() {
     case "": .noIdentity
     case "server": .serverHeld
     default: .clientHeld

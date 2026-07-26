@@ -105,8 +105,29 @@ enum MailOutcome: Equatable, Sendable {
                 addresses: addresses,
                 pickupFallbackAvailable: pickupFallbackAvailable
             )
+        case let networkError as NetworkError:
+            .failure(Self.message(for: networkError))
         default:
             .failure("\(error)")
+        }
+    }
+
+    /// Human-readable text for the `NetworkError` cases that reach here
+    /// unclaimed (401 and the two PGP 409s are already peeled off above).
+    /// Without this, `.failure("\(error)")` puts the raw enum dump — e.g.
+    /// "server(statusCode: 404)" — straight in front of the user; the server
+    /// side of this feature isn't merged yet, so a 404 from the draft-save
+    /// call is exactly what the first tester hits.
+    private static func message(for error: NetworkError) -> String {
+        switch error {
+        case .invalidURL: "This server's address looks wrong."
+        case .unauthorized: "Not authorized — re-pair the device or check credentials."
+        case .conflict: "The server rejected this request."
+        case .rateLimited: "Too many attempts — wait a moment and try again."
+        case .serviceUnavailable: "The server is temporarily unavailable."
+        case .server(let statusCode): "The server returned an error (status \(statusCode))."
+        case .transport(let description): description
+        case .decoding: "The server sent a response this app couldn't read."
         }
     }
 }

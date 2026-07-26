@@ -175,8 +175,20 @@ final class ComposeViewModel {
 
     /// Confirmed the one-time-link fallback: re-sends the refused request,
     /// byte-identical apart from the flag. No preflight, no rebuild.
-    func confirmPickupFallback() async {
-        guard var email = pendingPickup?.email else { return }
+    ///
+    /// Takes `pickup` rather than reading `self.pendingPickup`: the view hands
+    /// this in from the confirmation dialog's `presenting:` data, captured at
+    /// the moment the button was tapped. Reading the property instead would
+    /// race the dialog's own dismissal — SwiftUI clears `isPresented` (and
+    /// this class clears `pendingPickup` through that binding's setter)
+    /// synchronously, before this `Task { }`-wrapped action body ever runs.
+    func confirmPickupFallback(_ pickup: PendingPickup) async {
+        guard !isSending, !isSent, !didSend else { return }
+        // A fresh attempt starts with a clean slate: an earlier notice or
+        // keyless-address list must not linger over whatever this one produces.
+        noticeMessage = nil
+        keylessWarning = []
+        var email = pickup.email
         pendingPickup = nil
         email.allowPickupFallback = true
         await deliver(email)
@@ -184,12 +196,17 @@ final class ComposeViewModel {
 
     func cancelPickupFallback() {
         pendingPickup = nil
+        keylessWarning = []
     }
 
     /// Client-custody account: the key exists only in the user's browser, so
     /// save the composed message as a server-side draft and send them there.
     func handOffToWebmail(fontTraits: @escaping RichTextHTML.FontTraits) async {
         guard !isSending, !isSent, !didSend else { return }
+        // A fresh attempt starts with a clean slate: an earlier notice or
+        // keyless-address list must not linger over whatever this one produces.
+        noticeMessage = nil
+        keylessWarning = []
         for field in RecipientField.allCases where !commitPendingInput(for: field) {
             return
         }
@@ -427,6 +444,13 @@ final class ComposeViewModel {
         // through an onChange, and a second ⌘↩ in that gap would post the
         // message twice.
         guard !isSending, !isSent, !didSend else { return }
+        // A fresh attempt starts with a clean slate: an earlier notice must not
+        // linger over whatever this one produces. `keylessWarning` is cleared
+        // here too so a rejected recipient below doesn't leave a stale address
+        // list on screen next to the fresh error — it is reassigned again
+        // once validation passes.
+        noticeMessage = nil
+        keylessWarning = []
         // A recipient typed but not committed is still a recipient the user
         // means to mail. Bail on invalid text rather than dropping it.
         for field in RecipientField.allCases where !commitPendingInput(for: field) {

@@ -419,7 +419,7 @@ private func fields(_ body: String) throws -> [String: Any] {
         compose.sign = true
         await compose.send(fontTraits: noTraits)
 
-        await compose.confirmPickupFallback()
+        await compose.confirmPickupFallback(try #require(compose.pendingPickup))
 
         #expect(stub.sends.value.count == 2)
         let first = stub.sends.value[0]
@@ -434,6 +434,45 @@ private func fields(_ body: String) throws -> [String: Any] {
         #expect(NSDictionary(dictionary: secondFields) == NSDictionary(dictionary: try fields(first)))
         #expect(compose.didSend)
         #expect(compose.pendingPickup == nil)
+    }
+
+    /// Regression test for Critical 1 (whole-branch review): the original bug
+    /// was that `confirmPickupFallback()` read `pendingPickup` off `self`, and
+    /// SwiftUI's confirmationDialog `isPresented` binding setter clears that
+    /// property (via `cancelPickupFallback`) *synchronously* on dismissal,
+    /// before the tapped button's own `Task { }` action body ever ran — so
+    /// "Send link anyway" silently sent nothing.
+    ///
+    /// The fix takes the pickup as a required parameter instead of consulting
+    /// `pendingPickup`, which makes that exact race structurally impossible:
+    /// there is no longer any code path where confirming reads state that a
+    /// concurrent cancel could have nilled out from under it. This test pins
+    /// that decoupling directly — a `cancelPickupFallback()` call sitting
+    /// between capturing the pickup and confirming it must have zero effect on
+    /// the confirm, because the confirm never looks at the property cancel
+    /// touches.
+    @Test func cancellingDoesNotPoisonAConfirmHoldingItsOwnCapturedPickup() async throws {
+        let conflict = #"{"keylessRecipients":["bob@example.com"],"pickupFallbackAvailable":true}"#
+        let stub = ComposeStub(sendResponses: [
+            (409, conflict),
+            (200, #"{"ok":true,"sentSaved":true}"#),
+        ])
+        let compose = try makeCompose(stub: stub)
+        compose.toInput = "bob@example.com"
+        compose.encrypt = true
+        await compose.send(fontTraits: noTraits)
+        let pickup = try #require(compose.pendingPickup)
+
+        // Simulates the interleaving that broke the old implementation: the
+        // dialog's binding setter (cancel) fires before the button's action
+        // body, which already holds its own copy of the value.
+        compose.cancelPickupFallback()
+        #expect(compose.pendingPickup == nil)
+
+        await compose.confirmPickupFallback(pickup)
+
+        #expect(stub.sends.value.count == 2)
+        #expect(compose.didSend)
     }
 
     @Test func aServerWithPickupLinksOffExplainsInsteadOfAsking() async throws {
