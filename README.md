@@ -17,6 +17,7 @@ The app talks only to the relay backend — there is no direct IMAP/SMTP. You pa
 - **MFA approval** — approve login challenges from a notification tap.
 - **Contact sync** — two-way sync with the relay, with local-first edits and conflict-safe reconciliation. Contacts carry the full extended schema: groups, photo, IM/social handles, websites, relations, extra dates, phonetic names, department, custom fields, pronouns, and a PGP public key.
 - **PGP key exchange via QR** — share your public key in person. *My QR Code* renders a short-lived (2 min) pickup link; *Scan to add contact key* reads someone else's, shows their fingerprint for out-of-band confirmation, and saves the key to a contact. iOS scans with the camera (paste as a fallback); macOS pastes the link (no VisionKit scanner).
+- **Encryption state on every message** — messages the server decrypted say so, so you can tell it read your mail; messages your browser alone can open say that too, and link out to webmail. This app holds no PGP private key by design (see the server's `docs/E2E_PGP.md`).
 - **15 themes** — palettes shared verbatim with the web and Android apps; default is **Patina Ky**.
 
 ## Requirements

@@ -58,6 +58,15 @@ Domain.
 - **Aligning columns across separate rows takes fixed widths**, not `Grid`:
   each `Grid` sizes its columns independently, so a header `Grid` drifts out
   of line with row `Grid`s. See `AddressBookView.Column`.
+- PGP message state is decided in `Domain/Models/PgpMessageState.swift` and
+  never re-derived in a view. `EmailListRow` marks only the two unreadable
+  states (`lock.fill` / `exclamationmark.triangle.fill`); a server-decrypted
+  row is deliberately unmarked. `EmailDetailView` shows the signature badge
+  **only** for `.decryptedByServer` — for a client-protected message the
+  server never saw the plaintext, so `pgpSigned`/`pgpVerified` are not a
+  verdict about anything. The "Open in webmail" link goes through
+  `@Environment(\.openURL)` and must never be routed into an in-app WebView
+  (kypost-server `docs/E2E_PGP.md` requirement 5).
 
 ## Work Guidance
 
