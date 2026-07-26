@@ -36,6 +36,21 @@ struct SendEmailUseCase {
         return await repository.send(email)
     }
 
+    /// Saves the composed message as a server-side draft, for the
+    /// client-custody webmail handoff. No recipient requirement: a draft is
+    /// allowed to be incomplete.
+    func saveDraft(_ email: OutgoingEmail) async -> MailOutcome {
+        await repository.saveDraft(email)
+    }
+
+    /// Webmail's Drafts view on the paired server, or nil when there is no
+    /// usable pairing URL — compose then explains instead of linking.
+    var webmailDraftsURL: URL? {
+        repository.pairedServerUrl.flatMap {
+            webmailMailboxURL(serverUrl: $0, mailbox: StandardFolder.drafts)
+        }
+    }
+
     /// Minimal shape check (one @, non-empty local part, dot in domain) —
     /// real validation is the mail server's job.
     static func looksLikeEmailAddress(_ address: String) -> Bool {

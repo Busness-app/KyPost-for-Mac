@@ -106,4 +106,24 @@ final class MailRepository {
             return MailOutcome.from(error)
         }
     }
+
+    /// Saves a draft on the server so the webmail handoff has something to
+    /// open. Same failure mapping as `send`.
+    func saveDraft(_ email: OutgoingEmail) async -> MailOutcome {
+        do {
+            try await makeSource().saveDraft(email: email)
+            return .success
+        } catch {
+            return MailOutcome.from(error)
+        }
+    }
+
+    /// The paired server's base URL, for building webmail links. Nil when
+    /// unpaired, so callers show no link rather than a dead one.
+    var pairedServerUrl: String? {
+        guard let pairing = try? securePairingStore.loadPairing(),
+              !pairing.srv.isEmpty
+        else { return nil }
+        return pairing.srv
+    }
 }

@@ -157,3 +157,40 @@ import Testing
         #expect(webmailMessageURL(serverUrl: "not a url", mailbox: "INBOX", messageId: "42") == nil)
     }
 }
+
+// MARK: - Webmail mailbox links (compose handoff)
+
+@Suite struct WebmailMailboxURLTests {
+    @Test func draftsGetsAnExplicitMailboxParam() {
+        #expect(
+            webmailMailboxURL(serverUrl: "https://mail.example.com", mailbox: StandardFolder.drafts)?
+                .absoluteString == "https://mail.example.com/read?mailbox=Drafts"
+        )
+    }
+
+    @Test func inboxIsSentAsAnAbsentMailboxParam() {
+        #expect(
+            webmailMailboxURL(serverUrl: "https://mail.example.com/", mailbox: "INBOX")?
+                .absoluteString == "https://mail.example.com/read"
+        )
+    }
+
+    @Test func aServerUrlThatIsNotAbsoluteHasNoLink() {
+        #expect(webmailMailboxURL(serverUrl: "", mailbox: "Drafts") == nil)
+        #expect(webmailMailboxURL(serverUrl: "not a url", mailbox: "Drafts") == nil)
+    }
+
+    /// The message link keeps working exactly as it did — mailbox first, then
+    /// message — now that both share one components builder.
+    @Test func messageLinksAreUnchanged() {
+        #expect(
+            webmailMessageURL(serverUrl: "https://mail.example.com", mailbox: "Archive", messageId: "42")?
+                .absoluteString == "https://mail.example.com/read?mailbox=Archive&message=42"
+        )
+        #expect(
+            webmailMessageURL(serverUrl: "https://mail.example.com", mailbox: "INBOX", messageId: "42")?
+                .absoluteString == "https://mail.example.com/read?message=42"
+        )
+        #expect(webmailMessageURL(serverUrl: "https://mail.example.com", mailbox: "INBOX", messageId: " ") == nil)
+    }
+}

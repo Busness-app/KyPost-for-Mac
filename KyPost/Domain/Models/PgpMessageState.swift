@@ -85,15 +85,15 @@ nonisolated func showsSignaturePill(state: PgpMessageState, signed: Bool) -> Boo
     state == .decryptedByServer && signed
 }
 
-/// Builds the webmail URL that opens one specific message — the same `/read`
-/// route a web push click uses, so no server change backs it.
+/// `/read` URL components for the paired server, or nil when `serverUrl` isn't
+/// a usable absolute URL — callers render "no button" rather than a dead one.
 ///
 /// INBOX is sent as an absent `mailbox` param rather than the literal string,
-/// matching the links the web app builds for itself. Returns nil when
-/// `serverUrl` isn't a usable absolute URL, which callers render as "no button"
-/// rather than a dead one.
-nonisolated func webmailMessageURL(serverUrl: String, mailbox: String, messageId: String) -> URL? {
-    guard !messageId.isBlank else { return nil }
+/// matching the links the web app builds for itself.
+private nonisolated func webmailReadComponents(
+    serverUrl: String,
+    mailbox: String
+) -> URLComponents? {
     let trimmed = serverUrl.trimmingCharacters(in: .whitespaces)
     let base = trimmed.hasSuffix("/") ? String(trimmed.dropLast()) : trimmed
     guard var components = URLComponents(string: base),
@@ -103,14 +103,28 @@ nonisolated func webmailMessageURL(serverUrl: String, mailbox: String, messageId
 
     components.path += "/read"
 
-    var items: [URLQueryItem] = []
     let mailbox = mailbox.trimmingCharacters(in: .whitespaces)
     if !mailbox.isEmpty, mailbox.caseInsensitiveCompare(StandardFolder.inbox) != .orderedSame {
-        items.append(URLQueryItem(name: "mailbox", value: mailbox))
+        components.queryItems = [URLQueryItem(name: "mailbox", value: mailbox)]
     }
-    items.append(URLQueryItem(name: "message", value: messageId))
-    components.queryItems = items
+    return components.url == nil ? nil : components
+}
 
+/// Builds the webmail URL that opens one mailbox — the compose handoff opens
+/// Drafts after saving, because a client-protected key exists only in the
+/// browser.
+nonisolated func webmailMailboxURL(serverUrl: String, mailbox: String) -> URL? {
+    webmailReadComponents(serverUrl: serverUrl, mailbox: mailbox)?.url
+}
+
+/// Builds the webmail URL that opens one specific message — the same `/read`
+/// route a web push click uses, so no server change backs it.
+nonisolated func webmailMessageURL(serverUrl: String, mailbox: String, messageId: String) -> URL? {
+    guard !messageId.isBlank,
+          var components = webmailReadComponents(serverUrl: serverUrl, mailbox: mailbox)
+    else { return nil }
+    components.queryItems = (components.queryItems ?? [])
+        + [URLQueryItem(name: "message", value: messageId)]
     return components.url
 }
 

@@ -9,6 +9,7 @@
 //    GET  /api/inbox?limit&mailbox&since
 //    GET  /api/inbox/folders
 //    POST /api/mail/send  (encrypt/sign/allowPickupFallback — Client_Encrypted_Send.md)
+//    POST /api/mail/draft (same shape as send, minus the PGP flags)
 //  Binding contract: send body uses comma-joined recipient strings plus a
 //  "mode" field; /api/inbox returns emails grouped by tab.
 //
@@ -395,6 +396,16 @@ final class RelayMailSource: MailSource {
         } catch NetworkError.conflict(let body) {
             throw Self.conflictError(body: body) ?? NetworkError.conflict(body: body)
         }
+    }
+
+    func saveDraft(email: OutgoingEmail) async throws {
+        // {"ok": true} — same shape as the bulk-action reply, so no extra DTO.
+        _ = try await httpClient.post(
+            RelayActionResponse.self,
+            url: try endpoint("api/mail/draft"),
+            headers: auth.headerFields,
+            jsonBody: RelaySendRequest(from: email, pgpFlags: false)
+        )
     }
 
     /// Which PGP refusal a relay 409 body represents, or nil for an ordinary
