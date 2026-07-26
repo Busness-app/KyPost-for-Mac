@@ -886,6 +886,7 @@ Add these computed properties alongside the existing `bodyLooksLikeHTML`:
     private var suppressesBody: Bool {
         pgpState == .clientProtected || pgpState == .decryptFailed
     }
+```
 
 Add a `@State` for the webmail link alongside the existing `@State` properties near line 29:
 
