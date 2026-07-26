@@ -144,6 +144,42 @@ import Testing
         #expect(viewModel.filteredEmails.count == 3)
     }
 
+    @Test @MainActor func markReadFlipsFlagsInPlaceAndPostsTheBulkAction() async throws {
+        let listJson = """
+        {
+          "byTab": {
+            "": [
+              { "messageId": "1", "subject": "a" },
+              { "messageId": "2", "subject": "b" }
+            ]
+          }
+        }
+        """
+        let actionBody = Box("")
+        let client = HTTPClient { request in
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+            )!
+            if request.url!.path.contains("inbox/actions") {
+                actionBody.value = request.httpBody.flatMap { String(decoding: $0, as: UTF8.self) } ?? ""
+                return (Data(#"{"ok": true}"#.utf8), response)
+            }
+            return (Data(listJson.utf8), response)
+        }
+        let viewModel = try makeViewModel(client: client)
+        await viewModel.load()
+        #expect(viewModel.emails.allSatisfy { !$0.read })
+
+        await viewModel.markRead(serverIds: ["1", "2"])
+
+        // Rows stay in the list with the flag flipped — no removal.
+        // (byTab merge order isn't stable, so compare as a set.)
+        #expect(Set(viewModel.emails.map(\.serverId)) == ["1", "2"])
+        #expect(viewModel.emails.allSatisfy { $0.read })
+        #expect(actionBody.value.contains(#""action":"read""#))
+        #expect(viewModel.errorMessage == nil)
+    }
+
     @Test @MainActor func notPairedProducesFriendlyError() async throws {
         let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
         let keychain = KeychainStorage(service: "com.urlxl.mail.tests.\(UUID().uuidString)")

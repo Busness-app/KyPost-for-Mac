@@ -78,6 +78,16 @@ final class MailRepository {
         try await makeSource().markSpam(messageIds: messageIds, mailbox: mailbox)
     }
 
+    /// Marks messages read via the relay's bulk action and mirrors the flag
+    /// into the cache. List-action counterpart of the single-email
+    /// `markRead(serverId:folder:read:)` below.
+    func markRead(messageIds: [String], from mailbox: String) async throws {
+        try await makeSource().markRead(messageIds: messageIds, mailbox: mailbox)
+        for messageId in messageIds {
+            try await emailDAO.updateEmail(serverId: messageId, read: true)
+        }
+    }
+
     /// Attachment metadata for one cached email (lazy, on open).
     func listAttachments(folder: String, messageId: String) async throws -> [EmailAttachment] {
         try await makeSource().listAttachments(folder: folder, messageId: messageId)

@@ -92,6 +92,23 @@ final class InboxViewModel {
         }
     }
 
+    /// Marks emails as read from the list (relay bulk action). Rows stay in
+    /// place, so unlike the move-style actions there is no removal, and no
+    /// re-sync on success — the optimistic flag flip already matches the
+    /// server. (The relay has no "unread" action, so this is one-way.)
+    func markRead(serverIds: [String]) async {
+        guard !serverIds.isEmpty else { return }
+        for index in emails.indices where serverIds.contains(emails[index].serverId) {
+            emails[index].read = true
+        }
+        do {
+            try await mailRepository.markRead(messageIds: serverIds, from: folder)
+        } catch {
+            errorMessage = "Could not mark as read: \(error.localizedDescription)"
+            await refresh()
+        }
+    }
+
     /// Marks emails as junk (the relay moves them to Junk), then re-syncs.
     func markJunk(serverIds: [String]) async {
         guard !serverIds.isEmpty else { return }

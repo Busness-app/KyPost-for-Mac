@@ -202,6 +202,12 @@ struct MacRootView: View {
                     }
                     Divider()
                     Button {
+                        Task { await inboxViewModel.markRead(serverIds: selection.map(\.serverId)) }
+                    } label: {
+                        Label("Mark as Read", systemImage: "envelope.open")
+                    }
+                    .disabled(selection.allSatisfy(\.read))
+                    Button {
                         runMailAction(on: selection) { await inboxViewModel.archive(serverIds: $0) }
                     } label: {
                         Label("Archive", systemImage: "archivebox")
@@ -241,6 +247,37 @@ struct MacRootView: View {
         .background(theme.bg)
         .navigationTitle(currentInboxTitle)
         .toolbar {
+            // Selection-based mail actions, so archive/read/delete never
+            // require opening the email (the context menu's counterparts).
+            ToolbarItem {
+                Button {
+                    runMailAction(on: selectedEmails) { await inboxViewModel.archive(serverIds: $0) }
+                } label: {
+                    Label("Archive", systemImage: "archivebox")
+                }
+                .help("Archive the selected emails")
+                .disabled(selectedEmails.isEmpty)
+            }
+            ToolbarItem {
+                Button {
+                    Task { await inboxViewModel.markRead(serverIds: selectedEmails.map(\.serverId)) }
+                } label: {
+                    Label("Mark as Read", systemImage: "envelope.open")
+                }
+                .help("Mark the selected emails as read")
+                // allSatisfy is true for an empty selection, so this also
+                // covers the nothing-selected case.
+                .disabled(selectedEmails.allSatisfy(\.read))
+            }
+            ToolbarItem {
+                Button {
+                    deleteEmails(selectedEmails)
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                .help("Delete the selected emails")
+                .disabled(selectedEmails.isEmpty)
+            }
             ToolbarItem {
                 Toggle(isOn: $showPreviewPane) {
                     Label("Preview Pane", systemImage: "sidebar.trailing")
