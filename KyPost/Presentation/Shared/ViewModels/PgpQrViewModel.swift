@@ -144,7 +144,27 @@ final class ScanPgpKeyViewModel {
         state = .fetching
         do {
             let key = try await client.fetchKey(from: url)
-            state = .confirming(key)
+            // Never display or store the relay's fingerprint string — compute
+            // it from the key bytes, and treat a mismatch with the relay's
+            // claim as the attack it would be (PgpFingerprint's header).
+            guard let computed = PgpFingerprint.compute(fromArmored: key.publicKey) else {
+                state = .failed(
+                    message: "The key data couldn't be read — ask them to show a fresh code.",
+                    canRescan: true
+                )
+                return
+            }
+            let claimed = key.fingerprint.filter { !$0.isWhitespace }.uppercased()
+            if !claimed.isEmpty, claimed != computed {
+                state = .failed(
+                    message: "This key's real fingerprint doesn't match what the server claimed. Don't save it — the server may be misbehaving.",
+                    canRescan: true
+                )
+                return
+            }
+            var verified = key
+            verified.fingerprint = computed
+            state = .confirming(verified)
         } catch NetworkError.unauthorized {
             // /key has no auth middleware, so this is the 403 branch: the
             // pairing token was expired or forged, never a credentials problem.

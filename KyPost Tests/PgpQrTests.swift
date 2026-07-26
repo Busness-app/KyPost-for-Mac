@@ -23,11 +23,25 @@ private let tokenJSON = #"""
 }
 """#
 
+/// A structurally valid synthetic v4 key (13-byte public-key packet) whose
+/// fingerprint field matches the locally computed value — the scan flow
+/// verifies that since the fingerprint hardening (see PgpFingerprintTests
+/// for the packet layout).
+let syntheticArmoredKey = """
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+Version: KyPostTest
+
+xg0EYAAAAAEACQEjAAID
+=ABCD
+-----END PGP PUBLIC KEY BLOCK-----
+"""
+let syntheticKeyFingerprint = "6853864FF482DCF29CD0CB0E56CD3B5CB8625680"
+
 private let keyJSON = #"""
 {
   "name": "Ada Lovelace",
-  "fingerprint": "ABCD1234EF567890",
-  "publicKey": "-----BEGIN PGP PUBLIC KEY BLOCK-----\nabc\n-----END PGP PUBLIC KEY BLOCK-----"
+  "fingerprint": "6853864FF482DCF29CD0CB0E56CD3B5CB8625680",
+  "publicKey": "-----BEGIN PGP PUBLIC KEY BLOCK-----\nVersion: KyPostTest\n\nxg0EYAAAAAEACQEjAAID\n=ABCD\n-----END PGP PUBLIC KEY BLOCK-----"
 }
 """#
 
@@ -88,7 +102,7 @@ private let keyJSON = #"""
         // would leak this device's credentials to someone else's server.
         #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
         #expect(key.name == "Ada Lovelace")
-        #expect(key.fingerprint == "ABCD1234EF567890")
+        #expect(key.fingerprint == syntheticKeyFingerprint)
         #expect(key.publicKey.hasPrefix("-----BEGIN PGP PUBLIC KEY BLOCK-----"))
     }
 }
@@ -294,6 +308,39 @@ private let keyJSON = #"""
             return
         }
         #expect(key.name == "Ada Lovelace")
+        // The displayed fingerprint is the locally computed one.
+        #expect(key.fingerprint == syntheticKeyFingerprint)
+    }
+
+    /// A relay pairing a real key with an unrelated fingerprint string is
+    /// exactly the attack the local computation exists to catch — refuse,
+    /// never fall back to displaying the claim.
+    @Test func aFingerprintClaimMismatchRefusesTheKey() async throws {
+        let lying = keyJSON.replacingOccurrences(
+            of: syntheticKeyFingerprint,
+            with: "AAAA1111BBBB2222CCCC3333DDDD4444EEEE5555"
+        )
+        let env = try makeEnvironment(json: lying)
+
+        await env.viewModel.handleScannedPayload("https://mail.example.com/api/pgp/qr/key?t=abc")
+
+        guard case .failed(let message, _) = env.viewModel.state else {
+            Issue.record("Expected .failed, got \(env.viewModel.state)")
+            return
+        }
+        #expect(message.contains("doesn't match"))
+    }
+
+    @Test func anUnparseableKeyIsRefused() async throws {
+        let garbage = #"{"name": "Ada", "fingerprint": "", "publicKey": "not armored"}"#
+        let env = try makeEnvironment(json: garbage)
+
+        await env.viewModel.handleScannedPayload("https://mail.example.com/api/pgp/qr/key?t=abc")
+
+        guard case .failed = env.viewModel.state else {
+            Issue.record("Expected .failed, got \(env.viewModel.state)")
+            return
+        }
     }
 
     @Test func aNonKeyQRCodeFailsWithoutTouchingTheNetwork() async throws {
