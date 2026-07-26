@@ -62,7 +62,7 @@ final class DesktopRegistrationClient: Sendable {
             return .success(response)
         } catch NetworkError.unauthorized {
             return .invalidOrExpiredCode
-        } catch NetworkError.conflict {
+        } catch NetworkError.conflict(_) {
             return .codeAlreadyConsumed
         } catch NetworkError.rateLimited {
             return .rateLimited

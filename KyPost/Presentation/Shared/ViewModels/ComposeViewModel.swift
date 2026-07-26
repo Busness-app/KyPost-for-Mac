@@ -344,6 +344,8 @@ final class ComposeViewModel {
             errorMessage = "Not authorized — re-pair the device or check credentials."
         case .notPaired:
             errorMessage = "Pair this device before sending."
+        case .clientSideNeeded:
+            errorMessage = "This account's PGP key is end-to-end protected, so signing and encryption aren't available on mobile. Send without them, or use webmail."
         case .failure(let message):
             errorMessage = message
         }

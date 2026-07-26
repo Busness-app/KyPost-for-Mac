@@ -422,6 +422,53 @@ private func makeOutgoing(
     }
 }
 
+// MARK: - Client-side-needed send refusal
+
+@Suite struct ClientSideNeededTests {
+    @Test func recognizesTheRelaysClientSideNeededConflict() {
+        #expect(RelayMailSource.isClientSideNeeded(
+            conflictBody: #"{"error":"end-to-end protected","clientSideNeeded":true}"#
+        ))
+    }
+
+    @Test func otherConflictsAreNotClientSideNeeded() {
+        #expect(RelayMailSource.isClientSideNeeded(conflictBody: #"{"error":"duplicate"}"#) == false)
+        #expect(RelayMailSource.isClientSideNeeded(conflictBody: #"{"clientSideNeeded":false}"#) == false)
+        #expect(RelayMailSource.isClientSideNeeded(conflictBody: "") == false)
+        #expect(RelayMailSource.isClientSideNeeded(conflictBody: "not json") == false)
+    }
+
+    @Test func sendMapsTheConflictToItsOwnOutcome() async {
+        let source = RelayMailSource(
+            httpClient: stubClient(status: 409, json: #"{"clientSideNeeded":true}"#),
+            serverUrl: "https://relay.example.com",
+            auth: auth
+        )
+        var outcome: MailOutcome = .success
+        do {
+            try await source.send(email: makeOutgoing())
+        } catch {
+            outcome = MailOutcome.from(error)
+        }
+        #expect(outcome == .clientSideNeeded)
+    }
+
+    @Test func anUnrelatedConflictStaysAGenericFailure() async {
+        let source = RelayMailSource(
+            httpClient: stubClient(status: 409, json: #"{"error":"duplicate"}"#),
+            serverUrl: "https://relay.example.com",
+            auth: auth
+        )
+        var outcome: MailOutcome = .success
+        do {
+            try await source.send(email: makeOutgoing())
+        } catch {
+            outcome = MailOutcome.from(error)
+        }
+        #expect(outcome != .clientSideNeeded)
+    }
+}
+
 // MARK: - Keyword tabs
 
 @Suite struct KeywordRepositoryTests {

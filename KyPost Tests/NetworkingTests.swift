@@ -152,7 +152,11 @@ private let validPairingLink = URL(
         #expect(NetworkError.from(statusCode: 204) == nil)
         #expect(NetworkError.from(statusCode: 401) == .unauthorized)
         #expect(NetworkError.from(statusCode: 403) == .unauthorized)
-        #expect(NetworkError.from(statusCode: 409) == .conflict)
+        #expect(NetworkError.from(statusCode: 409) == .conflict(body: ""))
+        #expect(
+            NetworkError.from(statusCode: 409, body: Data(#"{"clientSideNeeded":true}"#.utf8))
+                == .conflict(body: #"{"clientSideNeeded":true}"#)
+        )
         #expect(NetworkError.from(statusCode: 503) == .serviceUnavailable)
         #expect(NetworkError.from(statusCode: 500) == .server(statusCode: 500))
     }

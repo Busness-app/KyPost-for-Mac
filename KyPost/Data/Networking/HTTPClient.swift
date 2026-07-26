@@ -15,7 +15,7 @@ enum NetworkError: Error, Equatable {
     /// 401/403 — pairing credentials rejected; prompt re-scan (spec §3).
     case unauthorized
     /// 409 — backend rejected the request state (e.g. expired MFA challenge).
-    case conflict
+    case conflict(body: String)
     /// 429 — rate limited (e.g. too many desktop pairing attempts); wait, then retry.
     case rateLimited
     /// 503 — backend config issue; persistent error, cannot retry (spec §3).
@@ -24,12 +24,14 @@ enum NetworkError: Error, Equatable {
     case transport(description: String)
     case decoding(description: String)
 
-    /// Maps a non-2xx HTTP status to its error. 2xx returns nil.
-    static func from(statusCode: Int) -> NetworkError? {
+    /// Maps a non-2xx HTTP status to its error. 2xx returns nil. `body` is
+    /// retained only for 409, where the relay distinguishes a client-protected
+    /// send refusal from an ordinary conflict by its payload.
+    static func from(statusCode: Int, body: Data = Data()) -> NetworkError? {
         switch statusCode {
         case 200..<300: nil
         case 401, 403: .unauthorized
-        case 409: .conflict
+        case 409: .conflict(body: String(decoding: body, as: UTF8.self))
         case 429: .rateLimited
         case 503: .serviceUnavailable
         default: .server(statusCode: statusCode)
@@ -139,7 +141,7 @@ final class HTTPClient: Sendable {
         guard let http = response as? HTTPURLResponse else {
             throw NetworkError.transport(description: "Non-HTTP response")
         }
-        if let error = NetworkError.from(statusCode: http.statusCode) {
+        if let error = NetworkError.from(statusCode: http.statusCode, body: data) {
             throw error
         }
         return data

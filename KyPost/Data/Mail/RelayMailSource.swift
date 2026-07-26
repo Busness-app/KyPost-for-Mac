@@ -351,12 +351,27 @@ final class RelayMailSource: MailSource {
     }
 
     func send(email: OutgoingEmail) async throws {
-        _ = try await httpClient.post(
-            RelaySendResponse.self,
-            url: try endpoint("api/mail/send"),
-            headers: auth.headerFields,
-            jsonBody: RelaySendRequest(from: email)
-        )
+        do {
+            _ = try await httpClient.post(
+                RelaySendResponse.self,
+                url: try endpoint("api/mail/send"),
+                headers: auth.headerFields,
+                jsonBody: RelaySendRequest(from: email)
+            )
+        } catch NetworkError.conflict(let body) where Self.isClientSideNeeded(conflictBody: body) {
+            throw MailSourceError.clientSideNeeded
+        }
+    }
+
+    /// Whether a relay 409 body is the client-protected send refusal rather
+    /// than an ordinary conflict. Pure so it is testable without a transport;
+    /// the relay-specific knowledge stays here rather than in HTTPClient.
+    static func isClientSideNeeded(conflictBody: String) -> Bool {
+        struct ConflictDTO: Decodable { var clientSideNeeded: Bool? }
+        guard let data = conflictBody.data(using: .utf8),
+              let dto = try? JSONDecoder().decode(ConflictDTO.self, from: data)
+        else { return false }
+        return dto.clientSideNeeded == true
     }
 
     // MARK: - Private

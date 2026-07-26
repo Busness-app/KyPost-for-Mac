@@ -55,7 +55,7 @@ final class MfaResponseClient: Sendable {
                 jsonBody: RespondRequest(challengeId: challengeId, approve: approved)
             )
             return .success
-        } catch NetworkError.unauthorized, NetworkError.conflict {
+        } catch NetworkError.unauthorized, NetworkError.conflict(_) {
             return .rejected
         } catch {
             return .failure("\(error)")

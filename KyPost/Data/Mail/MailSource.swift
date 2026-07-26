@@ -47,6 +47,10 @@ enum MailSourceError: Error, Equatable {
     /// The relay has no endpoint for this operation (e.g. server-side search).
     case unsupported
     case invalidServerURL
+    /// Relay 409 + clientSideNeeded: a client-protected account asked the
+    /// server to sign or encrypt and it refused rather than silently sending
+    /// in the clear.
+    case clientSideNeeded
 }
 
 /// User-facing result of a mail operation (spec §11 relay response mapping).
@@ -58,6 +62,9 @@ enum MailOutcome: Equatable, Sendable {
     case unauthorized
     case notPaired
     case failure(String)
+    /// The account's PGP key is end-to-end protected; the server will not sign
+    /// or encrypt on its behalf and this app holds no private key.
+    case clientSideNeeded
 
     static func from(_ error: Error) -> MailOutcome {
         switch error {
@@ -65,6 +72,8 @@ enum MailOutcome: Equatable, Sendable {
             .unauthorized
         case MailSourceError.notPaired:
             .notPaired
+        case MailSourceError.clientSideNeeded:
+            .clientSideNeeded
         default:
             .failure("\(error)")
         }
