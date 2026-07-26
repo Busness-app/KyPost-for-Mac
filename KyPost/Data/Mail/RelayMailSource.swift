@@ -49,6 +49,10 @@ struct RelayEmailDTO: Decodable, Equatable, Sendable {
     var bcc: String?
     var subject: String?
     /// Nil (not "") on delta "updated" entries whose body was omitted.
+    /// Delta v2 hazard: `toDomain` collapses this to "" , so a body-less
+    /// "updated" row for a server-decrypted message would evaluate to
+    /// `.clientProtected` and send the user to webmail. Carry nil through as a
+    /// distinct "unknown" before enabling delta fetches.
     var body: String?
     var label: String?
     /// "unread" unless the server says otherwise.

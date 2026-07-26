@@ -15,7 +15,7 @@
 
 import Foundation
 
-enum PgpMessageState: Equatable, Sendable {
+nonisolated enum PgpMessageState: Equatable, Sendable {
     /// No OpenPGP content: render normally.
     case none
 
@@ -38,7 +38,7 @@ enum PgpMessageState: Equatable, Sendable {
 /// body, because the server populates the error and leaves the body empty —
 /// reading that as `.clientProtected` would tell the user to go to webmail for
 /// a message that will fail there too, for a reason we were already told.
-func pgpMessageState(
+nonisolated func pgpMessageState(
     pgpEncrypted: Bool,
     pgpDecryptError: String,
     body: String?
@@ -56,7 +56,7 @@ func pgpMessageState(
 /// normally, so a marker there would sit on most rows of a server-mode mailbox
 /// carrying nothing the user can act on — and the detail view already discloses
 /// that the server decrypted it.
-func pgpRowSymbol(_ state: PgpMessageState) -> String? {
+nonisolated func pgpRowSymbol(_ state: PgpMessageState) -> String? {
     switch state {
     case .clientProtected: "lock.fill"
     case .decryptFailed: "exclamationmark.triangle.fill"
@@ -65,7 +65,7 @@ func pgpRowSymbol(_ state: PgpMessageState) -> String? {
 }
 
 /// Spelled-out row label for VoiceOver, or nil when the row carries no marker.
-func pgpRowAccessibilityLabel(state: PgpMessageState, subject: String) -> String? {
+nonisolated func pgpRowAccessibilityLabel(state: PgpMessageState, subject: String) -> String? {
     switch state {
     case .clientProtected: "Encrypted, can't be read in this app: \(subject)"
     case .decryptFailed: "Encrypted, couldn't be decrypted: \(subject)"
@@ -81,7 +81,7 @@ func pgpRowAccessibilityLabel(state: PgpMessageState, subject: String) -> String
 /// verified" would assert something we have no basis for. The web client can
 /// fall back to a local decrypt for this (frontend ReadPage.tsx); this app
 /// cannot, and never will.
-func showsSignaturePill(state: PgpMessageState, signed: Bool) -> Bool {
+nonisolated func showsSignaturePill(state: PgpMessageState, signed: Bool) -> Bool {
     state == .decryptedByServer && signed
 }
 
@@ -92,7 +92,7 @@ func showsSignaturePill(state: PgpMessageState, signed: Bool) -> Bool {
 /// matching the links the web app builds for itself. Returns nil when
 /// `serverUrl` isn't a usable absolute URL, which callers render as "no button"
 /// rather than a dead one.
-func webmailMessageURL(serverUrl: String, mailbox: String, messageId: String) -> URL? {
+nonisolated func webmailMessageURL(serverUrl: String, mailbox: String, messageId: String) -> URL? {
     guard !messageId.isBlank else { return nil }
     let trimmed = serverUrl.trimmingCharacters(in: .whitespaces)
     let base = trimmed.hasSuffix("/") ? String(trimmed.dropLast()) : trimmed

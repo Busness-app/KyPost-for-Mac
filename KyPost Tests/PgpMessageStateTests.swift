@@ -129,7 +129,7 @@ import Testing
         #expect(url.absoluteString == "https://mail.example.com/read?mailbox=Junk&message=7")
     }
 
-    @Test func subfolderPathIsPercentEncoded() throws {
+    @Test func subfolderPathKeepsItsSlash() throws {
         let url = try #require(webmailMessageURL(
             serverUrl: "https://mail.example.com",
             mailbox: "Archive/Receipts",

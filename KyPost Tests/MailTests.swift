@@ -459,9 +459,10 @@ private func makeOutgoing(
             serverUrl: "https://relay.example.com",
             auth: auth
         )
-        var outcome: MailOutcome = .success
+        var outcome: MailOutcome = .clientSideNeeded          // must be overwritten
         do {
             try await source.send(email: makeOutgoing())
+            Issue.record("a 409 should still throw")
         } catch {
             outcome = MailOutcome.from(error)
         }
