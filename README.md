@@ -18,6 +18,7 @@ The app talks only to the relay backend — there is no direct IMAP/SMTP. You pa
 - **Contact sync** — two-way sync with the relay, with local-first edits and conflict-safe reconciliation. Contacts carry the full extended schema: groups, photo, IM/social handles, websites, relations, extra dates, phonetic names, department, custom fields, pronouns, and a PGP public key.
 - **PGP key exchange via QR** — share your public key in person. *My QR Code* renders a short-lived (2 min) pickup link; *Scan to add contact key* reads someone else's, shows their fingerprint for out-of-band confirmation, and saves the key to a contact. iOS scans with the camera (paste as a fallback); macOS pastes the link (no VisionKit scanner).
 - **Encryption state on every message** — messages the server decrypted say so, so you can tell it read your mail; messages your browser alone can open say that too, and link out to webmail. This app holds no PGP private key by design (see the server's `docs/E2E_PGP.md`).
+- **Encrypted and signed send** — for accounts whose key the server holds, Encrypt/Sign travel with the message and the relay does the OpenPGP work. When a recipient has no usable key the relay refuses first and asks: confirming mails them a one-time link and stores that message's plaintext on your server for up to 7 days, named recipients and all. Accounts whose key only the browser can unwrap can't encrypt from here at all — the draft is saved server-side and webmail takes over.
 - **15 themes** — palettes shared verbatim with the web and Android apps; default is **Patina Ky**.
 
 ## Requirements
@@ -59,6 +60,9 @@ The relay endpoints and payload shapes are defined by the Android reference repo
 - `GET /api/inbox/folders?parent=` — folder listing (full paths, e.g. `INBOX/Receipts`)
 - `POST /api/inbox/actions` — bulk read/archive/spam/delete/move
 - `POST /api/mail/send` — comma-joined recipient strings
+- `POST /api/mail/draft` — save a draft (same body shape as send, no PGP flags)
+- `GET /api/pgp/bootstrap` — this account's key custody (`hasIdentity`, `protection`)
+- `POST /api/pgp/recipients/check` — contacts-only recipient key preflight (never `/resolve`)
 - `GET/POST /api/contacts/sync` — cursor-based contact sync
 - `GET /api/pgp/qr/token` — mint a 2-minute PGP key-pickup token/URL (pairing-auth `sub`/`hash`)
 - `GET /api/pgp/qr/key?t=` — fetch a scanned public key + fingerprint (token is the credential)
@@ -81,10 +85,10 @@ Network-facing tests run against a stubbed `HTTPClient` — no backend needed.
 - Attachments (compose and viewing)
 - Mail cursor/delta sync — every refresh is a full folder snapshot
 - Read/archive/delete actions from the reader (move-via-drag exists on macOS)
-- Drafts saved to the server
+- Draft saving from compose — the PGP webmail handoff saves one server-side, but there's no Save Draft button and no auto-save
 - Server-side search (search runs against the local cache)
 - QR scanning via camera on macOS — pairing and PGP-key links must be pasted (camera scanning works on iOS)
 
 ## License
 
-GPL-2.0 — see [LICENSE.txt](LICENSE.txt).
+GPL-3.0 — see [LICENSE.txt](LICENSE.txt).

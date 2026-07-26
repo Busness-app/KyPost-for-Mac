@@ -67,6 +67,32 @@ Domain.
   verdict about anything. The "Open in webmail" link goes through
   `@Environment(\.openURL)` and must never be routed into an in-app WebView
   (kypost-server `docs/E2E_PGP.md` requirement 5).
+- Encrypted send is decided by key custody, not by hope.
+  `Domain/Models/PgpKeyCustody.swift` maps `/api/pgp/bootstrap` to
+  `serverHeld` / `clientHeld` / `noIdentity`, and anything unrecognised
+  degrades to `clientHeld`. Compose shows Encrypt/Sign **only** for
+  `serverHeld`; `clientHeld` gets the webmail handoff (save a draft, then
+  `openURL` — same rule as the reader's webmail link, above, never an in-app
+  WebView), and `.noIdentity` or a nil custody shows nothing at all.
+- **The keyless-recipient confirmation copy is contract.** It lives in
+  `ComposeViewModel.pickupConfirmationMessage`, verbatim from
+  `Client_Encrypted_Send.md`, and must name every address, say the plaintext
+  sits on the server for up to 7 days, and default to Cancel. Every pickup
+  link this app can cause is the server-readable kind; softening the wording
+  defeats the opt-in.
+- **The pickup opt-in is per message and never remembered.** `encrypt`, `sign`
+  and `allowPickupFallback` live on the view model and die with the window.
+  Do not persist them to `ComposeDraft`, `UserDefaults`, or the keychain.
+- **A keyless 409 re-send must reuse the refused `OutgoingEmail`**
+  (`PendingPickup.email`), flipping only `allowPickupFallback`. Rebuilding from
+  live compose state risks a subtly different message; re-running the preflight
+  wastes a round trip on a question the 409 already answered.
+- **The preflight is a lower bound.** `/api/pgp/recipients/check` searches only
+  the user's contacts, while the send path also runs WKD and keyserver
+  discovery. Word it "no key on file", never "this will be sent in the clear".
+- **A relay `warning` on a 200 means the message was sent.** Show it as a
+  notice, keep the window open, and leave Send disabled (`isSent`) — a retry
+  duplicates the message. Never pattern-match the warning's wording.
 
 ## Work Guidance
 
