@@ -57,6 +57,14 @@ struct RelayEmailDTO: Decodable, Equatable, Sendable {
     var atUtc: String?
     /// "new" or "updated"; only present when the response has delta=true.
     var changeType: String?
+    /// OpenPGP state, all omitempty server-side — absent means "no OpenPGP
+    /// content", so these defaults are the contract, not an unknown state.
+    /// See kypost-server/docs/E2E_PGP.md.
+    var pgpEncrypted: Bool?
+    var pgpSigned: Bool?
+    var pgpVerified: Bool?
+    var pgpSignerFingerprint: String?
+    var pgpDecryptError: String?
 
     func toDomain(folder: String, tab: String) -> Email {
         let (name, address) = Self.splitSender(sender ?? "")
@@ -73,7 +81,12 @@ struct RelayEmailDTO: Decodable, Equatable, Sendable {
             keywords: keyword.isEmpty ? [] : [keyword],
             receivedAt: Self.parseUtc(atUtc) ?? Date(),
             read: (status ?? "unread").lowercased() != "unread",
-            starred: false
+            starred: false,
+            pgpEncrypted: pgpEncrypted ?? false,
+            pgpSigned: pgpSigned ?? false,
+            pgpVerified: pgpVerified ?? false,
+            pgpSignerFingerprint: pgpSignerFingerprint ?? "",
+            pgpDecryptError: pgpDecryptError ?? ""
         )
     }
 

@@ -24,6 +24,16 @@ struct Email: Identifiable, Hashable, Sendable {
     var receivedAt: Date
     var read: Bool
     var starred: Bool
+    /// Relay OpenPGP state. Defaults are the wire contract for a message with
+    /// no OpenPGP content — see PgpMessageState.swift for what they mean
+    /// together.
+    var pgpEncrypted: Bool = false
+    var pgpSigned: Bool = false
+    var pgpVerified: Bool = false
+    /// Stored but not rendered — displaying it usefully means comparing it
+    /// against a contact's saved key, which belongs with the contacts work.
+    var pgpSignerFingerprint: String = ""
+    var pgpDecryptError: String = ""
 
     var id: String { serverId }
 }

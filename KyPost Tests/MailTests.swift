@@ -547,3 +547,67 @@ private func makeOutgoing(
         #expect(!SendEmailUseCase.looksLikeEmailAddress("a@@b.co"))
     }
 }
+
+// MARK: - PGP field wire contract
+
+@Suite struct RelayEmailPgpFieldTests {
+    /// The server marks all five pgp* fields omitempty, so absent means "no
+    /// OpenPGP content" — the decoded defaults ARE the contract, not an
+    /// unknown state.
+    @Test func absentPgpFieldsDecodeToFalseAndEmpty() throws {
+        let json = """
+        {"messageId":"1","sender":"a@x.com","subject":"Hi","body":"Hello"}
+        """
+        let dto = try JSONDecoder().decode(RelayEmailDTO.self, from: Data(json.utf8))
+        let email = dto.toDomain(folder: "INBOX", tab: "")
+
+        #expect(email.pgpEncrypted == false)
+        #expect(email.pgpSigned == false)
+        #expect(email.pgpVerified == false)
+        #expect(email.pgpSignerFingerprint == "")
+        #expect(email.pgpDecryptError == "")
+    }
+
+    @Test func presentPgpFieldsAreCarriedIntoTheDomainModel() throws {
+        let json = """
+        {"messageId":"2","subject":"Secret","body":"",
+         "pgpEncrypted":true,"pgpSigned":true,"pgpVerified":false,
+         "pgpSignerFingerprint":"ABCD1234","pgpDecryptError":"no key"}
+        """
+        let dto = try JSONDecoder().decode(RelayEmailDTO.self, from: Data(json.utf8))
+        let email = dto.toDomain(folder: "INBOX", tab: "")
+
+        #expect(email.pgpEncrypted)
+        #expect(email.pgpSigned)
+        #expect(email.pgpVerified == false)
+        #expect(email.pgpSignerFingerprint == "ABCD1234")
+        #expect(email.pgpDecryptError == "no key")
+    }
+
+    @Test func pgpFieldsSurviveTheRoundTripThroughPersistence() {
+        let email = Email(
+            serverId: "3",
+            folder: "INBOX",
+            senderName: "S",
+            senderEmail: "s@example.com",
+            subject: "Subject",
+            body: "",
+            keywords: [],
+            receivedAt: Date(),
+            read: false,
+            starred: false,
+            pgpEncrypted: true,
+            pgpSigned: true,
+            pgpVerified: true,
+            pgpSignerFingerprint: "FEED",
+            pgpDecryptError: ""
+        )
+        let restored = EmailEntity(from: email).toDomain
+
+        #expect(restored.pgpEncrypted)
+        #expect(restored.pgpSigned)
+        #expect(restored.pgpVerified)
+        #expect(restored.pgpSignerFingerprint == "FEED")
+        #expect(restored.pgpDecryptError == "")
+    }
+}
