@@ -6,6 +6,11 @@
 //  auto-save. The body is rich text: formatted drafts send as mode:"html"
 //  (RichTextHTML), unformatted ones stay mode:"plain".
 //
+//  Also owns the encrypted-send flow (Client_Encrypted_Send.md): the per-message
+//  encrypt/sign opt-in, the advisory keyless preflight, the one-time-link
+//  confirmation and its byte-identical re-send, and the client-custody webmail
+//  handoff. None of the PGP flags are ever persisted.
+//
 
 import Foundation
 import Observation
@@ -34,11 +39,23 @@ nonisolated enum RecipientField: Hashable, CaseIterable, Sendable {
     }
 }
 
+/// A send the relay refused because some recipients have no usable key.
+///
+/// Holds the exact `OutgoingEmail` that was refused: the re-send must be
+/// byte-identical apart from `allowPickupFallback`, so nothing is rebuilt from
+/// live compose state (Client_Encrypted_Send.md "Required behavior" 5).
+struct PendingPickup: Identifiable {
+    let id = UUID()
+    var addresses: [String]
+    var email: OutgoingEmail
+}
+
 @Observable
 @MainActor
 final class ComposeViewModel {
     private let sendEmail: SendEmailUseCase
     private let contacts: ContactsViewModel
+    private let pgp: PgpSendService
     private let debounceInterval: Duration
 
     var to: [RecipientToken] = []
@@ -63,6 +80,29 @@ final class ComposeViewModel {
     private(set) var errorMessage: String?
     private(set) var didSend = false
 
+    /// PGP send flags. Fresh per compose window, and `allowPickupFallback` is
+    /// never stored anywhere: the one-time-link opt-in is per message by
+    /// design, and a remembered "always allow" was a specific review finding.
+    var encrypt = false
+    var sign = false
+
+    /// Addresses the contacts-only preflight found no key for. A warning, not
+    /// a prediction — the send path also runs WKD/keyserver discovery.
+    private(set) var keylessWarning: [String] = []
+    /// Set when the relay refused a send for keyless recipients; drives the
+    /// confirmation dialog.
+    private(set) var pendingPickup: PendingPickup?
+    /// A non-failure notice: the relay's partial-success `warning`, or the
+    /// webmail-handoff explanation.
+    private(set) var noticeMessage: String?
+    /// The message went out (or was handed off). Send stays disabled — a retry
+    /// would duplicate it — but the window stays open so the notice is readable.
+    private(set) var isSent = false
+    /// Webmail URL for the view to open through `@Environment(\.openURL)`.
+    /// Never route this into a WKWebView: it shares no session and would put
+    /// an account-password field inside this app.
+    private(set) var webmailHandoffURL: URL?
+
     private var searchTask: Task<Void, Never>?
     private var toastTask: Task<Void, Never>?
 
@@ -70,11 +110,13 @@ final class ComposeViewModel {
     init(
         sendEmail: SendEmailUseCase,
         contacts: ContactsViewModel,
+        pgp: PgpSendService,
         draft: ComposeDraft? = nil,
         debounceInterval: Duration = .milliseconds(150)
     ) {
         self.sendEmail = sendEmail
         self.contacts = contacts
+        self.pgp = pgp
         self.debounceInterval = debounceInterval
         if let draft {
             to = tokens(from: draft.to)
@@ -94,6 +136,65 @@ final class ComposeViewModel {
     /// asks for them itself.
     func loadContactsIfNeeded() async {
         await contacts.loadIfNeeded()
+    }
+
+    // MARK: - PGP
+
+    /// Nil means "not known yet": compose offers no PGP controls rather than
+    /// one that might lie.
+    var pgpCustody: PgpKeyCustody? { pgp.custody }
+
+    func loadPgpIdentityIfNeeded() async {
+        await pgp.loadIfNeeded()
+    }
+
+    /// Inline, non-blocking warning text, worded as "no key on file" — never as
+    /// a promise that a plaintext link will be sent, because the send path's
+    /// discovery ladder may still find a key.
+    var keylessWarningText: String? {
+        guard !keylessWarning.isEmpty else { return nil }
+        let names = keylessWarning.joined(separator: ", ")
+        return "We don't have a PGP key on file for \(names). We'll still look one up when sending."
+    }
+
+    /// Verbatim from Client_Encrypted_Send.md — the wording carries the
+    /// security property. Names every address; never "some recipients".
+    var pickupConfirmationMessage: String {
+        let names = (pendingPickup?.addresses ?? []).joined(separator: ", ")
+        return """
+        We don't have a PGP key for \(names). They'll get an email with a one-time link instead.
+
+        To make that work, this message's contents are stored on your KyPost server — unencrypted — for up to 7 days or until the link is opened. Everyone else on this message still gets it encrypted.
+        """
+    }
+
+    /// Confirmed the one-time-link fallback: re-sends the refused request,
+    /// byte-identical apart from the flag. No preflight, no rebuild.
+    func confirmPickupFallback() async {
+        guard var email = pendingPickup?.email else { return }
+        pendingPickup = nil
+        email.allowPickupFallback = true
+        await deliver(email)
+    }
+
+    func cancelPickupFallback() {
+        pendingPickup = nil
+    }
+
+    /// Client-custody account: the key exists only in the user's browser, so
+    /// save the composed message as a server-side draft and send them there.
+    func handOffToWebmail(fontTraits: @escaping RichTextHTML.FontTraits) async {
+        guard !isSending, !isSent else { return }
+        for field in RecipientField.allCases where !commitPendingInput(for: field) {
+            return
+        }
+        await handOff(draft: outgoingEmail(fontTraits: fontTraits))
+    }
+
+    /// Called by the view once it has opened `webmailHandoffURL`, so a redraw
+    /// can't reopen the browser.
+    func didOpenWebmail() {
+        webmailHandoffURL = nil
     }
 
     // MARK: - Recipients
@@ -311,17 +412,28 @@ final class ComposeViewModel {
     /// Sends the draft. `fontTraits` resolves bold/italic on body runs (from
     /// the view's font resolution context) so formatted text goes out as HTML.
     func send(fontTraits: @escaping RichTextHTML.FontTraits) async {
-        guard !isSending else { return }
+        guard !isSending, !isSent else { return }
         // A recipient typed but not committed is still a recipient the user
         // means to mail. Bail on invalid text rather than dropping it.
         for field in RecipientField.allCases where !commitPendingInput(for: field) {
             return
         }
-        isSending = true
-        defer { isSending = false }
+        let email = outgoingEmail(fontTraits: fontTraits)
+        if encrypt {
+            keylessWarning = await pgp.keylessRecipients(
+                among: email.to + email.cc + email.bcc
+            )
+        }
+        await deliver(email)
+    }
 
+    /// Builds the request once. `send` and the pickup re-send share the same
+    /// value: rebuilding risks a subtly different message.
+    private func outgoingEmail(
+        fontTraits: @escaping RichTextHTML.FontTraits
+    ) -> OutgoingEmail {
         let isHTML = RichTextHTML.hasFormatting(body, fontTraits: fontTraits)
-        let outcome = await sendEmail(OutgoingEmail(
+        return OutgoingEmail(
             to: to.map(\.address),
             cc: cc.map(\.address),
             bcc: bcc.map(\.address),
@@ -332,31 +444,87 @@ final class ComposeViewModel {
             mode: isHTML ? "html" : "plain",
             attachments: attachments.map {
                 OutgoingAttachment(name: $0.name, mimeType: $0.mimeType, data: $0.data)
-            }
-        ))
-        switch outcome {
+            },
+            encrypt: encrypt,
+            sign: sign
+        )
+    }
+
+    private func deliver(_ email: OutgoingEmail) async {
+        isSending = true
+        defer { isSending = false }
+
+        switch await sendEmail(email) {
         case .success:
             didSend = true
             errorMessage = nil
+        case .sentWithWarning(let warning):
+            // Sent. Keep the window open so the notice is readable, and leave
+            // Send disabled: a retry would duplicate the message.
+            isSent = true
+            errorMessage = nil
+            noticeMessage = warning
+        case .keylessRecipients(let addresses, let pickupFallbackAvailable):
+            guard pickupFallbackAvailable else {
+                errorMessage = """
+                No usable PGP key for \(addresses.joined(separator: ", ")), and this server \
+                doesn't offer one-time links. Remove them, or turn Encrypt off to send in the clear.
+                """
+                return
+            }
+            pendingPickup = PendingPickup(addresses: addresses, email: email)
+            errorMessage = nil
+        case .clientSideNeeded:
+            // The account's key is held only by the browser. Nothing this
+            // client retries can fix it, so hand off.
+            await handOff(draft: email)
         case .invalid(let message):
             errorMessage = message
         case .unauthorized:
             errorMessage = "Not authorized — re-pair the device or check credentials."
         case .notPaired:
             errorMessage = "Pair this device before sending."
-        case .clientSideNeeded:
-            errorMessage = "This account's PGP key is end-to-end protected, so signing and encryption aren't available on mobile. Send without them, or use webmail."
-        // Task 7 placeholder: a warning means the send succeeded, so surfacing
-        // it as errorMessage (and not setting didSend) is a stopgap, not the
-        // final behavior.
-        case .sentWithWarning(let warning):
-            errorMessage = warning
-        // Task 7 placeholder: the real flow re-sends with allowPickupFallback
-        // after the user confirms; this stopgap only surfaces the refusal.
-        case .keylessRecipients:
-            errorMessage = "Some recipients have no usable key."
         case .failure(let message):
             errorMessage = message
+        }
+    }
+
+    /// Saves the message as a server-side draft and points the view at
+    /// webmail's Drafts view, where the browser holds the key.
+    private func handOff(draft: OutgoingEmail) async {
+        var draft = draft
+        // A draft has no PGP semantics; RelaySendRequest drops the flags, but
+        // keep the value honest for anything that inspects it later.
+        draft.encrypt = false
+        draft.sign = false
+        draft.allowPickupFallback = false
+
+        switch await sendEmail.saveDraft(draft) {
+        case .success, .sentWithWarning:
+            isSent = true
+            errorMessage = nil
+            guard let url = sendEmail.webmailDraftsURL else {
+                noticeMessage = """
+                This account's PGP key is held only by your browser, so it has to sign and \
+                encrypt there. We saved this message to Drafts — couldn't work out this \
+                server's web address, so open Drafts in your browser to finish sending it.
+                """
+                return
+            }
+            noticeMessage = """
+            This account's PGP key is held only by your browser, so it has to sign and encrypt \
+            there. We saved this message to Drafts and opened webmail to finish sending it.
+            """
+            webmailHandoffURL = url
+        case .unauthorized:
+            errorMessage = "Not authorized — re-pair the device or check credentials."
+        case .notPaired:
+            errorMessage = "Pair this device before sending."
+        case .invalid(let message), .failure(let message):
+            errorMessage = "Couldn't save this as a draft: \(message)"
+        case .clientSideNeeded, .keylessRecipients:
+            // A draft carries no PGP flags, so neither refusal is reachable.
+            errorMessage = "Couldn't save this as a draft."
         }
     }
 }

@@ -45,6 +45,7 @@ struct ComposeView: View {
         _viewModel = State(initialValue: ComposeViewModel(
             sendEmail: SingletonGraph.shared.sendEmailUseCase,
             contacts: SingletonGraph.shared.contactsViewModel,
+            pgp: SingletonGraph.shared.pgpSendService,
             draft: draft
         ))
     }

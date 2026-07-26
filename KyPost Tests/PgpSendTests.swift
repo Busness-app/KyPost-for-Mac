@@ -207,3 +207,312 @@ import Testing
         #expect(calls.value == 0)
     }
 }
+
+// MARK: - Compose: encrypted send flow
+
+/// Answers by URL path, so one stub can serve a compose flow that hits
+/// bootstrap, the preflight, and two sends. `sends` and `drafts` record every
+/// body posted to /api/mail/send and /api/mail/draft in order.
+@MainActor
+private final class ComposeStub {
+    let sends = Box<[String]>([])
+    let drafts = Box<[String]>([])
+    private let bootstrap: String
+    private let check: String
+    private let sendResponses: [(status: Int, json: String)]
+    private let sendIndex = Box(0)
+
+    init(
+        bootstrap: String = #"{"hasIdentity":true,"protection":"server"}"#,
+        check: String = #"{"results":[]}"#,
+        sendResponses: [(status: Int, json: String)] = [(200, #"{"ok":true,"sentSaved":true}"#)]
+    ) {
+        self.bootstrap = bootstrap
+        self.check = check
+        self.sendResponses = sendResponses
+    }
+
+    func makeClient() -> HTTPClient {
+        let sends = sends
+        let drafts = drafts
+        let sendIndex = sendIndex
+        let bootstrap = bootstrap
+        let check = check
+        let sendResponses = sendResponses
+        return HTTPClient { request in
+            let path = request.url?.path ?? ""
+            let body = request.httpBody.map { String(decoding: $0, as: UTF8.self) } ?? ""
+            var status = 200
+            var json = "{}"
+            switch path {
+            case "/api/pgp/bootstrap":
+                json = bootstrap
+            case "/api/pgp/recipients/check":
+                json = check
+            case "/api/mail/draft":
+                drafts.mutate { $0.append(body) }
+                json = #"{"ok":true}"#
+            case "/api/mail/send":
+                sends.mutate { $0.append(body) }
+                var current = 0
+                sendIndex.mutate {
+                    current = min($0, sendResponses.count - 1)
+                    $0 = current + 1
+                }
+                status = sendResponses[current].status
+                json = sendResponses[current].json
+            default:
+                json = "{}"
+            }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: status,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (Data(json.utf8), response)
+        }
+    }
+}
+
+@MainActor
+private func makeCompose(
+    stub: ComposeStub,
+    paired: Bool = true
+) throws -> ComposeViewModel {
+    let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+    let pairingStore = try makePairedStore(paired: paired)
+    let db = try AppDatabase(inMemory: true)
+    let client = stub.makeClient()
+    let contacts = ContactsViewModel(repository: ContactSyncRepository(
+        client: ContactSyncClient(httpClient: client),
+        contactDAO: ContactDAO(modelContainer: db.container),
+        cursorStore: ContactCursorStore(defaults: defaults),
+        pendingDeletesStore: ContactPendingDeletesStore(defaults: defaults),
+        securePairingStore: pairingStore
+    ))
+    let mailRepository = MailRepository(
+        securePairingStore: pairingStore,
+        emailDAO: EmailDAO(modelContainer: db.container),
+        httpClient: client
+    )
+    return ComposeViewModel(
+        sendEmail: SendEmailUseCase(repository: mailRepository),
+        contacts: contacts,
+        pgp: PgpSendService(
+            client: PgpSendClient(httpClient: client),
+            securePairingStore: pairingStore
+        ),
+        debounceInterval: .zero
+    )
+}
+
+private let noTraits: RichTextHTML.FontTraits = { _ in (false, false) }
+
+@Suite @MainActor struct ComposeEncryptedSendTests {
+    @Test func encryptAndSignTravelOnTheSendBody() async throws {
+        let stub = ComposeStub()
+        let compose = try makeCompose(stub: stub)
+        compose.toInput = "alice@example.com"
+        compose.encrypt = true
+        compose.sign = true
+
+        await compose.send(fontTraits: noTraits)
+
+        #expect(compose.didSend)
+        #expect(stub.sends.value.count == 1)
+        #expect(stub.sends.value[0].contains(#""encrypt":true"#))
+        #expect(stub.sends.value[0].contains(#""sign":true"#))
+        // The first send never volunteers consent.
+        #expect(!stub.sends.value[0].contains("allowPickupFallback"))
+    }
+
+    @Test func theKeylessPreflightWarnsWithoutBlocking() async throws {
+        let stub = ComposeStub(
+            check: #"{"results":[{"address":"bob@example.com","hasKey":false}]}"#
+        )
+        let compose = try makeCompose(stub: stub)
+        compose.toInput = "bob@example.com"
+        compose.encrypt = true
+
+        await compose.send(fontTraits: noTraits)
+
+        #expect(compose.keylessWarning == ["bob@example.com"])
+        // Warned, and sent anyway: the preflight is contacts-only, so the send
+        // path's WKD/keyserver discovery may still find a key.
+        #expect(stub.sends.value.count == 1)
+        #expect(compose.didSend)
+    }
+
+    @Test func noPreflightWhenEncryptIsOff() async throws {
+        let stub = ComposeStub(
+            check: #"{"results":[{"address":"bob@example.com","hasKey":false}]}"#
+        )
+        let compose = try makeCompose(stub: stub)
+        compose.toInput = "bob@example.com"
+
+        await compose.send(fontTraits: noTraits)
+
+        #expect(compose.keylessWarning.isEmpty)
+        #expect(compose.didSend)
+    }
+
+    @Test func theKeylessConflictAsksBeforeSendingAnyLink() async throws {
+        let conflict = #"{"keylessRecipients":["bob@example.com"],"pickupFallbackAvailable":true}"#
+        let stub = ComposeStub(sendResponses: [(409, conflict)])
+        let compose = try makeCompose(stub: stub)
+        compose.toInput = "bob@example.com"
+        compose.encrypt = true
+
+        await compose.send(fontTraits: noTraits)
+
+        // Nothing was delivered and nothing was auto-confirmed.
+        #expect(!compose.didSend)
+        #expect(compose.pendingPickup?.addresses == ["bob@example.com"])
+        #expect(compose.errorMessage == nil)
+        let message = compose.pickupConfirmationMessage
+        #expect(message.contains("bob@example.com"))
+        #expect(message.contains("one-time link"))
+        #expect(message.contains("unencrypted"))
+        #expect(message.contains("7 days"))
+        #expect(!message.contains("some recipients"))
+    }
+
+    @Test func cancellingSendsNothingMore() async throws {
+        let conflict = #"{"keylessRecipients":["bob@example.com"],"pickupFallbackAvailable":true}"#
+        let stub = ComposeStub(sendResponses: [(409, conflict)])
+        let compose = try makeCompose(stub: stub)
+        compose.toInput = "bob@example.com"
+        compose.encrypt = true
+        await compose.send(fontTraits: noTraits)
+
+        compose.cancelPickupFallback()
+
+        #expect(compose.pendingPickup == nil)
+        #expect(stub.sends.value.count == 1)
+        #expect(!compose.didSend)
+    }
+
+    /// The re-send must be the refused request with one flag flipped — not a
+    /// rebuild, which risks a subtly different message.
+    @Test func confirmingResendsTheIdenticalBodyPlusTheFlag() async throws {
+        let conflict = #"{"keylessRecipients":["bob@example.com"],"pickupFallbackAvailable":true}"#
+        let stub = ComposeStub(sendResponses: [
+            (409, conflict),
+            (200, #"{"ok":true,"sentSaved":true}"#),
+        ])
+        let compose = try makeCompose(stub: stub)
+        compose.toInput = "bob@example.com"
+        compose.subject = "Quarterly"
+        compose.body = AttributedString("plain words")
+        compose.encrypt = true
+        compose.sign = true
+        await compose.send(fontTraits: noTraits)
+
+        await compose.confirmPickupFallback()
+
+        #expect(stub.sends.value.count == 2)
+        let first = stub.sends.value[0]
+        let second = stub.sends.value[1]
+        #expect(second.contains(#""allowPickupFallback":true"#))
+        // Identical apart from the flag.
+        #expect(second.replacingOccurrences(of: #","allowPickupFallback":true"#, with: "") == first)
+        #expect(compose.didSend)
+        #expect(compose.pendingPickup == nil)
+    }
+
+    @Test func aServerWithPickupLinksOffExplainsInsteadOfAsking() async throws {
+        let conflict = #"{"keylessRecipients":["bob@example.com"],"pickupFallbackAvailable":false}"#
+        let stub = ComposeStub(sendResponses: [(409, conflict)])
+        let compose = try makeCompose(stub: stub)
+        compose.toInput = "bob@example.com"
+        compose.encrypt = true
+
+        await compose.send(fontTraits: noTraits)
+
+        #expect(compose.pendingPickup == nil)
+        #expect(compose.errorMessage?.contains("bob@example.com") == true)
+        #expect(!compose.didSend)
+    }
+
+    @Test func aWarningIsShownWithoutOfferingARetry() async throws {
+        let stub = ComposeStub(sendResponses: [
+            (200, #"{"ok":true,"sentSaved":false,"warning":"sent copy not saved"}"#),
+        ])
+        let compose = try makeCompose(stub: stub)
+        compose.toInput = "alice@example.com"
+
+        await compose.send(fontTraits: noTraits)
+
+        #expect(compose.noticeMessage == "sent copy not saved")
+        #expect(compose.errorMessage == nil)
+        // Sent: the window must not offer a send that would duplicate it, and
+        // must not slam shut over the notice.
+        #expect(compose.isSent)
+        #expect(!compose.didSend)
+
+        await compose.send(fontTraits: noTraits)
+        #expect(stub.sends.value.count == 1)
+    }
+
+    @Test func theClientSideConflictSavesADraftAndHandsOffToWebmail() async throws {
+        let stub = ComposeStub(
+            bootstrap: #"{"hasIdentity":true,"protection":"client"}"#,
+            sendResponses: [(409, #"{"clientSideNeeded":true}"#)]
+        )
+        let compose = try makeCompose(stub: stub)
+        compose.toInput = "alice@example.com"
+        compose.subject = "Quarterly"
+        compose.encrypt = true
+
+        await compose.send(fontTraits: noTraits)
+
+        #expect(stub.drafts.value.count == 1)
+        #expect(stub.drafts.value[0].contains(#""subject":"Quarterly""#))
+        // A draft carries no PGP flags.
+        #expect(!stub.drafts.value[0].contains("encrypt"))
+        #expect(compose.webmailHandoffURL?.absoluteString == "\(server)/read?mailbox=Drafts")
+        #expect(compose.noticeMessage?.isEmpty == false)
+        #expect(compose.isSent)
+    }
+
+    @Test func custodyDrivesWhetherTogglesAreOfferedAtAll() async throws {
+        let serverHeld = try makeCompose(stub: ComposeStub())
+        await serverHeld.loadPgpIdentityIfNeeded()
+        #expect(serverHeld.pgpCustody == .serverHeld)
+
+        let clientHeld = try makeCompose(stub: ComposeStub(
+            bootstrap: #"{"hasIdentity":true,"protection":"client"}"#
+        ))
+        await clientHeld.loadPgpIdentityIfNeeded()
+        #expect(clientHeld.pgpCustody == .clientHeld)
+
+        let none = try makeCompose(stub: ComposeStub(bootstrap: #"{"hasIdentity":false}"#))
+        await none.loadPgpIdentityIfNeeded()
+        #expect(none.pgpCustody == .noIdentity)
+    }
+
+    /// The opt-in is per message. A fresh compose never starts consented.
+    @Test func consentIsNeverRemembered() async throws {
+        let compose = try makeCompose(stub: ComposeStub())
+        #expect(!compose.encrypt)
+        #expect(!compose.sign)
+        #expect(compose.pendingPickup == nil)
+    }
+
+    @Test func theHandoffButtonSavesADraftAndOpensDrafts() async throws {
+        let stub = ComposeStub(bootstrap: #"{"hasIdentity":true,"protection":"client"}"#)
+        let compose = try makeCompose(stub: stub)
+        compose.toInput = "alice@example.com"
+
+        await compose.handOffToWebmail(fontTraits: noTraits)
+
+        #expect(stub.drafts.value.count == 1)
+        #expect(stub.sends.value.isEmpty)
+        #expect(compose.webmailHandoffURL?.absoluteString == "\(server)/read?mailbox=Drafts")
+
+        // The view clears it after opening, so it can't reopen on redraw.
+        compose.didOpenWebmail()
+        #expect(compose.webmailHandoffURL == nil)
+    }
+}

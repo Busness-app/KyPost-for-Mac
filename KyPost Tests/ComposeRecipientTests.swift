@@ -46,15 +46,20 @@ private func makeEnvironment(
     ))
     await contactsViewModel.load()
 
+    let sendClient = stubClient(json: #"{"ok": true}"#, onRequest: onSend)
     let sendEmail = SendEmailUseCase(repository: MailRepository(
         securePairingStore: pairingStore,
         emailDAO: EmailDAO(modelContainer: db.container),
-        httpClient: stubClient(json: #"{"ok": true}"#, onRequest: onSend)
+        httpClient: sendClient
     ))
     return Environment(
         viewModel: ComposeViewModel(
             sendEmail: sendEmail,
             contacts: contactsViewModel,
+            pgp: PgpSendService(
+                client: PgpSendClient(httpClient: sendClient),
+                securePairingStore: pairingStore
+            ),
             draft: draft,
             debounceInterval: .zero
         ),
