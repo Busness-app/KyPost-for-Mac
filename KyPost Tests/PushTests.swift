@@ -8,6 +8,7 @@
 
 import Foundation
 import Testing
+import UserNotifications
 @testable import KyPost
 
 // MARK: - Helpers
@@ -89,6 +90,7 @@ private func makePairing(lastDeviceId: String? = "dev-1", deviceSecret: String =
 
 // MARK: - Notification categories
 
+@MainActor
 @Suite struct PushNotificationDispatcherCategoryTests {
     @Test func approveActionRequiresDeviceAuthentication() throws {
         // A single tap from a locked-screen banner must not be enough to

@@ -25,8 +25,9 @@ final class EmailEntity {
     var receivedAt: Date
     var read: Bool
     var starred: Bool
-    /// Relay OpenPGP state; defaults keep stores created before these columns
-    /// migrating cleanly (same lightweight pattern as sentTo/cc above).
+    /// Relay OpenPGP state; added in AppSchemaV3. Any further column here
+    /// needs a new versioned schema + stage in AppSchemaVersions.swift —
+    /// defaults alone are not enough under a staged migration plan.
     var pgpEncrypted: Bool = false
     var pgpSigned: Bool = false
     var pgpVerified: Bool = false

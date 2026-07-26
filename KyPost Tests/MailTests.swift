@@ -9,6 +9,7 @@
 import Foundation
 import SwiftUI
 import Testing
+import WebKit
 @testable import KyPost
 
 // MARK: - Helpers
@@ -462,6 +463,7 @@ private func makeOutgoing(
 
 // MARK: - Email HTML rendering hardening (WebView JS / remote content)
 
+@MainActor
 @Suite struct EmailBodyWebViewConfigurationTests {
     @Test func javaScriptIsAlwaysDisabledRegardlessOfRemoteContentSetting() {
         #expect(
@@ -482,6 +484,7 @@ private func makeOutgoing(
 
 // MARK: - Attachment cache path sanitization
 
+@MainActor
 @Suite struct InboxViewModelAttachmentCachePathTests {
     @Test func acceptsAnOrdinaryServerId() {
         #expect(InboxViewModel.sanitizedCacheComponent("e-1") == "e-1")
