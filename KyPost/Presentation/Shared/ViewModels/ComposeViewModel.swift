@@ -346,6 +346,11 @@ final class ComposeViewModel {
             errorMessage = "Pair this device before sending."
         case .clientSideNeeded:
             errorMessage = "This account's PGP key is end-to-end protected, so signing and encryption aren't available on mobile. Send without them, or use webmail."
+        // Task 7 placeholder: a warning means the send succeeded, so surfacing
+        // it as errorMessage (and not setting didSend) is a stopgap, not the
+        // final behavior.
+        case .sentWithWarning(let warning):
+            errorMessage = warning
         case .failure(let message):
             errorMessage = message
         }

@@ -30,7 +30,12 @@ protocol MailSource: Sendable {
     func listAttachments(folder: String, messageId: String) async throws -> [EmailAttachment]
     /// One attachment's raw bytes, by its index from `listAttachments`.
     func downloadAttachment(folder: String, messageId: String, index: Int) async throws -> Data
-    func send(email: OutgoingEmail) async throws
+    /// Sends a message and returns the relay's `warning` — empty on a clean
+    /// send, non-empty on a *partial* problem (the Sent copy failed to save,
+    /// and/or some pickup links failed to deliver). A warning still means the
+    /// message went out: never retry on one, it would duplicate.
+    @discardableResult
+    func send(email: OutgoingEmail) async throws -> String
 }
 
 extension MailSource {
@@ -65,6 +70,11 @@ enum MailOutcome: Equatable, Sendable {
     /// The account's PGP key is end-to-end protected; the server will not sign
     /// or encrypt on its behalf and this app holds no private key.
     case clientSideNeeded
+    /// Sent, but with a partial problem worth showing (Sent copy not saved,
+    /// some pickup links undelivered). Not a failure; offering a retry here
+    /// would duplicate the message. Treat the text as opaque human-readable
+    /// prose — never pattern-match its wording.
+    case sentWithWarning(String)
 
     static func from(_ error: Error) -> MailOutcome {
         switch error {

@@ -73,6 +73,17 @@ struct OutgoingEmail: Sendable {
     /// Relay send mode: "plain" (default), "html", or "markup".
     var mode: String = "plain"
     var attachments: [OutgoingAttachment] = []
+    /// Ask the relay to encrypt this message to its recipients. The server
+    /// holds the key and does the OpenPGP work; this client never does
+    /// (Client_Encrypted_Send.md).
+    var encrypt = false
+    /// Ask the relay to sign with the account's key.
+    var sign = false
+    /// Consent to the relay mailing a one-time pickup link to recipients with
+    /// no usable key, which stores this message's plaintext on the server for
+    /// 7 days. Meaningful only with `encrypt`. Per-message by design — never
+    /// remembered, never persisted.
+    var allowPickupFallback = false
     /// Relay mode only: server-side categorization.
     var tab: String?
 }

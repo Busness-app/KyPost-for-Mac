@@ -8,7 +8,7 @@
 //  travels as headers (RelayAuth.headerFields), not query params:
 //    GET  /api/inbox?limit&mailbox&since
 //    GET  /api/inbox/folders
-//    POST /api/mail/send
+//    POST /api/mail/send  (encrypt/sign/allowPickupFallback — Client_Encrypted_Send.md)
 //  Binding contract: send body uses comma-joined recipient strings plus a
 //  "mode" field; /api/inbox returns emails grouped by tab.
 //
@@ -214,7 +214,8 @@ nonisolated struct RelaySendAttachmentDTO: Encodable, Equatable, Sendable {
 }
 
 /// Send body with comma-joined recipients (Mobile_Mail_Relay.md Part 6) —
-/// differs from contact sync's array-of-objects shape.
+/// differs from contact sync's array-of-objects shape. POST /api/mail/draft
+/// takes the same shape minus the PGP flags.
 struct RelaySendRequest: Encodable, Equatable, Sendable {
     var to: String
     var cc: String
@@ -224,8 +225,16 @@ struct RelaySendRequest: Encodable, Equatable, Sendable {
     var mode: String
     /// Omitted from the JSON entirely when there are no attachments.
     var attachments: [RelaySendAttachmentDTO]?
+    /// PGP flags, omitted when false so a plaintext send is byte-identical to
+    /// what this client sent before encryption existed; the relay defaults all
+    /// three to false. `allowPickupFallback` is meaningful only with `encrypt`.
+    var encrypt: Bool?
+    var sign: Bool?
+    var allowPickupFallback: Bool?
 
-    init(from email: OutgoingEmail) {
+    /// `pgpFlags: false` builds the draft-save body, which carries no PGP
+    /// fields at all.
+    init(from email: OutgoingEmail, pgpFlags: Bool = true) {
         to = email.to.joined(separator: ", ")
         cc = email.cc.joined(separator: ", ")
         bcc = email.bcc.joined(separator: ", ")
@@ -235,6 +244,10 @@ struct RelaySendRequest: Encodable, Equatable, Sendable {
         attachments = email.attachments.isEmpty
             ? nil
             : email.attachments.map(RelaySendAttachmentDTO.init)
+        let pgp = pgpFlags
+        encrypt = pgp && email.encrypt ? true : nil
+        sign = pgp && email.sign ? true : nil
+        allowPickupFallback = pgp && email.encrypt && email.allowPickupFallback ? true : nil
     }
 }
 
@@ -360,14 +373,16 @@ final class RelayMailSource: MailSource {
         )
     }
 
-    func send(email: OutgoingEmail) async throws {
+    @discardableResult
+    func send(email: OutgoingEmail) async throws -> String {
         do {
-            _ = try await httpClient.post(
+            let response = try await httpClient.post(
                 RelaySendResponse.self,
                 url: try endpoint("api/mail/send"),
                 headers: auth.headerFields,
                 jsonBody: RelaySendRequest(from: email)
             )
+            return response.warning ?? ""
         } catch NetworkError.conflict(let body) where Self.isClientSideNeeded(conflictBody: body) {
             throw MailSourceError.clientSideNeeded
         }

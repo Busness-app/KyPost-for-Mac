@@ -100,8 +100,8 @@ final class MailRepository {
 
     func send(_ email: OutgoingEmail) async -> MailOutcome {
         do {
-            try await makeSource().send(email: email)
-            return .success
+            let warning = try await makeSource().send(email: email)
+            return warning.isEmpty ? .success : .sentWithWarning(warning)
         } catch {
             return MailOutcome.from(error)
         }

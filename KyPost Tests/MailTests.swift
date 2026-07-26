@@ -273,6 +273,65 @@ private func makeOutgoing(
         #expect(attachments[0]["dataBase64"] as? String == Data("hello".utf8).base64EncodedString())
     }
 
+    @Test func plaintextSendOmitsThePgpFlagsEntirely() throws {
+        let data = try JSONEncoder().encode(RelaySendRequest(from: makeOutgoing()))
+        let body = String(decoding: data, as: UTF8.self)
+        // A plaintext send must look exactly as it did before encryption
+        // existed; the relay defaults all three to false.
+        #expect(!body.contains("encrypt"))
+        #expect(!body.contains("sign"))
+        #expect(!body.contains("allowPickupFallback"))
+    }
+
+    @Test func encryptedSendCarriesTheFlagsItWasGiven() throws {
+        var email = makeOutgoing()
+        email.encrypt = true
+        email.sign = true
+        let object = try #require(try JSONSerialization.jsonObject(
+            with: try JSONEncoder().encode(RelaySendRequest(from: email))
+        ) as? [String: Any])
+        #expect(object["encrypt"] as? Bool == true)
+        #expect(object["sign"] as? Bool == true)
+        // Not consented to yet: the first send always asks without it.
+        #expect(object["allowPickupFallback"] == nil)
+    }
+
+    /// allowPickupFallback is meaningful only with encrypt, so it never travels
+    /// on a plaintext send even if something set it.
+    @Test func pickupFallbackNeedsEncrypt() throws {
+        var email = makeOutgoing()
+        email.allowPickupFallback = true
+        let plain = String(decoding: try JSONEncoder().encode(RelaySendRequest(from: email)), as: UTF8.self)
+        #expect(!plain.contains("allowPickupFallback"))
+
+        email.encrypt = true
+        let encrypted = String(decoding: try JSONEncoder().encode(RelaySendRequest(from: email)), as: UTF8.self)
+        #expect(encrypted.contains(#""allowPickupFallback":true"#))
+    }
+
+    @Test func sendReturnsTheRelayWarning() async throws {
+        let json = #"{"ok": true, "sentSaved": false, "warning": "failed to deliver a pickup link to 1 of 3 recipient(s)"}"#
+        let source = RelayMailSource(httpClient: stubClient(json: json), serverUrl: server, auth: auth)
+        let warning = try await source.send(email: makeOutgoing())
+        #expect(warning == "failed to deliver a pickup link to 1 of 3 recipient(s)")
+    }
+
+    @Test func aCleanSendHasNoWarning() async throws {
+        let source = RelayMailSource(
+            httpClient: stubClient(json: #"{"ok": true, "sentSaved": true, "warning": ""}"#),
+            serverUrl: server,
+            auth: auth
+        )
+        #expect(try await source.send(email: makeOutgoing()) == "")
+        // Absent, not just empty.
+        let terse = RelayMailSource(
+            httpClient: stubClient(json: #"{"ok": true}"#),
+            serverUrl: server,
+            auth: auth
+        )
+        #expect(try await terse.send(email: makeOutgoing()) == "")
+    }
+
     @Test func listAttachmentsMapsMetadata() async throws {
         let json = #"{"ok": true, "attachments": [{"index": 0, "name": "report.pdf", "mimeType": "application/pdf", "size": 1234}, {"index": 1}]}"#
         let client = stubClient(json: json) { request in
@@ -657,5 +716,36 @@ private func makeOutgoing(
         #expect(restored.pgpVerified)
         #expect(restored.pgpSignerFingerprint == "FEED")
         #expect(restored.pgpDecryptError == "")
+    }
+}
+
+// MARK: - Partial-success warnings
+
+@Suite struct SendWarningTests {
+    /// A warning means the message *was* sent. It must never look like a
+    /// failure, and must never offer a retry that would duplicate it.
+    @Test func aWarningIsSuccessNotFailure() async throws {
+        let pairingStore = try makePairedStore()
+        let db = try AppDatabase(inMemory: true)
+        let json = #"{"ok": true, "sentSaved": false, "warning": "sent copy not saved"}"#
+        let repository = MailRepository(
+            securePairingStore: pairingStore,
+            emailDAO: EmailDAO(modelContainer: db.container),
+            httpClient: stubClient(json: json)
+        )
+
+        let outcome = await repository.send(makeOutgoing())
+        #expect(outcome == .sentWithWarning("sent copy not saved"))
+    }
+
+    @Test func noWarningIsPlainSuccess() async throws {
+        let pairingStore = try makePairedStore()
+        let db = try AppDatabase(inMemory: true)
+        let repository = MailRepository(
+            securePairingStore: pairingStore,
+            emailDAO: EmailDAO(modelContainer: db.container),
+            httpClient: stubClient(json: #"{"ok": true, "sentSaved": true, "warning": ""}"#)
+        )
+        #expect(await repository.send(makeOutgoing()) == .success)
     }
 }
