@@ -16,6 +16,9 @@ private enum PushLifecycle {
         let graph = SingletonGraph.shared
         graph.pushNotificationDispatcher.configure()
         graph.systemContactsChangeMonitor.start()
+        // Must precede the first poll: a gated pairing read without the
+        // hooks would serve the blank plain-item secret.
+        graph.credentialGateService.wireAtLaunch()
         // While locked, onForeground is skipped; run the deferred sync the
         // moment the user unlocks instead.
         graph.appLockManager.onUnlock = { onForeground() }

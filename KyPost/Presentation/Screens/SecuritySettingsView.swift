@@ -19,6 +19,9 @@ struct SecuritySettingsContent: View {
     @State private var lockToggleMessage: String?
     @State private var hostileConfirmationShown = false
     @State private var hostileProtectionMessage: String?
+    private var gateService: CredentialGateService { SingletonGraph.shared.credentialGateService }
+    @State private var credentialGateConfirmationShown = false
+    @State private var credentialGateMessage: String?
 
     var body: some View {
         Section {
@@ -57,10 +60,31 @@ struct SecuritySettingsContent: View {
         }
 
         Section {
-            Toggle("Require unlock for notifications & MFA", isOn: .constant(false))
-                .disabled(true)
+            Toggle("Require unlock for notifications & MFA", isOn: credentialGateBinding)
+                .disabled(!lockManager.isLockEnabled)
+            if let credentialGateMessage {
+                Text(credentialGateMessage)
+                    .font(AppFont.ui(13))
+                    .foregroundStyle(SemanticColors.danger)
+            }
         } footer: {
-            Text("Blocks background mail checks and MFA approvals until you open and unlock KyPost. Not available yet in this build; requires Require Unlock to Open.\n\nNote: new-mail notifications carry the sender and subject through Apple's push service and your KyPost relay.")
+            Text("Blocks background mail checks and MFA approvals until you open and unlock KyPost. On iPhone this covers all background delivery; on a Mac it applies while the screen is locked. Requires Require Unlock to Open.\n\nNote: new-mail notifications carry the sender and subject through Apple's push service and your KyPost relay.")
+        }
+        .confirmationDialog(
+            "Delay notifications until unlocked?",
+            isPresented: $credentialGateConfirmationShown,
+            titleVisibility: .visible
+        ) {
+            Button("Require Unlock for Delivery") {
+                if !gateService.enable() {
+                    credentialGateMessage = String(
+                        localized: "Nothing to protect yet — pair this device first."
+                    )
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("New-mail notifications and MFA approval requests will only be delivered after you open and unlock KyPost.")
         }
     }
 
@@ -76,6 +100,25 @@ struct SecuritySettingsContent: View {
                     hostileConfirmationShown = true
                 } else {
                     applyHostileProtection(false)
+                }
+            }
+        )
+    }
+
+    /// Enabling confirms first (delivery stops while locked); disabling
+    /// applies directly, with one user-presence read to restore the secret.
+    private var credentialGateBinding: Binding<Bool> {
+        Binding(
+            get: { gateService.isEnabled },
+            set: { enabled in
+                if enabled {
+                    credentialGateConfirmationShown = true
+                } else if gateService.disable() {
+                    credentialGateMessage = nil
+                } else {
+                    credentialGateMessage = String(
+                        localized: "Authentication is required to turn this off."
+                    )
                 }
             }
         )
@@ -97,10 +140,15 @@ struct SecuritySettingsContent: View {
                 Task {
                     if await lockManager.setLockEnabled(enabled) {
                         lockToggleMessage = nil
-                        // Dependency rule: Hostile Location Protection
-                        // requires the lock; dropping the lock drops it too.
-                        if !enabled, SingletonGraph.shared.hostileLocationProtectionStore.enabled {
-                            applyHostileProtection(false)
+                        // Dependency rule: toggles 2 and 3 require the lock;
+                        // dropping the lock drops them too.
+                        if !enabled {
+                            if gateService.isEnabled {
+                                _ = gateService.disable()
+                            }
+                            if SingletonGraph.shared.hostileLocationProtectionStore.enabled {
+                                applyHostileProtection(false)
+                            }
                         }
                     } else {
                         lockToggleMessage = enabled

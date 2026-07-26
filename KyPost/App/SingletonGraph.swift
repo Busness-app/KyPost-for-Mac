@@ -140,6 +140,12 @@ final class SingletonGraph {
     // MARK: - Security
 
     lazy var appLockManager = AppLockManager(store: appLockStore)
+    lazy var credentialGateService = CredentialGateService(
+        appLockStore: appLockStore,
+        securePairingStore: securePairingStore,
+        gatedStore: GatedCredentialStore(),
+        lockManager: appLockManager
+    )
 
     // MARK: - Lifecycle
 

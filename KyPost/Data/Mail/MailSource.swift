@@ -54,6 +54,10 @@ extension MailSource {
 enum MailSourceError: Error, Equatable {
     /// No pairing stored — the user must pair the device first.
     case notPaired
+    /// The pairing exists but its secret is unreadable right now: the
+    /// credential gate is on and the app is locked. Not an error state —
+    /// background work retries after the next unlock, like `notPaired`.
+    case credentialUnavailable
     /// The relay has no endpoint for this operation (e.g. server-side search).
     case unsupported
     case invalidServerURL

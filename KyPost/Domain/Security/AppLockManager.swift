@@ -53,9 +53,20 @@ final class AppLockManager {
     /// Runs after a successful unlock — the lock-trigger task wires the
     /// deferred foreground sync here.
     var onUnlock: (() -> Void)?
-    /// Runs when the lock engages — the credential-gate task wires the
-    /// in-memory secret drop here.
+    /// Runs when the lock engages.
     var onLock: (() -> Void)?
+
+    /// Credential gate: the device secret, held in memory only while
+    /// unlocked. Dropped the instant the lock engages; reloaded through the
+    /// access-controlled Keychain item on unlock.
+    private(set) var cachedGatedSecret: String?
+    /// Reads the access-controlled item (may prompt for user presence).
+    /// Installed by CredentialGateService while the gate is on.
+    var loadGatedSecret: (() -> String?)?
+
+    func cacheGatedSecret(_ secret: String?) {
+        cachedGatedSecret = secret
+    }
 
     init(
         store: AppLockStore,
@@ -72,6 +83,7 @@ final class AppLockManager {
     func lock() {
         guard isLockEnabled, !isLocked else { return }
         isLocked = true
+        cachedGatedSecret = nil
         onLock?()
     }
 
@@ -82,6 +94,11 @@ final class AppLockManager {
             return false
         }
         isLocked = false
+        // Repopulate the gated secret before the deferred sync runs — this
+        // is the one point the OS may prompt for presence a second time.
+        if cachedGatedSecret == nil {
+            cachedGatedSecret = loadGatedSecret?()
+        }
         onUnlock?()
         return true
     }

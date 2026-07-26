@@ -25,7 +25,18 @@ struct Pairing: Equatable, Sendable {
     var pairedAt: Date
 }
 
-final class SecurePairingStore: Sendable {
+/// Hooks the credential gate installs on SecurePairingStore. While
+/// installed, the device secret lives behind user presence instead of in
+/// the plain pairing item; nil (the default) is today's ungated behavior.
+protocol PairingSecretGate: AnyObject {
+    /// Throws MailSourceError.credentialUnavailable while the app is locked.
+    func read() throws -> String
+    func write(_ secret: String) throws
+    /// The pairing is being cleared (unpair) — drop the gated copy too.
+    func removeAll()
+}
+
+final class SecurePairingStore {
     private enum Key {
         static let sub = "sub"
         static let deviceSecret = "deviceSecret"
@@ -38,6 +49,9 @@ final class SecurePairingStore: Sendable {
     }
 
     private let keychain: KeychainStorage
+    /// Set by CredentialGateService while "Require unlock for notifications
+    /// & MFA" is on; nil means the plain deviceSecret item is used.
+    weak var secretGate: (any PairingSecretGate)?
 
     init(keychain: KeychainStorage) {
         self.keychain = keychain
@@ -45,7 +59,15 @@ final class SecurePairingStore: Sendable {
 
     func savePairing(_ pairing: Pairing) throws {
         try keychain.set(pairing.sub, forKey: Key.sub)
-        try keychain.set(pairing.deviceSecret, forKey: Key.deviceSecret)
+        // Re-registration mints a fresh secret on every success; while the
+        // gate is on it must land behind user presence, never in the plain
+        // item.
+        if let secretGate {
+            try secretGate.write(pairing.deviceSecret)
+            try keychain.set("", forKey: Key.deviceSecret)
+        } else {
+            try keychain.set(pairing.deviceSecret, forKey: Key.deviceSecret)
+        }
         try keychain.set(pairing.srv, forKey: Key.srv)
         try keychain.set(pairing.pairingToken, forKey: Key.pairingToken)
         try keychain.set(
@@ -79,9 +101,16 @@ final class SecurePairingStore: Sendable {
             .flatMap(TimeInterval.init)
             .map(Date.init(timeIntervalSince1970:)) ?? .distantPast
 
+        let deviceSecret: String
+        if let secretGate {
+            deviceSecret = try secretGate.read()
+        } else {
+            deviceSecret = try keychain.string(forKey: Key.deviceSecret) ?? ""
+        }
+
         return Pairing(
             sub: sub,
-            deviceSecret: try keychain.string(forKey: Key.deviceSecret) ?? "",
+            deviceSecret: deviceSecret,
             srv: srv,
             registrationUrl: try keychain.string(forKey: Key.registrationUrl),
             pairingToken: pairingToken,
@@ -94,7 +123,13 @@ final class SecurePairingStore: Sendable {
         (try? loadPairing()) != nil
     }
 
+    /// Restores a plain-item secret (credential gate turning off).
+    func setDeviceSecret(_ secret: String) throws {
+        try keychain.set(secret, forKey: Key.deviceSecret)
+    }
+
     func clear() throws {
+        secretGate?.removeAll()
         for key in Key.all {
             try keychain.remove(key)
         }

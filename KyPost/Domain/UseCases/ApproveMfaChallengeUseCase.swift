@@ -18,7 +18,16 @@ struct ApproveMfaChallengeUseCase {
     }
 
     func callAsFunction(challengeId: String, approved: Bool) async -> MfaResponseOutcome {
-        guard let pairing = try? securePairingStore.loadPairing() else {
+        let loaded: Pairing?
+        do {
+            loaded = try securePairingStore.loadPairing()
+        } catch MailSourceError.credentialUnavailable {
+            // Credential gate + app locked: the user must unlock first.
+            return .failure("Unlock KyPost, then approve from the app")
+        } catch {
+            loaded = nil
+        }
+        guard let pairing = loaded else {
             return .failure("Device is not paired")
         }
         // The backend requires the responding device's ID and secret so it

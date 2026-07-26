@@ -58,6 +58,8 @@ final class PullPollingScheduler {
             }
         } catch MailSourceError.notPaired {
             // Not an error state; pairing just hasn't happened yet.
+        } catch MailSourceError.credentialUnavailable {
+            // Credential gate + locked: retries after the next unlock.
         } catch {
             Log.push.error("Pull poll failed: \(error)")
         }

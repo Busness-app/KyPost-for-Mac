@@ -50,6 +50,170 @@ private func makeLockStore() -> AppLockStore {
     }
 }
 
+// MARK: - Credential gate (Task 6)
+
+/// In-memory stand-in for the access-controlled Keychain item, which
+/// cannot run headless.
+private final class StubGatedStore: GatedCredentialStoring {
+    var stored: String?
+    var failLoad = false
+
+    func store(_ secret: String) throws { stored = secret }
+    func load() throws -> String? { failLoad ? nil : stored }
+    func remove() throws { stored = nil }
+}
+
+@MainActor
+@Suite struct CredentialGateServiceTests {
+    private struct Environment {
+        var service: CredentialGateService
+        var pairingStore: SecurePairingStore
+        var lockStore: AppLockStore
+        var lockManager: AppLockManager
+        var gatedStore: StubGatedStore
+    }
+
+    private func makeEnvironment(paired: Bool = true) throws -> Environment {
+        let keychain = KeychainStorage(service: "com.urlxl.mail.tests.\(UUID().uuidString)")
+        let pairingStore = SecurePairingStore(keychain: keychain)
+        if paired {
+            try pairingStore.savePairing(Pairing(
+                sub: "u1", deviceSecret: "s1", srv: server, registrationUrl: nil,
+                pairingToken: "pt", lastDeviceId: "dev-1", pairedAt: Date()
+            ))
+        }
+        let lockStore = AppLockStore(keychain: keychain)
+        try lockStore.setLockEnabled(true)
+        let lockManager = AppLockManager(store: lockStore, authenticator: StubAuthenticator())
+        let gatedStore = StubGatedStore()
+        let service = CredentialGateService(
+            appLockStore: lockStore,
+            securePairingStore: pairingStore,
+            gatedStore: gatedStore,
+            lockManager: lockManager
+        )
+        return Environment(
+            service: service, pairingStore: pairingStore, lockStore: lockStore,
+            lockManager: lockManager, gatedStore: gatedStore
+        )
+    }
+
+    @Test func enableMovesTheSecretBehindTheGateAndKeepsTheSessionWorking() async throws {
+        let env = try makeEnvironment()
+        _ = await env.lockManager.requestUnlock()
+
+        #expect(env.service.enable())
+        #expect(env.gatedStore.stored == "s1")
+        #expect(env.lockStore.credentialGateEnabled)
+        // The running session still reads the secret (from memory).
+        #expect(try env.pairingStore.loadPairing()?.deviceSecret == "s1")
+    }
+
+    @Test func lockedReadsThrowCredentialUnavailableAndUnlockRestoresThem() async throws {
+        let env = try makeEnvironment()
+        _ = await env.lockManager.requestUnlock()
+        env.service.enable()
+
+        env.lockManager.lock()
+        #expect(env.lockManager.cachedGatedSecret == nil)
+        #expect(throws: MailSourceError.credentialUnavailable) {
+            try env.pairingStore.loadPairing()
+        }
+
+        // Unlock reloads through the access-controlled item.
+        #expect(await env.lockManager.requestUnlock())
+        #expect(try env.pairingStore.loadPairing()?.deviceSecret == "s1")
+    }
+
+    @Test func aDeclinedPresencePromptLeavesReadsUnavailableUntilTheNextUnlock() async throws {
+        let env = try makeEnvironment()
+        _ = await env.lockManager.requestUnlock()
+        env.service.enable()
+        env.lockManager.lock()
+
+        env.gatedStore.failLoad = true
+        _ = await env.lockManager.requestUnlock()
+        #expect(throws: MailSourceError.credentialUnavailable) {
+            try env.pairingStore.loadPairing()
+        }
+
+        env.gatedStore.failLoad = false
+        env.lockManager.lock()
+        _ = await env.lockManager.requestUnlock()
+        #expect(try env.pairingStore.loadPairing()?.deviceSecret == "s1")
+    }
+
+    @Test func reregistrationWritesTheFreshSecretThroughTheGate() async throws {
+        let env = try makeEnvironment()
+        _ = await env.lockManager.requestUnlock()
+        env.service.enable()
+
+        var pairing = try #require(try env.pairingStore.loadPairing())
+        pairing.deviceSecret = "s2-minted"
+        try env.pairingStore.savePairing(pairing)
+
+        #expect(env.gatedStore.stored == "s2-minted")
+        #expect(try env.pairingStore.loadPairing()?.deviceSecret == "s2-minted")
+    }
+
+    @Test func disableRestoresThePlainSecretAndRemovesTheGatedCopy() async throws {
+        let env = try makeEnvironment()
+        _ = await env.lockManager.requestUnlock()
+        env.service.enable()
+
+        #expect(env.service.disable())
+        #expect(env.gatedStore.stored == nil)
+        #expect(!env.lockStore.credentialGateEnabled)
+        env.lockManager.lock()
+        // Gate off: reads work regardless of lock state, as before.
+        #expect(try env.pairingStore.loadPairing()?.deviceSecret == "s1")
+    }
+
+    @Test func clearingThePairingDropsTheGatedCopyToo() async throws {
+        let env = try makeEnvironment()
+        _ = await env.lockManager.requestUnlock()
+        env.service.enable()
+
+        try env.pairingStore.clear()
+
+        #expect(env.gatedStore.stored == nil)
+        #expect(!env.service.isEnabled)
+        #expect(try env.pairingStore.loadPairing() == nil)
+    }
+
+    @Test func enableRefusesWithoutAPairing() throws {
+        let env = try makeEnvironment(paired: false)
+        #expect(!env.service.enable())
+        #expect(!env.lockStore.credentialGateEnabled)
+    }
+
+    @Test func wireAtLaunchRestoresTheGateForAnAlreadyEnabledFlag() async throws {
+        let env = try makeEnvironment()
+        _ = await env.lockManager.requestUnlock()
+        env.service.enable()
+        env.lockManager.lock()
+
+        // A "new process": same stores, fresh manager and service.
+        let freshManager = AppLockManager(
+            store: env.lockStore, authenticator: StubAuthenticator()
+        )
+        let freshService = CredentialGateService(
+            appLockStore: env.lockStore,
+            securePairingStore: env.pairingStore,
+            gatedStore: env.gatedStore,
+            lockManager: freshManager
+        )
+        freshService.wireAtLaunch()
+
+        #expect(freshService.isEnabled)
+        #expect(throws: MailSourceError.credentialUnavailable) {
+            try env.pairingStore.loadPairing()
+        }
+        _ = await freshManager.requestUnlock()
+        #expect(try env.pairingStore.loadPairing()?.deviceSecret == "s1")
+    }
+}
+
 // MARK: - Hostile Location Protection (Task 5)
 
 @Suite struct HostileLocationProtectionTests {
