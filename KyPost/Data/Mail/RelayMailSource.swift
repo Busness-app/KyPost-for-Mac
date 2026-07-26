@@ -155,6 +155,12 @@ struct RelaySendResponse: Decodable, Sendable {
     var warning: String?
 }
 
+/// Shape of a relay 409 body, used only to tell the client-protected send
+/// refusal apart from an ordinary conflict (see `RelayMailSource.isClientSideNeeded`).
+struct RelayConflictDTO: Decodable, Sendable {
+    var clientSideNeeded: Bool?
+}
+
 /// Bulk action body (Mobile_Mail_Relay.md /api/inbox/actions).
 struct RelayActionRequest: Encodable, Equatable, Sendable {
     var action: String
@@ -367,9 +373,8 @@ final class RelayMailSource: MailSource {
     /// than an ordinary conflict. Pure so it is testable without a transport;
     /// the relay-specific knowledge stays here rather than in HTTPClient.
     static func isClientSideNeeded(conflictBody: String) -> Bool {
-        struct ConflictDTO: Decodable { var clientSideNeeded: Bool? }
         guard let data = conflictBody.data(using: .utf8),
-              let dto = try? JSONDecoder().decode(ConflictDTO.self, from: data)
+              let dto = try? JSONDecoder().decode(RelayConflictDTO.self, from: data)
         else { return false }
         return dto.clientSideNeeded == true
     }
