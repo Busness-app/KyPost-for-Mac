@@ -1,0 +1,82 @@
+//
+//  PgpSendService.swift
+//  KyPost
+//
+//  What compose needs to know before offering encryption
+//  (Client_Encrypted_Send.md "Required behavior" 1 and 3):
+//    - the account's key custody, fetched once per session from
+//      GET /api/pgp/bootstrap. The mode is chosen at key creation and has no
+//      downgrade path, so it cannot change behind a session's back.
+//    - the recipient key preflight, POST /api/pgp/recipients/check.
+//
+//  Both degrade quietly. A bootstrap failure leaves custody unknown and
+//  compose offers no PGP toggles; a preflight failure warns about nothing. The
+//  relay's 409 is the real gate either way.
+//
+
+import Foundation
+import Observation
+import os
+
+@Observable
+@MainActor
+final class PgpSendService {
+    private let client: PgpSendClient
+    private let securePairingStore: SecurePairingStore
+
+    /// Nil until a successful load: unknown, not "no identity". Compose shows
+    /// no toggle while it is nil — better no toggle than one that lies.
+    private(set) var custody: PgpKeyCustody?
+
+    init(client: PgpSendClient, securePairingStore: SecurePairingStore) {
+        self.client = client
+        self.securePairingStore = securePairingStore
+    }
+
+    /// Loads key custody once per session. Cheap to call from every compose
+    /// window's `.task`.
+    func loadIfNeeded() async {
+        guard custody == nil, let credentials = pairingCredentials else { return }
+        do {
+            let response = try await client.fetchBootstrap(
+                serverUrl: credentials.serverUrl,
+                auth: credentials.auth
+            )
+            custody = pgpKeyCustody(
+                hasIdentity: response.hasIdentity,
+                protection: response.protection
+            )
+        } catch {
+            Log.mail.debug("PGP bootstrap failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Addresses among `addresses` with no usable key **in the user's
+    /// contacts**.
+    ///
+    /// A lower bound, never a promise: the send path also runs WKD and
+    /// keyserver discovery, so an address returned here may still be encrypted
+    /// to successfully. Word the warning as "no key on file", never as "this
+    /// will be sent as a plaintext link".
+    func keylessRecipients(among addresses: [String]) async -> [String] {
+        guard !addresses.isEmpty, let credentials = pairingCredentials else { return [] }
+        do {
+            let results = try await client.checkRecipients(
+                addresses,
+                serverUrl: credentials.serverUrl,
+                auth: credentials.auth
+            )
+            return keylessAddresses(in: results)
+        } catch {
+            Log.mail.debug("PGP recipient preflight failed: \(error.localizedDescription, privacy: .public)")
+            return []
+        }
+    }
+
+    private var pairingCredentials: (serverUrl: String, auth: RelayAuth)? {
+        guard let pairing = try? securePairingStore.loadPairing(), !pairing.srv.isEmpty else {
+            return nil
+        }
+        return (pairing.srv, RelayAuth(pairing: pairing))
+    }
+}

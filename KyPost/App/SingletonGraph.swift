@@ -54,6 +54,7 @@ final class SingletonGraph {
     lazy var deregisterClient = DeregisterClient(httpClient: httpClient)
     lazy var contactSyncClient = ContactSyncClient(httpClient: httpClient)
     lazy var pgpQrClient = PgpQrClient(httpClient: httpClient)
+    lazy var pgpSendClient = PgpSendClient(httpClient: httpClient)
 
     // MARK: - Repositories & Use Cases
 
@@ -64,6 +65,10 @@ final class SingletonGraph {
     )
     lazy var keywordRepository = KeywordRepository(settingsStore: keywordSettingsStore)
     lazy var sendEmailUseCase = SendEmailUseCase(repository: mailRepository)
+    lazy var pgpSendService = PgpSendService(
+        client: pgpSendClient,
+        securePairingStore: securePairingStore
+    )
     let contactPhotoCache = ContactPhotoCache()
     lazy var systemContactsExporter = SystemContactsExporter(
         store: LiveSystemContactStore(),

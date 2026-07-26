@@ -133,3 +133,77 @@ import Testing
         }
     }
 }
+
+// MARK: - PgpSendService
+
+@Suite @MainActor struct PgpSendServiceTests {
+    private func makeService(
+        paired: Bool = true,
+        status: Int = 200,
+        json: String = #"{"hasIdentity":true,"protection":"server"}"#,
+        onRequest: (@Sendable (URLRequest) -> Void)? = nil
+    ) throws -> PgpSendService {
+        PgpSendService(
+            client: PgpSendClient(httpClient: stubClient(status: status, json: json, onRequest: onRequest)),
+            securePairingStore: try makePairedStore(paired: paired)
+        )
+    }
+
+    @Test func loadCachesCustodyForTheSession() async throws {
+        let calls = Box(0)
+        let service = try makeService { _ in calls.mutate { $0 += 1 } }
+
+        #expect(service.custody == nil)
+        await service.loadIfNeeded()
+        #expect(service.custody == .serverHeld)
+
+        // The mode is chosen at key creation and has no downgrade path, so one
+        // fetch per session is the contract, not an optimisation.
+        await service.loadIfNeeded()
+        #expect(calls.value == 1)
+    }
+
+    /// An unreachable bootstrap must never block a plaintext send: custody
+    /// stays nil and compose simply offers no PGP toggles.
+    @Test func aFailedBootstrapLeavesCustodyUnknown() async throws {
+        let service = try makeService(status: 503, json: "pairing secret unset")
+        await service.loadIfNeeded()
+        #expect(service.custody == nil)
+    }
+
+    @Test func withoutAPairingNothingIsFetched() async throws {
+        let calls = Box(0)
+        let service = try makeService(paired: false) { _ in calls.mutate { $0 += 1 } }
+        await service.loadIfNeeded()
+        #expect(service.custody == nil)
+        #expect(calls.value == 0)
+    }
+
+    @Test func preflightReturnsTheAddressesWithNoUsableKey() async throws {
+        let json = """
+        {"results": [
+          {"address": "alice@example.com", "hasKey": true},
+          {"address": "bob@example.com", "hasKey": false}
+        ]}
+        """
+        let service = try makeService(json: json)
+        let keyless = await service.keylessRecipients(
+            among: ["alice@example.com", "bob@example.com"]
+        )
+        #expect(keyless == ["bob@example.com"])
+    }
+
+    /// The preflight is advisory. A failure warns about nothing rather than
+    /// blocking the send — the relay's 409 is the real gate.
+    @Test func aFailedPreflightWarnsAboutNothing() async throws {
+        let service = try makeService(status: 500, json: "boom")
+        #expect(await service.keylessRecipients(among: ["bob@example.com"]).isEmpty)
+    }
+
+    @Test func anEmptyAddressListSkipsTheCallEntirely() async throws {
+        let calls = Box(0)
+        let service = try makeService { _ in calls.mutate { $0 += 1 } }
+        #expect(await service.keylessRecipients(among: []).isEmpty)
+        #expect(calls.value == 0)
+    }
+}
