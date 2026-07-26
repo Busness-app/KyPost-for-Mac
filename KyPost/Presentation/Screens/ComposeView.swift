@@ -30,6 +30,7 @@ struct ComposeView: View {
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
     @Environment(\.fontResolutionContext) private var fontResolutionContext
+    @Environment(\.openURL) private var openURL
 
     @State private var viewModel: ComposeViewModel
     @State private var selection = AttributedTextSelection()
@@ -68,6 +69,10 @@ struct ComposeView: View {
                 .padding(.horizontal)
                 .padding(.vertical, 10)
 
+            pgpControls
+                .padding(.horizontal)
+                .padding(.bottom, 8)
+
             Divider().overlay(theme.line)
 
             TextEditor(text: $viewModel.body, selection: $selection)
@@ -82,13 +87,16 @@ struct ComposeView: View {
                 attachmentBar
             }
 
+            if let warning = viewModel.keylessWarningText {
+                messageLine(warning, color: theme.ink)
+            }
+
+            if let notice = viewModel.noticeMessage {
+                messageLine(notice, color: theme.ink)
+            }
+
             if let message = viewModel.errorMessage {
-                Text(message)
-                    .font(AppFont.ui(13))
-                    .foregroundStyle(SemanticColors.danger)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal)
-                    .padding(.bottom, 8)
+                messageLine(message, color: SemanticColors.danger)
             }
         }
         .background(theme.bg)
@@ -112,6 +120,36 @@ struct ComposeView: View {
             AddressBookView(viewModel: viewModel)
                 .environment(\.theme, theme)
         }
+        // Copy is verbatim from Client_Encrypted_Send.md — the wording carries
+        // the security property. Cancel is the default action; the confirm
+        // button is destructive because it puts plaintext on the server.
+        .confirmationDialog(
+            "Send an unencrypted link?",
+            isPresented: Binding(
+                get: { viewModel.pendingPickup != nil },
+                set: { if !$0 { viewModel.cancelPickupFallback() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Send link anyway", role: .destructive) {
+                Task { await viewModel.confirmPickupFallback() }
+            }
+            Button("Cancel", role: .cancel) { viewModel.cancelPickupFallback() }
+        } message: {
+            if let pickup = viewModel.pendingPickup {
+                Text(viewModel.pickupConfirmationMessage(for: pickup))
+            }
+        }
+        // The handoff opens the user's browser, never an in-app web view: it
+        // shares no session and would put an account-password field in here
+        // (kypost-server docs/E2E_PGP.md requirement 5).
+        .onChange(of: viewModel.webmailHandoffURL) {
+            if let url = viewModel.webmailHandoffURL {
+                openURL(url)
+                viewModel.didOpenWebmail()
+            }
+        }
+        .task { await viewModel.loadPgpIdentityIfNeeded() }
         .fileImporter(
             isPresented: $showFileImporter,
             allowedContentTypes: [.item],
@@ -149,6 +187,56 @@ struct ComposeView: View {
             highlighted = nil
         }
         .tint(theme.accent)
+    }
+
+    // MARK: - PGP
+
+    /// Toggles only for a server-custody account. A client-custody account
+    /// gets the webmail handoff instead — this app holds no private key and
+    /// must never let the user believe an encrypted send succeeded from here.
+    @ViewBuilder
+    private var pgpControls: some View {
+        switch viewModel.pgpCustody {
+        case .serverHeld:
+            HStack(spacing: 16) {
+                Toggle("Encrypt", isOn: $viewModel.encrypt)
+                Toggle("Sign", isOn: $viewModel.sign)
+                Spacer(minLength: 0)
+            }
+            .font(AppFont.ui(12, weight: .medium))
+            .foregroundStyle(theme.ink)
+        case .clientHeld:
+            HStack(spacing: 8) {
+                Image(systemName: "lock.fill")
+                    .foregroundStyle(theme.ink.opacity(0.7))
+                Text("This account's PGP key is held only by your browser, so signing and encryption happen there.")
+                    .font(AppFont.ui(12))
+                    .foregroundStyle(theme.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                Button("Encrypt in webmail…") {
+                    Task { await viewModel.handOffToWebmail(fontTraits: fontTraits) }
+                }
+                .font(AppFont.ui(12, weight: .medium))
+                .buttonStyle(.borderless)
+                .disabled(viewModel.isSending || viewModel.isSent)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(theme.panel, in: RoundedRectangle(cornerRadius: Shape.field))
+        case .noIdentity, .none:
+            EmptyView()
+        }
+    }
+
+    private func messageLine(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(AppFont.ui(13))
+            .foregroundStyle(color)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal)
+            .padding(.bottom, 8)
     }
 
     // MARK: - Header fields
@@ -370,7 +458,7 @@ struct ComposeView: View {
                 }
             }
             .keyboardShortcut(.return, modifiers: .command)
-            .disabled(viewModel.isSending)
+            .disabled(viewModel.isSending || viewModel.isSent)
             .help("Send (⌘↩)")
         }
     }
