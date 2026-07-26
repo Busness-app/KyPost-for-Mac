@@ -50,5 +50,20 @@ struct MainTabView: View {
             MfaApprovalView(challengeId: route.challengeId)
                 .environment(\.theme, themeManager.palette)
         }
+#if os(iOS)
+        .fullScreenCover(isPresented: lockBinding) {
+            UnlockView(manager: SingletonGraph.shared.appLockManager)
+                .environment(\.theme, themeManager.palette)
+        }
+#endif
+    }
+
+    /// Presented while locked; dismissal happens only through a successful
+    /// unlock flipping `isLocked`, so the setter is a no-op.
+    private var lockBinding: Binding<Bool> {
+        Binding(
+            get: { SingletonGraph.shared.appLockManager.isLocked },
+            set: { _ in }
+        )
     }
 }

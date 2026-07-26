@@ -16,6 +16,9 @@ private enum PushLifecycle {
         let graph = SingletonGraph.shared
         graph.pushNotificationDispatcher.configure()
         graph.systemContactsChangeMonitor.start()
+        // While locked, onForeground is skipped; run the deferred sync the
+        // moment the user unlocks instead.
+        graph.appLockManager.onUnlock = { onForeground() }
         Task {
             await graph.pushNotificationDispatcher.requestAuthorization()
         }
@@ -33,6 +36,9 @@ private enum PushLifecycle {
 
     static func onForeground() {
         let graph = SingletonGraph.shared
+        // Gate the sync side, not just the pixels: nothing runs until the
+        // user unlocks (onUnlock re-enters here).
+        guard !graph.appLockManager.isLocked else { return }
         if let token = graph.pushSettingsStore.lastDeviceToken {
             Task {
                 await graph.deviceRegistrationService.reregisterIfPaired(deviceToken: token)
@@ -51,6 +57,10 @@ private enum PushLifecycle {
 
     static func onBackground() {
         SingletonGraph.shared.pullPollingScheduler.stopForegroundPolling()
+        // iOS lock trigger: backgrounding covers home button, app switch,
+        // screen lock, and incoming-call takeover. (macOS never calls this;
+        // its trigger is the screen-lock notification in AppDelegate.)
+        SingletonGraph.shared.appLockManager.lock()
     }
 
     static func onRemoteNotification(_ userInfo: [AnyHashable: Any]) async {
@@ -154,6 +164,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { _ in
             Task { @MainActor in
                 await SingletonGraph.shared.pullPollingScheduler.pollNow()
+            }
+        }
+
+        // macOS lock trigger: the screen locking (screen saver / login
+        // window) is the "device left unattended" signal. Deliberately NOT
+        // didResignActiveNotification — losing focus to another app is
+        // normal Mac usage, not abandonment (design decision 2).
+        DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("com.apple.screenIsLocked"),
+            object: nil,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                SingletonGraph.shared.appLockManager.lock()
             }
         }
     }
