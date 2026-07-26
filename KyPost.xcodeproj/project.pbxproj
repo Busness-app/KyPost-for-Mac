@@ -12,14 +12,14 @@
 			containerPortal = 927A36DA300148DB0090B7AF /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = 927A36E1300148DB0090B7AF;
-			remoteInfo = "KyPost";
+			remoteInfo = KyPost;
 		};
 		927A36FE300148DC0090B7AF /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 927A36DA300148DB0090B7AF /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = 927A36E1300148DB0090B7AF;
-			remoteInfo = "KyPost";
+			remoteInfo = KyPost;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -46,7 +46,7 @@
 			exceptions = (
 				927A3705300148DC0090B7AF /* Exceptions for "KyPost" folder in "KyPost" target */,
 			);
-			path = "KyPost";
+			path = KyPost;
 			sourceTree = "<group>";
 		};
 		927A36F6300148DC0090B7AF /* KyPost Tests */ = {
@@ -127,7 +127,7 @@
 			name = KyPost;
 			packageProductDependencies = (
 			);
-			productName = "KyPost";
+			productName = KyPost;
 			productReference = 927A36E2300148DB0090B7AF /* KyPost.app */;
 			productType = "com.apple.product-type.application";
 		};
@@ -288,7 +288,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = "KyPost/KyPost.entitlements";
+				CODE_SIGN_ENTITLEMENTS = KyPost/KyPost.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = TATYN4X57D;
@@ -297,7 +297,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "KyPost/Info.plist";
+				INFOPLIST_FILE = KyPost/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = KyPost;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
@@ -336,7 +336,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = "KyPost/KyPost.entitlements";
+				CODE_SIGN_ENTITLEMENTS = KyPost/KyPost.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = TATYN4X57D;
@@ -345,7 +345,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "KyPost/Info.plist";
+				INFOPLIST_FILE = KyPost/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = KyPost;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
@@ -567,7 +567,7 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
-				TEST_TARGET_NAME = "KyPost";
+				TEST_TARGET_NAME = KyPost;
 				XROS_DEPLOYMENT_TARGET = 26.5;
 			};
 			name = Debug;
@@ -592,7 +592,7 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
-				TEST_TARGET_NAME = "KyPost";
+				TEST_TARGET_NAME = KyPost;
 				XROS_DEPLOYMENT_TARGET = 26.5;
 			};
 			name = Release;

@@ -27,6 +27,7 @@ final class SingletonGraph {
 
     // MARK: - Storage
 
+    let appLockStore: AppLockStore
     let securePairingStore: SecurePairingStore
     let keywordSettingsStore: KeywordSettingsStore
     let notificationCursorStore: NotificationCursorStore
@@ -137,6 +138,10 @@ final class SingletonGraph {
     )
     lazy var contactsViewModel = ContactsViewModel(repository: contactSyncRepository)
 
+    // MARK: - Security
+
+    lazy var appLockManager = AppLockManager(store: appLockStore)
+
     // MARK: - Navigation
 
     let deepLinkHandler = DeepLinkHandler()
@@ -195,6 +200,7 @@ final class SingletonGraph {
         self.userDefaults = userDefaults
         self.database = try database ?? AppDatabase()
         self.keychain = keychain
+        appLockStore = AppLockStore(keychain: keychain)
         securePairingStore = SecurePairingStore(keychain: keychain)
         keywordSettingsStore = KeywordSettingsStore(defaults: userDefaults)
         notificationCursorStore = NotificationCursorStore(defaults: userDefaults)
