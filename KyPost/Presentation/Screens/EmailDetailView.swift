@@ -18,6 +18,7 @@ struct EmailDetailView: View {
     @Environment(\.theme) private var theme
     @Environment(\.self) private var environment
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
 #if os(macOS)
     @Environment(\.openWindow) private var openWindow
 #endif
@@ -34,6 +35,10 @@ struct EmailDetailView: View {
     /// Reply/forward prefill; non-nil presents the compose sheet (iOS only —
     /// macOS opens the "compose" window instead).
     @State private var composeDraft: ComposeDraft?
+    /// Resolved once in `.task` rather than computed in `body` — building it
+    /// reads the pairing out of the Keychain, and SwiftUI re-evaluates `body`
+    /// far too often for that.
+    @State private var webmailURL: URL?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -42,11 +47,22 @@ struct EmailDetailView: View {
                 .background(theme.panel, in: RoundedRectangle(cornerRadius: Shape.panel))
                 .padding([.horizontal, .top])
 
+            if pgpState != .none {
+                pgpBadges
+                    .padding(.horizontal)
+                    .padding(.top, 10)
+                pgpBanner
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+            }
+
             if !attachments.isEmpty {
                 attachmentBar
             }
 
-            if bodyLooksLikeHTML {
+            if suppressesBody {
+                Spacer(minLength: 0)
+            } else if bodyLooksLikeHTML {
                 EmailBodyWebView(html: themedHTML(email.body))
                     .padding()
             } else {
@@ -101,6 +117,7 @@ struct EmailDetailView: View {
         .task {
             await inboxViewModel.markRead(email)
             attachments = await inboxViewModel.attachments(for: email)
+            resolveWebmailURL()
         }
     }
 
@@ -235,6 +252,20 @@ struct EmailDetailView: View {
         }
     }
 
+    private func resolveWebmailURL() {
+        guard pgpState == .clientProtected,
+              let pairing = try? SingletonGraph.shared.securePairingStore.loadPairing()
+        else {
+            webmailURL = nil
+            return
+        }
+        webmailURL = webmailMessageURL(
+            serverUrl: pairing.srv,
+            mailbox: email.folder,
+            messageId: email.serverId
+        )
+    }
+
     private var header: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(email.subject.isEmpty ? "(No subject)" : email.subject)
@@ -281,6 +312,20 @@ struct EmailDetailView: View {
         ) != nil
     }
 
+    private var pgpState: PgpMessageState {
+        pgpMessageState(
+            pgpEncrypted: email.pgpEncrypted,
+            pgpDecryptError: email.pgpDecryptError,
+            body: email.body
+        )
+    }
+
+    /// Neither unreadable state has content to render; showing an empty
+    /// WebView for them is the defect this change fixes.
+    private var suppressesBody: Bool {
+        pgpState == .clientProtected || pgpState == .decryptFailed
+    }
+
     /// Wraps the message HTML in the same themed scaffold Android uses
     /// (EmailDetailActivity), so colors track the active palette.
     private func themedHTML(_ body: String) -> String {
@@ -319,6 +364,62 @@ struct EmailDetailView: View {
             format: "#%02X%02X%02X",
             channel(resolved.red), channel(resolved.green), channel(resolved.blue)
         )
+    }
+
+    /// Mirrors the web reader's two security badges (frontend ReadPage.tsx).
+    @ViewBuilder
+    private var pgpBadges: some View {
+        HStack(spacing: 6) {
+            StatusBadgeView(
+                label: pgpState == .decryptFailed ? "PGP: could not decrypt" : "PGP: encrypted",
+                isActive: pgpState != .decryptFailed
+            )
+            if showsSignaturePill(state: pgpState, signed: email.pgpSigned) {
+                StatusBadgeView(
+                    label: email.pgpVerified ? "signature verified" : "signature not verified",
+                    isActive: email.pgpVerified
+                )
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// Same shape as remoteContentBanner below. Copy is ported verbatim from
+    /// kypost-android's strings.xml — do not reword.
+    @ViewBuilder
+    private var pgpBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: pgpState == .decryptFailed ? "exclamationmark.triangle.fill" : "lock.fill")
+                .foregroundStyle(theme.ink.opacity(0.7))
+            Text(pgpBannerText)
+                .font(AppFont.ui(12))
+                .foregroundStyle(theme.ink)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            if let webmailURL {
+                Button("Open in webmail") { openURL(webmailURL) }
+                    .font(AppFont.ui(12, weight: .medium))
+                    .buttonStyle(.borderless)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(theme.panel, in: RoundedRectangle(cornerRadius: Shape.field))
+    }
+
+    private var pgpBannerText: String {
+        switch pgpState {
+        case .clientProtected:
+            webmailURL == nil
+                ? "This message is end-to-end encrypted. Only your browser holds the key, so it can't be read here.\nCouldn't work out this server's web address — open this message in your browser."
+                : "This message is end-to-end encrypted. Only your browser holds the key, so it can't be read here."
+        case .decryptFailed:
+            "This message is encrypted and couldn't be decrypted: \(email.pgpDecryptError)"
+        case .decryptedByServer:
+            "This message was encrypted. The server decrypted it to show it here."
+        case .none:
+            ""
+        }
     }
 }
 
