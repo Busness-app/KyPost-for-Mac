@@ -12,6 +12,14 @@ struct EmailListRow: View {
 
     let email: Email
 
+    private var rowPgpState: PgpMessageState {
+        pgpMessageState(
+            pgpEncrypted: email.pgpEncrypted,
+            pgpDecryptError: email.pgpDecryptError,
+            body: email.body
+        )
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             AvatarView(name: email.senderName.isEmpty ? email.senderEmail : email.senderName)
@@ -27,10 +35,21 @@ struct EmailListRow: View {
                         .font(AppFont.ui(12))
                         .foregroundStyle(theme.ink.opacity(0.7))
                 }
-                Text(email.subject)
-                    .font(AppFont.ui(14, weight: email.read ? .regular : .medium))
-                    .foregroundStyle(email.read ? theme.ink : theme.inkStrong)
-                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    if let symbol = pgpRowSymbol(rowPgpState) {
+                        Image(systemName: symbol)
+                            .font(AppFont.ui(12))
+                            .foregroundStyle(theme.ink.opacity(0.8))
+                    }
+                    Text(email.subject)
+                        .font(AppFont.ui(14, weight: email.read ? .regular : .medium))
+                        .foregroundStyle(email.read ? theme.ink : theme.inkStrong)
+                        .lineLimit(1)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(
+                    pgpRowAccessibilityLabel(state: rowPgpState, subject: email.subject) ?? email.subject
+                )
                 if !email.keywords.isEmpty {
                     HStack(spacing: 5) {
                         ForEach(email.keywords.sorted(), id: \.self) { keyword in
