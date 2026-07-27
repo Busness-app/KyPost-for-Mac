@@ -27,6 +27,10 @@ final class SettingsViewModel {
     private let deviceRegistrationService: DeviceRegistrationService
     private let deregisterDeviceUseCase: DeregisterDeviceUseCase
     private let pushNotificationDispatcher: PushNotificationDispatcher
+    /// Re-authentication for the destructive actions on this screen. Optional
+    /// so existing call sites and tests that don't exercise the lock keep
+    /// working; nil means "no lock configured", i.e. proceed.
+    private let appLockManager: AppLockManager?
 
     var systemNotificationsEnabled: Bool {
         didSet { pushSettingsStore.systemNotificationsEnabled = systemNotificationsEnabled }
@@ -59,7 +63,8 @@ final class SettingsViewModel {
         systemContactsExporter: SystemContactsExporter,
         deviceRegistrationService: DeviceRegistrationService,
         deregisterDeviceUseCase: DeregisterDeviceUseCase,
-        pushNotificationDispatcher: PushNotificationDispatcher
+        pushNotificationDispatcher: PushNotificationDispatcher,
+        appLockManager: AppLockManager? = nil
     ) {
         self.securePairingStore = securePairingStore
         self.pushSettingsStore = pushSettingsStore
@@ -71,6 +76,7 @@ final class SettingsViewModel {
         self.deviceRegistrationService = deviceRegistrationService
         self.deregisterDeviceUseCase = deregisterDeviceUseCase
         self.pushNotificationDispatcher = pushNotificationDispatcher
+        self.appLockManager = appLockManager
         systemNotificationsEnabled = pushSettingsStore.systemNotificationsEnabled
         exportContactsToSystem = contactsSettingsStore.exportToSystemContactsEnabled
     }
@@ -92,7 +98,21 @@ final class SettingsViewModel {
         pushSettingsStore.deliveryMode?.rawValue.capitalized ?? "Push"
     }
 
+    /// Re-authenticates before a destructive action. Preferences is reachable
+    /// from the menu bar while the app lock is engaged, so these need the same
+    /// gate that turning the lock off already has.
+    private func confirmDestructive(_ reason: String) async -> Bool {
+        guard let appLockManager else { return true }
+        return await appLockManager.confirmWithDeviceAuth(reason: reason)
+    }
+
     func unpair() async {
+        // Clearing the pairing also clears the pinned SPKI hash, so the next
+        // pairing re-arms trust on whatever certificate is presented. That is
+        // as destructive as turning the lock off, and is gated the same way.
+        guard await confirmDestructive(String(localized: "Remove this device's pairing")) else {
+            return
+        }
         _ = await deregisterDeviceUseCase()
         try? securePairingStore.clear()
         statusMessage = "Pairing removed"
@@ -189,7 +209,8 @@ final class SettingsViewModel {
     }
 
     /// "Forget This Computer" (guide checklist): clears the stored session token.
-    func forgetDesktopPairing() {
+    func forgetDesktopPairing() async {
+        guard await confirmDestructive(String(localized: "Forget this computer")) else { return }
         try? desktopSessionStore.clear()
         statusMessage = "Desktop pairing removed"
     }
@@ -213,6 +234,9 @@ final class SettingsViewModel {
     /// Removes every card the app created in Apple Contacts and forgets the
     /// links; separate from the toggle, which keeps exported cards.
     func removeExportedContacts() async {
+        guard await confirmDestructive(
+            String(localized: "Remove exported contacts from Apple Contacts")
+        ) else { return }
         let removed = await systemContactsExporter.removeAllExported()
         hasExportedContacts = systemContactsExporter.hasExportedContacts()
         statusMessage = "Removed \(removed) exported contact(s) from Apple Contacts"

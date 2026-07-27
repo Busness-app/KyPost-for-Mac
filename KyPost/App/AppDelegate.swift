@@ -14,6 +14,25 @@ import os
 private enum PushLifecycle {
     static func onLaunch() {
         let graph = SingletonGraph.shared
+        // Re-apply the Hostile Location Protection wipe if the mode is on.
+        // Idempotent, and it repairs a toggle interrupted before its own erase
+        // finished: the flag is persisted after the wipe, but a crash between
+        // the erase and the rebuild would otherwise leave the app reporting the
+        // mode as on while pre-toggle plaintext sat on disk, with nothing
+        // anywhere reconciling the flag against the filesystem.
+        //
+        // Here rather than in SingletonGraph.init so constructing a graph is
+        // never destructive — tests build graphs with this flag set.
+        if graph.hostileLocationProtectionStore.enabled {
+            do {
+                try AppDatabase.deleteStoreFiles()
+                try ContactPhotoCache.deleteAll()
+            } catch {
+                Log.storage.error(
+                    "Could not re-apply the hostile-location wipe: \(error.localizedDescription)"
+                )
+            }
+        }
         graph.pushNotificationDispatcher.configure()
         graph.systemContactsChangeMonitor.start()
         // Must precede the first poll: a gated pairing read without the

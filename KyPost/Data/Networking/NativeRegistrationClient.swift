@@ -115,8 +115,18 @@ final class NativeRegistrationClient: Sendable {
             return .unauthorized
         } catch NetworkError.serviceUnavailable {
             return .backendMisconfigured
+        } catch NetworkError.conflict {
+            // The 409 body is relay-supplied text; the other clients already
+            // peel this off rather than render it verbatim in app chrome.
+            return .failure(String(localized: "The server rejected this pairing request."))
+        } catch let error as NetworkError {
+            // "\(error)" resolves through String(describing:), which never
+            // consults LocalizedError — so certificateMismatch printed as the
+            // bare case name and its "the connection may be intercepted"
+            // warning never reached the user.
+            return .failure(MailOutcome.message(for: error))
         } catch {
-            return .failure("\(error)")
+            return .failure(error.localizedDescription)
         }
     }
 }

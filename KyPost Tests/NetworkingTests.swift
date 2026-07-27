@@ -116,12 +116,41 @@ private let validPairingLink = URL(
         )
     }
 
-    @Test func regParameterOverridesDerivedEndpoint() {
+    @Test func regParameterOverridesDerivedEndpointOnTheSameHost() {
         let params = PairingParams(
             sub: "u", srv: "https://relay.example.com", pt: "p",
-            reg: "https://custom.example.com/register"
+            reg: "https://relay.example.com/custom/register"
         )
-        #expect(params.registrationEndpoint?.absoluteString == "https://custom.example.com/register")
+        #expect(
+            params.registrationEndpoint?.absoluteString
+            == "https://relay.example.com/custom/register"
+        )
+    }
+
+    @Test func regParameterOnAForeignHostIsIgnored() {
+        // The confirmation screen names srv's host while the credential POST
+        // followed reg, so a cross-host override showed one server and
+        // contacted another. Enforced here as well as at parse time because
+        // reg is persisted and replayed on every re-registration.
+        let params = PairingParams(
+            sub: "u", srv: "https://relay.example.com", pt: "p",
+            reg: "https://evil.test/register"
+        )
+        #expect(
+            params.registrationEndpoint?.absoluteString
+            == "https://relay.example.com/api/notifications/native/register"
+        )
+    }
+
+    @Test func aCrossHostRegParameterIsRejectedAtParseTime() throws {
+        let url = try #require(URL(
+            string: "kypost://native-pair?sub=u&pt=p"
+                + "&srv=https%3A%2F%2Frelay.example.com"
+                + "&reg=https%3A%2F%2Fevil.test%2Fregister"
+        ))
+        #expect(throws: PairingLinkError.registrationHostMismatch) {
+            try PairingLinkParser.parse(url)
+        }
     }
 
     @Test func pullEndpointDerivedWhenAbsent() {

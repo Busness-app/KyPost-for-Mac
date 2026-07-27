@@ -36,6 +36,9 @@ struct SystemContactsExportPlan: Equatable, Sendable {
     var updates: [Update] = []
     /// Links whose contact is gone from the app; the only cards ever deleted.
     var deletes: [SystemContactLink] = []
+    /// Orphaned links to user-authored cards: the link is dropped, the card is
+    /// left in Contacts.app untouched.
+    var forgets: [SystemContactLink] = []
     /// Links matched by server uid after a tooOld wipe replaced the localIds.
     var relinks: [Relink] = []
 }
@@ -59,7 +62,15 @@ enum SystemContactsDiff {
                 orphanedLinks.append(link)
                 continue
             }
+            // Must precede the userOwned guard below: skipping the insert would
+            // drop the contact into plan.creates and duplicate the very card
+            // adoption exists to prevent.
             matchedLocalIds.insert(contact.localId)
+
+            // The user authored this card; we linked it only to avoid a
+            // duplicate. Never push relay data into it.
+            guard !link.userOwned else { continue }
+
             // A missing card is re-exported even when the contact itself is
             // unchanged; otherwise stale links mask externally deleted cards
             // forever and reconciles report "Exported 0".
@@ -79,6 +90,10 @@ enum SystemContactsDiff {
                }) {
                 matchedLocalIds.insert(contact.localId)
                 plan.relinks.append(.init(contact: contact, link: link))
+            } else if link.userOwned {
+                // The contact left the app, but the card was never ours to
+                // delete. Forget the link and leave the card alone.
+                plan.forgets.append(link)
             } else {
                 plan.deletes.append(link)
             }
@@ -190,22 +205,72 @@ final class SystemContactsExporter {
         let cards = (try? await store.listAll()) ?? []
         await adoptMatchingCards(cards, summary: &summary)
         await importNewCards(cards, summary: &summary)
-        let contacts = (try? await contactDAO.listAll()) ?? []
+
+        // A failed read is not an empty address book. Swallowing the throw here
+        // made a locked store, a migration failure, or a container torn down
+        // mid-rebuild indistinguishable from "the user has no contacts" — and
+        // every link then looks orphaned, so the plan below deletes a card for
+        // each one.
+        let contacts: [Contact]
+        do {
+            contacts = try await contactDAO.listAll()
+        } catch {
+            Log.sync.error("Reconcile aborted: contact read failed: \(error.localizedDescription)")
+            return summary
+        }
+
+        let links = linkStore.all()
         let plan = SystemContactsDiff.plan(
             contacts: contacts,
-            links: linkStore.all(),
+            links: links,
             existingCardIdentifiers: Set(cards.map(\.identifier))
         )
+
+        // Routine reconciliation never legitimately empties the address book.
+        // A tooOld wipe, the in-memory store after a Hostile Location
+        // Protection rebuild, and a torn-down container all arrive here with an
+        // empty contact list and a full link store. Keyed on the wipe shape
+        // rather than on `contacts.isEmpty`, so a server deleting the user's
+        // last remaining contact still removes that one card.
+        if links.count > 1 && plan.deletes.count == links.count {
+            Log.sync.error("""
+            Reconcile aborted: \(plan.deletes.count) deletes would remove every \
+            linked card. Treating this as a transient empty contact store.
+            """)
+            return summary
+        }
 
         for link in plan.deletes {
             await deleteLinked(link, summary: &summary)
         }
+        for link in plan.forgets {
+            // The card is the user's; drop our bookkeeping only. Baseline it so
+            // the import pass doesn't immediately pull it back in as a new
+            // contact.
+            baselineStore.add(link.cnIdentifier)
+            linkStore.remove(localId: link.localId)
+        }
         for relink in plan.relinks {
             linkStore.remove(localId: relink.link.localId)
+            guard !relink.link.userOwned else {
+                // Re-point the link at the contact's new localId, but don't
+                // write to the card: a tooOld wipe must not become licence to
+                // rewrite a card the user authored.
+                linkStore.upsert(SystemContactLink(
+                    localId: relink.contact.localId,
+                    uid: relink.contact.uid,
+                    cnIdentifier: relink.link.cnIdentifier,
+                    exportedUpdatedAt: relink.contact.updatedAt,
+                    imported: relink.link.imported,
+                    userOwned: true
+                ))
+                continue
+            }
             await upsertLinked(
                 relink.contact,
                 cnIdentifier: relink.link.cnIdentifier,
                 importedOverride: relink.link.imported,
+                userOwnedOverride: relink.link.userOwned,
                 summary: &summary
             )
         }
@@ -233,11 +298,25 @@ final class SystemContactsExporter {
         await serialized {
             var summary = Summary()
             if let link = self.linkStore.link(localId: contact.localId) {
+                // A card the user authored is linked for de-duplication only;
+                // don't overwrite it from app data.
+                guard !link.userOwned else { return summary }
                 await self.upsertLinked(contact, cnIdentifier: link.cnIdentifier, summary: &summary)
             } else if let match = await self.adoptableCard(for: contact) {
-                // Same person already has a card on this device: update it in
-                // place instead of creating a junk duplicate.
-                await self.upsertLinked(contact, cnIdentifier: match.identifier, summary: &summary)
+                // Same person already has a card on this device. Adopt it so we
+                // don't create a junk duplicate — but the card is the user's,
+                // so record that and leave its contents alone. Overwriting it
+                // here was the incremental-save flavour of the same defect the
+                // reconcile path had.
+                self.linkStore.upsert(SystemContactLink(
+                    localId: contact.localId,
+                    uid: contact.uid,
+                    cnIdentifier: match.identifier,
+                    exportedUpdatedAt: contact.updatedAt,
+                    imported: false,
+                    userOwned: true
+                ))
+                summary.adopted += 1
             } else {
                 await self.create(contact, summary: &summary)
             }
@@ -266,7 +345,12 @@ final class SystemContactsExporter {
         let summary = await serialized {
             var summary = Summary()
             for link in self.linkStore.all() {
-                if link.imported {
+                // Imported cards the user made in Contacts.app, and cards the
+                // app merely adopted to avoid a duplicate, are both the user's.
+                // Only cards this app actually created are removed — checking
+                // `imported` alone deleted adopted cards, contradicting the
+                // button's own "cards the app created" description.
+                if link.imported || link.userOwned {
                     self.baselineStore.add(link.cnIdentifier)
                     self.linkStore.remove(localId: link.localId)
                 } else {
@@ -322,17 +406,29 @@ final class SystemContactsExporter {
                   let card = candidates[key]?.first(where: { !consumed.contains($0.identifier) })
             else { continue }
             consumed.insert(card.identifier)
-            // Re-adoptions keep their export timestamp (the card content is
-            // current; rewriting it would just churn the Contacts database);
-            // fresh adoptions use distantPast so the export pass refreshes
-            // the card's mapped fields from the app contact.
             let stale = staleLinks[contact.localId]
+            // A card with no prior link of ours is one the user authored: we
+            // are adopting it purely so the export pass doesn't create a
+            // duplicate. Marking it userOwned is what stops the same pass
+            // rewriting every mapped field from relay data — writing
+            // `imported: false` alone made adopted cards indistinguishable
+            // from cards we created, so a sparse relay contact could strip a
+            // real card's phones, addresses and birthday, and a later orphaned
+            // link could delete it outright.
+            //
+            // A re-adoption (stale link present) is a card we already owned
+            // whose unified identifier drifted, so it keeps its provenance and
+            // its export timestamp — rewriting it would just churn Contacts.
+            let isReadoption = stale != nil
             linkStore.upsert(SystemContactLink(
                 localId: contact.localId,
                 uid: contact.uid,
                 cnIdentifier: card.identifier,
-                exportedUpdatedAt: stale?.exportedUpdatedAt ?? .distantPast,
-                imported: stale?.imported ?? false
+                // Fresh adoptions no longer need distantPast to force a
+                // refresh: we are deliberately not refreshing them.
+                exportedUpdatedAt: stale?.exportedUpdatedAt ?? contact.updatedAt,
+                imported: stale?.imported ?? false,
+                userOwned: stale?.userOwned ?? !isReadoption
             ))
             summary.adopted += 1
         }
@@ -424,11 +520,14 @@ final class SystemContactsExporter {
         _ contact: Contact,
         cnIdentifier: String,
         importedOverride: Bool? = nil,
+        userOwnedOverride: Bool? = nil,
         summary: inout Summary
     ) async {
-        let imported = importedOverride
-            ?? linkStore.link(localId: contact.localId)?.imported
-            ?? false
+        let existingLink = linkStore.link(localId: contact.localId)
+        let imported = importedOverride ?? existingLink?.imported ?? false
+        // Provenance has to survive a rewrite, or the next reconcile treats a
+        // user-authored card as ours again.
+        let userOwned = userOwnedOverride ?? existingLink?.userOwned ?? false
         do {
             if let existing = try await store.fetch(identifier: cnIdentifier),
                let mutable = existing.mutableCopy() as? CNMutableContact {
@@ -439,7 +538,8 @@ final class SystemContactsExporter {
                     uid: contact.uid,
                     cnIdentifier: cnIdentifier,
                     exportedUpdatedAt: contact.updatedAt,
-                    imported: imported
+                    imported: imported,
+                    userOwned: userOwned
                 ))
                 summary.updated += 1
             } else {

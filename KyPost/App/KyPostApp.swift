@@ -59,6 +59,7 @@ struct KyPostApp: App {
                 .background(themeManager.palette.bg.ignoresSafeArea())
                 .overlay { LockedOverlay().environment(\.theme, themeManager.palette) }
                 .protectedFromCapture()
+                .modifier(CloseOnHostileLocationProtection(draft: $draft))
         }
         .defaultSize(width: 640, height: 560)
 
@@ -67,6 +68,11 @@ struct KyPostApp: App {
                 .id(environment.generation)
                 .environment(themeManager)
                 .environment(router)
+                // AGENTS.md: every scene carries the lock cover. This one did
+                // not, so ⌘, reached Remove Pairing (which clears the pinned
+                // SPKI hash) and the Hostile Location Protection toggle while
+                // the app was locked.
+                .overlay { LockedOverlay().environment(\.theme, themeManager.palette) }
                 .protectedFromCapture()
         }
 #else
@@ -112,3 +118,27 @@ struct KyPostApp: App {
 #endif
     }
 }
+
+#if os(macOS)
+/// Closes a compose window when Hostile Location Protection is toggled.
+///
+/// Two things have to happen and only one of them is the visible one: the
+/// scene value is archived for state restoration, and a reply's draft body is
+/// the full quoted plaintext of the received message — so clearing the binding
+/// is what actually removes mail text from disk. `dismissWindow` lives in the
+/// SwiftUI environment and is only reachable from a View, which is why this is
+/// a modifier rather than a call in `AppEnvironment`.
+private struct CloseOnHostileLocationProtection: ViewModifier {
+    @Binding var draft: ComposeDraft?
+    @Environment(\.dismissWindow) private var dismissWindow
+
+    func body(content: Content) -> some View {
+        content.onReceive(
+            NotificationCenter.default.publisher(for: .kyPostCloseComposeWindows)
+        ) { _ in
+            draft = nil
+            dismissWindow(id: "compose")
+        }
+    }
+}
+#endif

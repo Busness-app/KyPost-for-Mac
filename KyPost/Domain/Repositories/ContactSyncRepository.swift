@@ -32,6 +32,9 @@ final class ContactSyncRepository {
     private let systemContactsExporter: SystemContactsExporter?
     /// Photo bytes for synced photoRefs; nil in tests that don't exercise it.
     private let photoCache: ContactPhotoCache?
+    /// Keys the user verified out of band, remembered across a `tooOld` wipe
+    /// so the re-pull can't pass off a substituted key as a first sighting.
+    private let verifiedKeyStore: VerifiedPgpKeyStore?
 
     init(
         client: ContactSyncClient,
@@ -40,7 +43,8 @@ final class ContactSyncRepository {
         pendingDeletesStore: ContactPendingDeletesStore,
         securePairingStore: SecurePairingStore,
         systemContactsExporter: SystemContactsExporter? = nil,
-        photoCache: ContactPhotoCache? = nil
+        photoCache: ContactPhotoCache? = nil,
+        verifiedKeyStore: VerifiedPgpKeyStore? = nil
     ) {
         self.client = client
         self.contactDAO = contactDAO
@@ -49,6 +53,7 @@ final class ContactSyncRepository {
         self.securePairingStore = securePairingStore
         self.systemContactsExporter = systemContactsExporter
         self.photoCache = photoCache
+        self.verifiedKeyStore = verifiedKeyStore
     }
 
     // MARK: - Local CRUD
@@ -63,6 +68,14 @@ final class ContactSyncRepository {
         dirty.needsSync = true
         dirty.updatedAt = Date()
         try await contactDAO.upsert(contacts: [dirty])
+        // The user is the authority on their own key: an edit (including a
+        // freshly scanned QR key) resets what we remember as verified, and
+        // clearing the key here really does clear it.
+        if let pgpKey = dirty.pgpKey, !pgpKey.isEmpty {
+            verifiedKeyStore?.remember(uid: dirty.uid, key: pgpKey)
+        } else {
+            verifiedKeyStore?.forget(uid: dirty.uid)
+        }
         await systemContactsExporter?.exportUpsert(dirty)
     }
 
@@ -75,6 +88,8 @@ final class ContactSyncRepository {
         updated.pgpKey = pending
         updated.pendingPgpKey = nil
         try await contactDAO.upsert(contacts: [updated])
+        // The user re-verified and accepted: this is now the trusted key.
+        verifiedKeyStore?.remember(uid: updated.uid, key: pending)
     }
 
     /// Discards a PGP key that arrived via sync, keeping the key already on
@@ -93,6 +108,7 @@ final class ContactSyncRepository {
         if let uid = contact.uid {
             try await contactDAO.delete(uid: uid)
             pendingDeletesStore.add(uid)
+            verifiedKeyStore?.forget(uid: uid)
         } else {
             // Never reached the server; deleting locally is enough.
             try await contactDAO.deleteLocal(localId: contact.localId)
@@ -365,7 +381,15 @@ final class ContactSyncRepository {
         contact.birthday = dto.birthday ?? ""
         contact.photoRef = dto.photoRef
         contact.groupIDs = dto.groupIDs ?? []
-        Self.applyPgpKey(from: dto.pgpKey, existing: existing, to: &contact)
+        Self.applyPgpKey(
+            from: dto.pgpKey,
+            existing: existing,
+            // Survives a tooOld wipe, so a full re-pull can't present a
+            // substituted key as a first sighting.
+            rememberedKey: verifiedKeyStore?.key(forUid: uid),
+            to: &contact
+        )
+        verifiedKeyStore?.remember(uid: uid, key: contact.pgpKey)
         contact.ims = (dto.ims ?? []).map {
             ContactIM(service: $0.service, label: $0.label, value: $0.value)
         }
@@ -394,19 +418,61 @@ final class ContactSyncRepository {
     /// key's whole value is the out-of-band fingerprint verification the
     /// user did at QR-exchange time (ScanPgpKeyView) — a compromised relay
     /// could otherwise defeat that verification by swapping the key on the
-    /// next routine sync, with no warning. A missing/empty incoming key, or
-    /// one identical to what's already stored, applies immediately.
-    private static func applyPgpKey(from incoming: String?, existing: Contact?, to contact: inout Contact) {
-        guard let existingKey = existing?.pgpKey, !existingKey.isEmpty,
-              let incoming, !incoming.isEmpty,
-              incoming != existingKey
-        else {
+    /// next routine sync, with no warning.
+    ///
+    /// **Clearing a trusted key counts as differing.** Treating a
+    /// missing/empty incoming key as "apply immediately" was a two-step hole
+    /// in exactly the guarantee above: entry one omits `pgpKey` and erases the
+    /// verified key with no banner, entry two supplies the attacker's key and
+    /// sails through because there is no longer a prior key to compare
+    /// against. Both entries fit in a single sync response, since each is
+    /// saved before the next is read. So a withdrawal keeps what the user
+    /// verified and is ignored; only the user can remove a key they verified,
+    /// from the contact screen.
+    ///
+    /// A pending review also survives a withdrawal — otherwise the same trick
+    /// clears the banner instead of the key.
+    ///
+    /// `rememberedKey` is the last key this uid was trusted with, held outside
+    /// SwiftData so it outlives a `tooOld` wipe. Without it the wipe was a
+    /// laundering path: `clearAll()` removed the local row, so the re-pull saw
+    /// no prior key and applied whatever the relay sent.
+    private static func applyPgpKey(
+        from incoming: String?,
+        existing: Contact?,
+        rememberedKey: String? = nil,
+        to contact: inout Contact
+    ) {
+        // A wiped row has no key; fall back to what the user last verified.
+        let existingKey = (existing?.pgpKey?.isEmpty == false)
+            ? (existing?.pgpKey ?? "")
+            : (rememberedKey ?? "")
+        let incomingKey = incoming ?? ""
+
+        // Nothing trusted yet: first key in wins, as before.
+        guard !existingKey.isEmpty else {
             contact.pgpKey = incoming
             contact.pendingPgpKey = nil
             return
         }
+
+        // Unchanged: clears any stale pending review (the server backed off).
+        if incomingKey == existingKey {
+            contact.pgpKey = existingKey
+            contact.pendingPgpKey = nil
+            return
+        }
+
+        // Withdrawn: keep the verified key and any pending review untouched.
+        if incomingKey.isEmpty {
+            contact.pgpKey = existingKey
+            contact.pendingPgpKey = existing?.pendingPgpKey
+            return
+        }
+
+        // Genuinely different: hold for the user to re-verify.
         contact.pgpKey = existingKey
-        contact.pendingPgpKey = incoming
+        contact.pendingPgpKey = incomingKey
     }
 }
 

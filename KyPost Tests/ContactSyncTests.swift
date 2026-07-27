@@ -901,6 +901,64 @@ private func makeDTO(
         #expect(stored.pendingPgpKey == "attacker-key")
     }
 
+    @Test func omittingTheKeyDoesNotClearAVerifiedOne() async throws {
+        // Step one of the bypass: treating a missing key as "apply
+        // immediately" erased the verified key with no banner, so step two had
+        // no prior key to compare against and sailed straight in.
+        let json = #"""
+        {"cursor": 2, "changed": [{"uid": "srv-1", "rev": 2, "fn": "Bob"}]}
+        """#
+        let env = try makeEnvironment(client: stubClient(json: json))
+        var seeded = makeContact(uid: "srv-1", name: "Bob")
+        seeded.pgpKey = "verified-key"
+        try await env.dao.upsert(contacts: [seeded])
+
+        try await env.repository.sync()
+
+        let stored = try #require(try await env.dao.getContact(uid: "srv-1"))
+        #expect(stored.pgpKey == "verified-key")
+        #expect(stored.pendingPgpKey == nil)
+    }
+
+    @Test func clearThenReplaceInOneResponseStillHoldsTheNewKeyForReview() async throws {
+        // The whole bypass in a single sync: each entry is saved before the
+        // next is read, so one response could clear and then replace.
+        let json = #"""
+        {"cursor": 2, "changed": [
+          {"uid": "srv-1", "rev": 2, "fn": "Bob"},
+          {"uid": "srv-1", "rev": 3, "fn": "Bob", "pgpKey": "attacker-key"}
+        ]}
+        """#
+        let env = try makeEnvironment(client: stubClient(json: json))
+        var seeded = makeContact(uid: "srv-1", name: "Bob")
+        seeded.pgpKey = "verified-key"
+        try await env.dao.upsert(contacts: [seeded])
+
+        try await env.repository.sync()
+
+        let stored = try #require(try await env.dao.getContact(uid: "srv-1"))
+        #expect(stored.pgpKey == "verified-key")
+        #expect(stored.pendingPgpKey == "attacker-key")
+    }
+
+    @Test func aPendingReviewSurvivesTheServerWithdrawingTheKey() async throws {
+        let json = #"""
+        {"cursor": 3, "changed": [{"uid": "srv-1", "rev": 3, "fn": "Bob"}]}
+        """#
+        let env = try makeEnvironment(client: stubClient(json: json))
+        var seeded = makeContact(uid: "srv-1", name: "Bob")
+        seeded.pgpKey = "verified-key"
+        seeded.pendingPgpKey = "attacker-key"
+        try await env.dao.upsert(contacts: [seeded])
+
+        try await env.repository.sync()
+
+        // Otherwise the same trick clears the banner rather than the key.
+        let stored = try #require(try await env.dao.getContact(uid: "srv-1"))
+        #expect(stored.pgpKey == "verified-key")
+        #expect(stored.pendingPgpKey == "attacker-key")
+    }
+
     @Test func newlyReceivedKeyAppliesImmediatelyWhenNoneExistedBefore() async throws {
         let json = #"""
         {"cursor": 2, "changed": [{"uid": "srv-1", "rev": 2, "fn": "Bob", "pgpKey": "first-key"}]}

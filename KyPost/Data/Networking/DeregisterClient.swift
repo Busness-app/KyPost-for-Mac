@@ -49,8 +49,14 @@ final class DeregisterClient: Sendable {
             return .success
         } catch NetworkError.unauthorized {
             return .unauthorized
+        } catch let error as NetworkError {
+            // "\(error)" resolves through String(describing:), which never
+            // consults LocalizedError — so certificateMismatch printed as the
+            // bare case name and its "the connection may be intercepted"
+            // warning never reached the user.
+            return .failure(MailOutcome.message(for: error))
         } catch {
-            return .failure("\(error)")
+            return .failure(error.localizedDescription)
         }
     }
 }

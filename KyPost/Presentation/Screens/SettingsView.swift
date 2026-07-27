@@ -21,7 +21,8 @@ struct SettingsView: View {
         systemContactsExporter: SingletonGraph.shared.systemContactsExporter,
         deviceRegistrationService: SingletonGraph.shared.deviceRegistrationService,
         deregisterDeviceUseCase: SingletonGraph.shared.deregisterDeviceUseCase,
-        pushNotificationDispatcher: SingletonGraph.shared.pushNotificationDispatcher
+        pushNotificationDispatcher: SingletonGraph.shared.pushNotificationDispatcher,
+        appLockManager: SingletonGraph.shared.appLockManager
     )
     @State private var showPairingSheet = false
     @State private var showUnpairConfirmation = false

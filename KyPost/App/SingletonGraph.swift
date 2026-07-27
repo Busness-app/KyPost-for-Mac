@@ -31,6 +31,7 @@ final class SingletonGraph {
     let keywordSettingsStore: KeywordSettingsStore
     let notificationCursorStore: NotificationCursorStore
     let contactCursorStore: ContactCursorStore
+    let verifiedPgpKeyStore: VerifiedPgpKeyStore
     let contactPendingDeletesStore: ContactPendingDeletesStore
     let contactsSettingsStore: ContactsSettingsStore
     let systemContactsLinkStore: SystemContactsLinkStore
@@ -104,7 +105,7 @@ final class SingletonGraph {
         client: pgpSendClient,
         securePairingStore: securePairingStore
     )
-    let contactPhotoCache = ContactPhotoCache()
+    let contactPhotoCache: ContactPhotoCache
     lazy var systemContactsExporter = SystemContactsExporter(
         store: LiveSystemContactStore(),
         linkStore: systemContactsLinkStore,
@@ -124,7 +125,8 @@ final class SingletonGraph {
         pendingDeletesStore: contactPendingDeletesStore,
         securePairingStore: securePairingStore,
         systemContactsExporter: systemContactsExporter,
-        photoCache: contactPhotoCache
+        photoCache: contactPhotoCache,
+        verifiedKeyStore: verifiedPgpKeyStore
     )
     lazy var pushRepository = PushRepository(
         dao: pushNotificationDAO,
@@ -261,9 +263,11 @@ final class SingletonGraph {
     ) throws {
         self.userDefaults = userDefaults
         hostileLocationProtectionStore = HostileLocationProtectionStore(defaults: userDefaults)
+        let hostileLocation = hostileLocationProtectionStore.enabled
+
         // Hostile Location Protection keeps the whole cache in memory.
-        self.database = try database
-            ?? AppDatabase(inMemory: hostileLocationProtectionStore.enabled)
+        self.database = try database ?? AppDatabase(inMemory: hostileLocation)
+        contactPhotoCache = ContactPhotoCache(inMemory: hostileLocation)
         if !self.database.isInMemory {
             do {
                 try AppDatabase.excludeStoreFromBackup()
@@ -278,6 +282,7 @@ final class SingletonGraph {
         notificationCursorStore = NotificationCursorStore(defaults: userDefaults)
         contactCursorStore = ContactCursorStore(defaults: userDefaults)
         contactPendingDeletesStore = ContactPendingDeletesStore(defaults: userDefaults)
+        verifiedPgpKeyStore = VerifiedPgpKeyStore(defaults: userDefaults)
         contactsSettingsStore = ContactsSettingsStore(defaults: userDefaults)
         systemContactsLinkStore = SystemContactsLinkStore(defaults: userDefaults)
         systemContactsBaselineStore = SystemContactsBaselineStore(defaults: userDefaults)

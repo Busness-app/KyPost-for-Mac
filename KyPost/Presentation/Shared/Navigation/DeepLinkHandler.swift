@@ -21,13 +21,23 @@ struct PairingParams: Equatable, Sendable {
     /// Optional registration URL override.
     var reg: String?
 
-    /// Registration endpoint: `reg` override wins, otherwise derived from srv
-    /// (mirrors the pull-endpoint derivation rule in spec §3).
+    /// Registration endpoint: a `reg` override on the same host as `srv` wins,
+    /// otherwise derived from srv (mirrors the pull-endpoint derivation rule in
+    /// spec §3).
+    ///
+    /// The same-host rule is enforced here as well as at parse time, because
+    /// `reg` is persisted as `Pairing.registrationUrl` and replayed on every
+    /// foreground and APNs-token refresh. Validating only at parse time would
+    /// leave a device that was already pointed at a foreign host re-sending its
+    /// push token there forever, even after the parser was fixed.
     var registrationEndpoint: URL? {
-        if let reg, !reg.isEmpty {
-            return URL(string: reg)
-        }
-        return URL(string: srv)?.appending(path: "api/notifications/native/register")
+        let derived = URL(string: srv)?.appending(path: "api/notifications/native/register")
+        guard let reg, !reg.isEmpty, let override = URL(string: reg) else { return derived }
+        guard let overrideHost = override.host()?.lowercased(),
+              let srvHost = URL(string: srv)?.host()?.lowercased(),
+              overrideHost == srvHost
+        else { return derived }
+        return override
     }
 }
 
@@ -38,6 +48,12 @@ enum PairingLinkError: Error, Equatable {
     /// real push token and (on success) mints the per-device secret, so a
     /// plaintext destination could have both intercepted in transit.
     case insecureServerURL
+    /// `reg` names a different host than `srv`. The confirmation screen shows
+    /// the user `srv`, but the credential POST goes to `reg` — so a link
+    /// pairing a trusted-looking `srv` with an attacker-controlled `reg`
+    /// displayed one host and contacted another. The relay always emits both
+    /// on the same host, so requiring that costs nothing.
+    case registrationHostMismatch
 }
 
 enum PairingLinkParser {
@@ -70,8 +86,22 @@ enum PairingLinkParser {
             throw PairingLinkError.insecureServerURL
         }
         let reg = query["reg"].flatMap { $0.isEmpty ? nil : $0 }
-        if let reg, URL(string: reg)?.scheme?.lowercased() != "https" {
-            throw PairingLinkError.insecureServerURL
+        if let reg {
+            guard let regURL = URL(string: reg),
+                  regURL.scheme?.lowercased() == "https"
+            else {
+                throw PairingLinkError.insecureServerURL
+            }
+            // The confirmation screen names srv's host, but the registration
+            // POST — which carries the push token and receives the device
+            // secret — goes to reg. Letting them differ meant the one control
+            // on this path described a host the credentials never reached.
+            guard let regHost = regURL.host()?.lowercased(),
+                  let srvHost = URL(string: srv)?.host()?.lowercased(),
+                  regHost == srvHost
+            else {
+                throw PairingLinkError.registrationHostMismatch
+            }
         }
 
         return PairingParams(

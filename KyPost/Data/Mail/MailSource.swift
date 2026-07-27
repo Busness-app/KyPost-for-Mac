@@ -122,7 +122,13 @@ enum MailOutcome: Equatable, Sendable {
     /// "server(statusCode: 404)" — straight in front of the user; the server
     /// side of this feature isn't merged yet, so a 404 from the draft-save
     /// call is exactly what the first tester hits.
-    private static func message(for error: NetworkError) -> String {
+    ///
+    /// Internal rather than private because the networking clients need it
+    /// too: they each ended in `.failure("\(error)")`, and string
+    /// interpolation resolves through `String(describing:)`, which never
+    /// consults `LocalizedError`. That printed "certificateMismatch" where a
+    /// warning that the connection may be intercepted was intended.
+    static func message(for error: NetworkError) -> String {
         switch error {
         case .invalidURL: "This server's address looks wrong."
         case .unauthorized: "Not authorized — re-pair the device or check credentials."

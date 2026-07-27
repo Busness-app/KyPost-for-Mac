@@ -109,6 +109,21 @@ final class AppLockManager {
         return true
     }
 
+    /// Re-authenticates for a single destructive action without touching lock
+    /// state. Turning the lock off already required this; the actions sitting
+    /// beside it in Preferences — Remove Pairing (which discards the pinned
+    /// SPKI hash and forces an unpinned re-pair), Forget This Computer, Remove
+    /// Exported Contacts, and turning Hostile Location Protection off — did
+    /// not, which made the lock's protection inconsistent for anyone who
+    /// reached Preferences while it was engaged.
+    ///
+    /// A no-op when the lock feature is off: the user has not asked for this
+    /// class of protection, and prompting anyway would just be friction.
+    func confirmWithDeviceAuth(reason: String) async -> Bool {
+        guard isLockEnabled else { return true }
+        return await authenticator.authenticate(reason: reason)
+    }
+
     /// Enabling requires the device to have owner authentication configured;
     /// disabling requires re-authenticating first. Returns whether the change
     /// took, so the settings UI shows an inline explanation instead of a

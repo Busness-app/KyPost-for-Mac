@@ -538,6 +538,12 @@ struct EmailBodyWebView: View {
         var configuration = WebPage.Configuration()
         configuration.defaultNavigationPreferences.allowsContentJavaScript = false
         configuration.loadsSubresources = allowsRemoteContent
+        // A mail reader has no reason to keep website state. The default store
+        // is the persistent one, so once the user loaded remote content for a
+        // single message, WebKit's on-disk cache retained a record of which
+        // messages were opened — and Hostile Location Protection never cleared
+        // it, because nothing outside AppDatabase knew that mode existed.
+        configuration.websiteDataStore = .nonPersistent()
         return configuration
     }
 

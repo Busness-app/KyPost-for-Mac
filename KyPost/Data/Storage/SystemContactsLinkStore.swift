@@ -21,19 +21,26 @@ struct SystemContactLink: Codable, Equatable, Sendable {
     /// True when the card originated in Contacts.app (sync-back import);
     /// "Remove Exported Contacts" keeps these cards.
     var imported: Bool
+    /// True when the card already existed in Contacts.app and was adopted
+    /// purely to avoid creating a duplicate. The app did not author it, so it
+    /// is never rewritten from relay data and never deleted — adoption is a
+    /// de-duplication device, not a claim of ownership.
+    var userOwned: Bool
 
     init(
         localId: UUID,
         uid: String?,
         cnIdentifier: String,
         exportedUpdatedAt: Date,
-        imported: Bool = false
+        imported: Bool = false,
+        userOwned: Bool = false
     ) {
         self.localId = localId
         self.uid = uid
         self.cnIdentifier = cnIdentifier
         self.exportedUpdatedAt = exportedUpdatedAt
         self.imported = imported
+        self.userOwned = userOwned
     }
 
     init(from decoder: Decoder) throws {
@@ -44,6 +51,12 @@ struct SystemContactLink: Codable, Equatable, Sendable {
         exportedUpdatedAt = try container.decode(Date.self, forKey: .exportedUpdatedAt)
         // Links written before sync-back existed are all exports.
         imported = try container.decodeIfPresent(Bool.self, forKey: .imported) ?? false
+        // decodeIfPresent, not decode: this array is JSON in UserDefaults and
+        // `all()` swallows a decode failure with try?, so a throwing decoder
+        // would silently return [] and make the exporter re-adopt or duplicate
+        // the entire address book. Pre-upgrade links default to false, which
+        // preserves today's behaviour for cards the app really did create.
+        userOwned = try container.decodeIfPresent(Bool.self, forKey: .userOwned) ?? false
     }
 }
 

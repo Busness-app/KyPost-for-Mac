@@ -23,7 +23,8 @@ struct MacPreferencesView: View {
         systemContactsExporter: SingletonGraph.shared.systemContactsExporter,
         deviceRegistrationService: SingletonGraph.shared.deviceRegistrationService,
         deregisterDeviceUseCase: SingletonGraph.shared.deregisterDeviceUseCase,
-        pushNotificationDispatcher: SingletonGraph.shared.pushNotificationDispatcher
+        pushNotificationDispatcher: SingletonGraph.shared.pushNotificationDispatcher,
+        appLockManager: SingletonGraph.shared.appLockManager
     )
 
     var body: some View {
@@ -125,7 +126,7 @@ private struct ConnectionPane: View {
                     HStack {
                         Spacer()
                         Button("Forget This Computer", role: .destructive) {
-                            viewModel.forgetDesktopPairing()
+                            Task { await viewModel.forgetDesktopPairing() }
                         }
                     }
                 } header: {

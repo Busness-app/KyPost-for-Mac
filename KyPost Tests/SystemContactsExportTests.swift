@@ -697,11 +697,74 @@ private func makeCard(
         #expect(summary.adopted == 1)
         #expect(summary.created == 0)
         #expect(summary.imported == 0)
-        #expect(summary.updated == 1) // adopted card refreshed from app fields
+        // The card was the user's before we ever looked, so adoption links it
+        // for de-duplication only and leaves its contents alone. Refreshing it
+        // from app fields let a sparse relay contact strip a real card's
+        // phones, addresses and birthday.
+        #expect(summary.updated == 0)
+        #expect(env.linkStore.all().first?.userOwned == true)
         #expect(env.mock.cards.count == 1) // no junk duplicate card
         #expect(env.linkStore.all().count == 1)
         let contacts = try await env.dao.listAll()
         #expect(contacts.count == 1) // no duplicate app contact either
+    }
+
+    @Test func anAdoptedCardIsNeverOverwrittenFromRelayData() async throws {
+        let env = try makeEnvironment()
+        try await env.mock.add(makeCard()) // Grace Hopper, grace@example.com
+        try await env.dao.upsert(contacts: [
+            makeContact(name: "Grace Hopper", email: "grace@example.com"),
+        ])
+        await env.exporter.reconcileAll()
+        let identifier = try #require(env.linkStore.all().first?.cnIdentifier)
+        let phonesBefore = env.mock.cards[identifier]?.phoneNumbers.count
+
+        // A later, sparse version of the same contact arrives from the relay.
+        let sparse = makeContact(
+            name: "Grace Hopper",
+            email: "grace@example.com",
+            updatedAt: Date().addingTimeInterval(60)
+        )
+        try await env.dao.upsert(contacts: [sparse])
+        await env.exporter.reconcileAll()
+
+        // The card the user authored keeps whatever it had.
+        #expect(env.mock.cards[identifier]?.phoneNumbers.count == phonesBefore)
+    }
+
+    @Test func anAdoptedCardIsNotDeletedWhenItsContactGoesAway() async throws {
+        let env = try makeEnvironment()
+        try await env.mock.add(makeCard())
+        try await env.dao.upsert(contacts: [
+            makeContact(name: "Grace Hopper", email: "grace@example.com"),
+        ])
+        await env.exporter.reconcileAll()
+        #expect(env.mock.cards.count == 1)
+
+        // The contact leaves the app; the card was never ours to remove.
+        try await env.dao.clearAll()
+        await env.exporter.reconcileAll()
+
+        #expect(env.mock.cards.count == 1)
+        #expect(env.linkStore.all().isEmpty) // link forgotten, card kept
+    }
+
+    @Test func aWholesaleDeletePlanIsRefused() async throws {
+        let env = try makeEnvironment()
+        // Two cards the app created, then an empty contact store — the shape a
+        // tooOld wipe, an HLP rebuild, or a failed database read produces.
+        try await env.dao.upsert(contacts: [
+            makeContact(name: "A", email: "a@example.com"),
+            makeContact(name: "B", email: "b@example.com"),
+        ])
+        await env.exporter.reconcileAll()
+        #expect(env.mock.cards.count == 2)
+
+        try await env.dao.clearAll()
+        await env.exporter.reconcileAll()
+
+        // Both cards survive: reconciliation never empties the address book.
+        #expect(env.mock.cards.count == 2)
     }
 
     @Test func newCardMatchingUnlinkedContactIsAdoptedNotImported() async throws {

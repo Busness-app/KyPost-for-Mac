@@ -255,11 +255,19 @@ struct ContactDetailView: View {
                         Text("PGP KEY CHANGED")
                             .font(AppFont.ui(11, weight: .medium))
                             .foregroundStyle(theme.ink.opacity(0.65))
-                        Text("A different key arrived for this contact. Re-verify the fingerprint before trusting it.")
+                        Text("A different key arrived for this contact. Check the new fingerprint with them over a channel the server doesn't control before trusting it.")
                             .font(AppFont.ui(13))
                             .foregroundStyle(theme.inkStrong)
                     }
                     Spacer(minLength: 0)
+                }
+                // Without these the banner asked for a comparison the app gave
+                // the user no way to make: no fingerprint was rendered anywhere
+                // for a stored or pending key, so "Trust New Key" was a blind
+                // one-tap decision.
+                VStack(alignment: .leading, spacing: 6) {
+                    fingerprintRow(label: "CURRENT", armored: draft.pgpKey)
+                    fingerprintRow(label: "NEW", armored: draft.pendingPgpKey)
                 }
                 HStack(spacing: 12) {
                     Button("Keep Current Key") {
@@ -284,6 +292,29 @@ struct ContactDetailView: View {
         }
     }
 
+    /// One labelled fingerprint line, computed from the key's own bytes.
+    private func fingerprintRow(label: String, armored: String?) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(AppFont.ui(11, weight: .medium))
+                .foregroundStyle(theme.ink.opacity(0.65))
+            Text(Self.fingerprintText(for: armored))
+                .font(AppFont.mono(12))
+                .foregroundStyle(theme.inkStrong)
+                .textSelection(.enabled)
+        }
+    }
+
+    /// Grouped fingerprint for an armored key, or a plain marker when the key
+    /// can't be parsed — never a fabricated value.
+    static func fingerprintText(for armored: String?) -> String {
+        guard let armored, !armored.isEmpty else { return "None" }
+        guard let fingerprint = PgpFingerprint.compute(fromArmored: armored) else {
+            return "Unreadable key"
+        }
+        return ScanPgpKeyView.groupedFingerprint(fingerprint)
+    }
+
     private var metadataCard: some View {
         card {
             if let pgpKey = draft.pgpKey {
@@ -297,9 +328,14 @@ struct ContactDetailView: View {
                         Text("PGP KEY")
                             .font(AppFont.ui(11, weight: .medium))
                             .foregroundStyle(theme.ink.opacity(0.65))
-                        Text("Public key on file")
-                            .font(AppFont.mono(14))
+                        // The fingerprint, not just "on file": this is the
+                        // value the user compares out of band, and it was
+                        // previously unreachable anywhere in the app for a
+                        // stored key.
+                        Text(Self.fingerprintText(for: pgpKey))
+                            .font(AppFont.mono(12))
                             .foregroundStyle(theme.inkStrong)
+                            .textSelection(.enabled)
                     }
                     Spacer(minLength: 0)
                     Button("Copy") { copyToPasteboard(pgpKey) }

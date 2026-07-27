@@ -137,19 +137,88 @@ nonisolated final class PinnedSessionDelegate: NSObject, URLSessionDelegate, @un
     /// returns the raw key (PKCS#1/X9.63), so the fixed ASN.1 header for
     /// the key's type and size is prepended to reconstruct the SPKI.
     static func spkiSHA256(ofCertificate certificate: SecCertificate) -> String? {
-        guard
-            let key = SecCertificateCopyKey(certificate),
-            let attributes = SecKeyCopyAttributes(key) as? [CFString: Any],
-            let keyData = SecKeyCopyExternalRepresentation(key, nil) as Data?
-        else { return nil }
-        guard let header = spkiHeader(
-            keyType: attributes[kSecAttrKeyType] as? String,
-            keySizeInBits: attributes[kSecAttrKeySizeInBits] as? Int
-        ) else { return nil }
+        if let key = SecCertificateCopyKey(certificate),
+           let attributes = SecKeyCopyAttributes(key) as? [CFString: Any],
+           let keyData = SecKeyCopyExternalRepresentation(key, nil) as Data?,
+           let header = spkiHeader(
+               keyType: attributes[kSecAttrKeyType] as? String,
+               keySizeInBits: attributes[kSecAttrKeySizeInBits] as? Int
+           ) {
+            var spki = Data(header)
+            spki.append(keyData)
+            return SHA256.hash(data: spki).map { String(format: "%02x", $0) }.joined()
+        }
 
-        var spki = Data(header)
-        spki.append(keyData)
+        // Fall back to reading the SubjectPublicKeyInfo straight out of the
+        // certificate. The header table only covers six key shapes, and an
+        // unhashable shape (Ed25519, RSA-1024, RSA-8192…) meant the observed
+        // hash was never recorded — so the pin silently never armed at all,
+        // while the docs said pinning was always on. The enforcement path is
+        // fail-closed; it was *arming* that failed open.
+        guard let spki = subjectPublicKeyInfo(
+            ofCertificateDER: SecCertificateCopyData(certificate) as Data
+        ) else { return nil }
         return SHA256.hash(data: spki).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// One DER TLV: its tag, header width, and content length.
+    private static func readTLV(_ bytes: Data, at index: Int) -> (tag: UInt8, header: Int, length: Int)? {
+        guard index >= 0, index + 1 < bytes.count else { return nil }
+        let tag = bytes[bytes.startIndex + index]
+        var cursor = index + 1
+        let first = Int(bytes[bytes.startIndex + cursor])
+        cursor += 1
+        let length: Int
+        if first & 0x80 == 0 {
+            length = first
+        } else {
+            let width = first & 0x7F
+            // Long-form lengths beyond 4 bytes don't occur in certificates and
+            // would risk overflow; refuse rather than guess.
+            guard width > 0, width <= 4, cursor + width <= bytes.count else { return nil }
+            var value = 0
+            for offset in 0..<width {
+                value = (value << 8) | Int(bytes[bytes.startIndex + cursor + offset])
+            }
+            length = value
+            cursor += width
+        }
+        guard length >= 0, cursor + length <= bytes.count else { return nil }
+        return (tag, cursor - index, length)
+    }
+
+    /// The SubjectPublicKeyInfo bytes of an X.509 certificate, hashed as-is —
+    /// the same value `openssl x509 -pubkey | openssl pkey -pubin -outform DER
+    /// | openssl dgst -sha256` prints, verified against RSA-2048, EC P-256 and
+    /// Ed25519 certificates.
+    ///
+    /// Certificate ::= SEQUENCE { tbsCertificate, … }, and TBSCertificate ::=
+    /// SEQUENCE { [0] version OPTIONAL, serialNumber, signature, issuer,
+    /// validity, subject, subjectPublicKeyInfo, … } — so skip an optional
+    /// context-0 element then five fields.
+    static func subjectPublicKeyInfo(ofCertificateDER der: Data) -> Data? {
+        guard let certificate = readTLV(der, at: 0), certificate.tag == 0x30 else { return nil }
+        let certificateContent = certificate.header
+        guard let tbs = readTLV(der, at: certificateContent), tbs.tag == 0x30 else { return nil }
+
+        var index = certificateContent + tbs.header
+        let tbsEnd = index + tbs.length
+
+        guard let version = readTLV(der, at: index) else { return nil }
+        if version.tag == 0xA0 {
+            index += version.header + version.length
+        }
+        for _ in 0..<5 {
+            guard let field = readTLV(der, at: index) else { return nil }
+            index += field.header + field.length
+            guard index <= tbsEnd else { return nil }
+        }
+
+        guard let spki = readTLV(der, at: index), spki.tag == 0x30 else { return nil }
+        let total = spki.header + spki.length
+        guard index + total <= tbsEnd else { return nil }
+        let start = der.startIndex + index
+        return der[start..<(start + total)]
     }
 
     /// Fixed SPKI prefixes per key shape (the TrustKit table, plus P-521).

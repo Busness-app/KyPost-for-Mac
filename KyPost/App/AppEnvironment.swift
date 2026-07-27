@@ -16,6 +16,14 @@
 
 import Foundation
 import Observation
+import UserNotifications
+
+extension Notification.Name {
+    /// Posted when Hostile Location Protection is toggled. The compose scene
+    /// observes it and dismisses: `dismissWindow` is a SwiftUI environment
+    /// value available only inside a View, so it can't be called from here.
+    static let kyPostCloseComposeWindows = Notification.Name("kypost.closeComposeWindows")
+}
 
 @Observable
 @MainActor
@@ -53,21 +61,43 @@ final class AppEnvironment {
         onRebuild?()
     }
 
-    /// Flips Hostile Location Protection: persists the flag, wipes the
-    /// on-disk store and attachment temp files, and swaps in a graph built
-    /// for the new mode (in-memory when enabled). On enable nothing
-    /// pre-toggle survives; on disable the in-memory contents are simply
-    /// dropped and the fresh disk store starts empty.
+    /// Flips Hostile Location Protection: wipes everything cached on disk,
+    /// then persists the flag and swaps in a graph built for the new mode
+    /// (in-memory when enabled). On enable nothing pre-toggle survives; on
+    /// disable the in-memory contents are simply dropped and the fresh disk
+    /// store starts empty.
+    ///
+    /// The wipe covers the mail store, contact photos, staged attachments,
+    /// delivered notifications, and open compose drafts — everything the
+    /// feature's copy promises. It used to cover only the first and third.
     func setHostileLocationProtection(_ enabled: Bool) throws {
         let store = graph.hostileLocationProtectionStore
-        store.enabled = enabled
+        let previous = store.enabled
         do {
+            // Wipe before persisting the flag. Setting it first meant a crash,
+            // force-quit, or power loss in between left the next launch running
+            // in memory — reporting the mode as on — while the complete
+            // pre-toggle plaintext store sat on disk with nothing to reconcile
+            // it. SingletonGraph re-runs this wipe at launch for the same
+            // reason.
             try AppDatabase.deleteStoreFiles()
+            try ContactPhotoCache.deleteAll()
             InboxViewModel.purgeAttachmentTempFiles()
+            // Sender and subject of everything already delivered sit in
+            // Notification Center, which is an on-disk artifact like any other.
+            UNUserNotificationCenter.current().removeAllDeliveredNotifications()
+            // The compose scene value is archived for state restoration, and a
+            // reply's body is the full quoted plaintext of the received
+            // message. `.id(generation)` recreates the view inside the window,
+            // not the window, so the draft would otherwise survive — and the
+            // confirmation dialog promises these are closed.
+            NotificationCenter.default.post(name: .kyPostCloseComposeWindows, object: nil)
+
+            store.enabled = enabled
             try rebuild { try SingletonGraph() }
         } catch {
             // Leave the app in the mode it was actually built for.
-            store.enabled = !enabled
+            store.enabled = previous
             throw error
         }
     }

@@ -62,57 +62,95 @@ enum PgpFingerprint {
         return Data(base64Encoded: base64)
     }
 
-    /// Walks the packet stream to the first public-key packet (tag 6),
-    /// handling both old- and new-format headers. Partial body lengths and
-    /// indeterminate old-format lengths are invalid for key material.
+    /// Packet types legal inside one transferable public key (RFC 4880 §11.1)
+    /// after the primary key packet: user id, signature, subkey, user
+    /// attribute, trust, and padding.
+    private static let transferableKeyTags: Set<UInt8> = [13, 2, 14, 17, 12, 61]
+
+    /// Body of the primary public-key packet of a *single* transferable public
+    /// key (RFC 4880 §11.1), or nil.
+    ///
+    /// The packet must be first in the stream and must be the only tag 6:
+    /// scanning for the first tag-6 packet anywhere in the blob is not the
+    /// same thing as identifying the key a consumer will use. An armored blob
+    /// that merely *contains* a key packet — a bare tag 6 prepended to a
+    /// complete second key — made this return the decoy's fingerprint while
+    /// Go's `openpgp.ReadKeyRing` skipped the identity-less leading entity and
+    /// selected the second key. The user then verified one key's fingerprint
+    /// out of band while mail was encrypted to the other. Refuse anything that
+    /// isn't unambiguously one key.
     static func firstPublicKeyPacketBody(in data: Data) -> Data? {
         let bytes = [UInt8](data)
         var index = 0
+        var primary: Data?
+
         while index < bytes.count {
-            let header = bytes[index]
-            guard header & 0x80 != 0 else { return nil }
-            index += 1
+            guard let packet = nextPacket(in: bytes, at: &index) else { return nil }
 
-            let tag: UInt8
-            let length: Int
-            if header & 0x40 != 0 {
-                // New format: tag in the low six bits, variable-width length.
-                tag = header & 0x3F
-                guard index < bytes.count else { return nil }
-                let first = Int(bytes[index])
-                index += 1
-                switch first {
-                case 0..<192:
-                    length = first
-                case 192...223:
-                    guard index < bytes.count else { return nil }
-                    length = ((first - 192) << 8) + Int(bytes[index]) + 192
-                    index += 1
-                case 255:
-                    guard index + 4 <= bytes.count else { return nil }
-                    length = bytes[index..<(index + 4)].reduce(0) { ($0 << 8) | Int($1) }
-                    index += 4
-                default:
-                    return nil // 224–254: partial body lengths
-                }
-            } else {
-                // Old format: tag in bits 5–2, length width in the low two.
-                tag = (header >> 2) & 0x0F
-                let widths = [1, 2, 4]
-                let lengthType = Int(header & 0x03)
-                guard lengthType < widths.count else { return nil } // 3: indeterminate
-                let width = widths[lengthType]
-                guard index + width <= bytes.count else { return nil }
-                length = bytes[index..<(index + width)].reduce(0) { ($0 << 8) | Int($1) }
-                index += width
+            guard primary != nil else {
+                // The primary key packet must open the stream.
+                guard packet.tag == 6 else { return nil }
+                primary = packet.body
+                continue
             }
 
-            guard length >= 0, index + length <= bytes.count else { return nil }
-            if tag == 6 {
-                return Data(bytes[index..<(index + length)])
-            }
-            index += length
+            // A second tag 6 is a second key in the blob; anything outside the
+            // transferable-key set isn't part of this key. Either way we can't
+            // say which key a consumer would pick, so we don't guess.
+            guard transferableKeyTags.contains(packet.tag) else { return nil }
         }
-        return nil
+        return primary
+    }
+
+    /// Reads one packet header at `index`, advancing it past the body.
+    /// Handles both old- and new-format headers. Partial body lengths and
+    /// indeterminate old-format lengths are invalid for key material.
+    private static func nextPacket(
+        in bytes: [UInt8],
+        at index: inout Int
+    ) -> (tag: UInt8, body: Data)? {
+        guard index < bytes.count else { return nil }
+        let header = bytes[index]
+        guard header & 0x80 != 0 else { return nil }
+        index += 1
+
+        let tag: UInt8
+        let length: Int
+        if header & 0x40 != 0 {
+            // New format: tag in the low six bits, variable-width length.
+            tag = header & 0x3F
+            guard index < bytes.count else { return nil }
+            let first = Int(bytes[index])
+            index += 1
+            switch first {
+            case 0..<192:
+                length = first
+            case 192...223:
+                guard index < bytes.count else { return nil }
+                length = ((first - 192) << 8) + Int(bytes[index]) + 192
+                index += 1
+            case 255:
+                guard index + 4 <= bytes.count else { return nil }
+                length = bytes[index..<(index + 4)].reduce(0) { ($0 << 8) | Int($1) }
+                index += 4
+            default:
+                return nil // 224–254: partial body lengths
+            }
+        } else {
+            // Old format: tag in bits 5–2, length width in the low two.
+            tag = (header >> 2) & 0x0F
+            let widths = [1, 2, 4]
+            let lengthType = Int(header & 0x03)
+            guard lengthType < widths.count else { return nil } // 3: indeterminate
+            let width = widths[lengthType]
+            guard index + width <= bytes.count else { return nil }
+            length = bytes[index..<(index + width)].reduce(0) { ($0 << 8) | Int($1) }
+            index += width
+        }
+
+        guard length >= 0, index + length <= bytes.count else { return nil }
+        let body = Data(bytes[index..<(index + length)])
+        index += length
+        return (tag, body)
     }
 }

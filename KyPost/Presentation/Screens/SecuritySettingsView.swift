@@ -20,6 +20,10 @@ struct SecuritySettingsContent: View {
     @State private var hostileConfirmationShown = false
     @State private var hostileProtectionMessage: String?
     private var gateService: CredentialGateService { SingletonGraph.shared.credentialGateService }
+    /// Whether a certificate pin is actually stored for the paired relay.
+    private var isRelayPinned: Bool {
+        !(SingletonGraph.shared.securePairingStore.pinnedSpkiHash ?? "").isEmpty
+    }
     @State private var credentialGateConfirmationShown = false
     @State private var credentialGateMessage: String?
 
@@ -44,7 +48,7 @@ struct SecuritySettingsContent: View {
                     .foregroundStyle(SemanticColors.danger)
             }
         } footer: {
-            Text("Keeps no mail, contacts, or attachments on this device — everything reloads from your server. For border crossings and other device-seizure risks. Requires Require Unlock to Open. Attachment previews still touch this device's temporary storage briefly while open.")
+            Text("Keeps no cached mail, contacts, or attachments on this device — everything reloads from your server. For border crossings and other device-seizure risks. Requires Require Unlock to Open.\n\nWhat still touches this device: attachment previews use temporary storage briefly while open; erasing is a plain delete, not a forensic overwrite; new-mail notifications you've already received stay in Notification Center; and if \"Sync with Apple Contacts\" is on, your contacts remain in the system Contacts app until you turn that off and remove them.")
         }
         .confirmationDialog(
             "Enable Hostile Location Protection?",
@@ -56,7 +60,7 @@ struct SecuritySettingsContent: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Erases mail, contacts, and attachments cached on this device and closes open compose windows. Your mail stays on the server.")
+            Text("Erases mail, contacts, contact photos, attachments, and saved drafts cached on this device, and closes open compose windows. Your mail stays on the server. Cards already exported to Apple Contacts are not removed — use \"Remove Exported Contacts\" for those.")
         }
 
         Section {
@@ -86,6 +90,20 @@ struct SecuritySettingsContent: View {
         } message: {
             Text("New-mail notifications and MFA approval requests will only be delivered after you open and unlock KyPost.")
         }
+
+        Section {
+            LabeledContent("Certificate pin") {
+                Text(isRelayPinned ? "Pinned" : "Not pinned")
+                    .foregroundStyle(isRelayPinned ? SemanticColors.successText : SemanticColors.warning)
+            }
+        } footer: {
+            // Arming the pin can fail silently — an unusual server key shape
+            // leaves nothing to hash — and until this row existed there was no
+            // way to tell a pinned device from an unpinned one.
+            Text(isRelayPinned
+                 ? "This device remembers your server's certificate and refuses connections that don't match it."
+                 : "This device could not pin your server's certificate, so the connection relies on your device's standard certificate trust. Removing and re-adding the pairing will try again.")
+        }
     }
 
     /// Enabling confirms first (it erases the local cache); disabling
@@ -99,7 +117,22 @@ struct SecuritySettingsContent: View {
                 if enabled {
                     hostileConfirmationShown = true
                 } else {
-                    applyHostileProtection(false)
+                    // Turning this off silently returns a device the user
+                    // configured for a hostile location to on-disk caching, so
+                    // it gets the same re-auth as turning the lock off. Reachable
+                    // from Preferences, which the menu bar opens while locked.
+                    Task {
+                        guard await lockManager.confirmWithDeviceAuth(
+                            reason: String(localized: "Turn off Hostile Location Protection")
+                        ) else {
+                            hostileProtectionMessage = String(
+                                localized: "Authentication is required to turn this off."
+                            )
+                            return
+                        }
+                        hostileProtectionMessage = nil
+                        applyHostileProtection(false)
+                    }
                 }
             }
         )
