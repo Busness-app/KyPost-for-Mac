@@ -210,6 +210,37 @@ import Testing
 
 // MARK: - Compose: encrypted send flow
 
+/// Holds the *first* request that reaches it until `open()`, so a test can act
+/// while a request is genuinely in flight. Later callers pass straight
+/// through, so a regression shows up as an extra recorded request rather than
+/// as a hang.
+private actor RequestGate {
+    private var entered = false
+    private var opened = false
+    private var enteredWaiter: CheckedContinuation<Void, Never>?
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    func hold() async {
+        guard !entered else { return }
+        entered = true
+        enteredWaiter?.resume()
+        enteredWaiter = nil
+        guard !opened else { return }
+        await withCheckedContinuation { releaseWaiter = $0 }
+    }
+
+    func waitUntilHolding() async {
+        guard !entered else { return }
+        await withCheckedContinuation { enteredWaiter = $0 }
+    }
+
+    func open() {
+        opened = true
+        releaseWaiter?.resume()
+        releaseWaiter = nil
+    }
+}
+
 /// Answers by URL path, so one stub can serve a compose flow that hits
 /// bootstrap, the preflight, and two sends. `sends` and `drafts` record every
 /// body posted to /api/mail/send and /api/mail/draft in order.
@@ -221,15 +252,19 @@ private final class ComposeStub {
     private let check: String
     private let sendResponses: [(status: Int, json: String)]
     private let sendIndex = Box(0)
+    /// Optional per-path delay hook, for tests that need a request parked.
+    private let beforeResponse: (@Sendable (String) async -> Void)?
 
     init(
         bootstrap: String = #"{"hasIdentity":true,"protection":"server"}"#,
         check: String = #"{"results":[]}"#,
-        sendResponses: [(status: Int, json: String)] = [(200, #"{"ok":true,"sentSaved":true}"#)]
+        sendResponses: [(status: Int, json: String)] = [(200, #"{"ok":true,"sentSaved":true}"#)],
+        beforeResponse: (@Sendable (String) async -> Void)? = nil
     ) {
         self.bootstrap = bootstrap
         self.check = check
         self.sendResponses = sendResponses
+        self.beforeResponse = beforeResponse
     }
 
     func makeClient() -> HTTPClient {
@@ -239,8 +274,10 @@ private final class ComposeStub {
         let bootstrap = bootstrap
         let check = check
         let sendResponses = sendResponses
+        let beforeResponse = beforeResponse
         return HTTPClient { request in
             let path = request.url?.path ?? ""
+            await beforeResponse?(path)
             let body = request.httpBody.map { String(decoding: $0, as: UTF8.self) } ?? ""
             var status = 200
             var json = "{}"
@@ -320,6 +357,32 @@ private func fields(_ body: String) throws -> [String: Any] {
 }
 
 @Suite @MainActor struct ComposeEncryptedSendTests {
+    /// The in-flight guard has to close before the first `await`, not inside
+    /// `deliver`. With Encrypt on, the recipient preflight is a live network
+    /// round-trip sitting between the two — a second ⌘↩ in that window used to
+    /// pass the guard and post the message again.
+    @Test func aSecondSendDuringTheRecipientPreflightPostsNothingExtra() async throws {
+        let gate = RequestGate()
+        let stub = ComposeStub(beforeResponse: { path in
+            if path == "/api/pgp/recipients/check" { await gate.hold() }
+        })
+        let compose = try makeCompose(stub: stub)
+        compose.toInput = "alice@example.com"
+        compose.encrypt = true
+
+        let first = Task { await compose.send(fontTraits: noTraits) }
+        await gate.waitUntilHolding()
+        #expect(compose.isSending)
+
+        // The second ⌘↩, while the first send is parked in its preflight.
+        await compose.send(fontTraits: noTraits)
+
+        await gate.open()
+        await first.value
+
+        #expect(stub.sends.value.count == 1)
+    }
+
     @Test func encryptAndSignTravelOnTheSendBody() async throws {
         let stub = ComposeStub()
         let compose = try makeCompose(stub: stub)

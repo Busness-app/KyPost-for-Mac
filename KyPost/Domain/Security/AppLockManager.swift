@@ -93,12 +93,18 @@ final class AppLockManager {
         guard await authenticator.authenticate(reason: String(localized: "Unlock KyPost")) else {
             return false
         }
-        isLocked = false
-        // Repopulate the gated secret before the deferred sync runs — this
-        // is the one point the OS may prompt for presence a second time.
-        if cachedGatedSecret == nil {
-            cachedGatedSecret = loadGatedSecret?()
+        // Repopulate the gated secret before clearing the lock — this is the
+        // one point the OS may prompt for presence a second time, and it is
+        // the *only* place the in-memory copy can come back (the early return
+        // above skips it once unlocked). Declining that prompt has to leave
+        // the app locked: unlocking without the secret produces an app that
+        // looks fine and silently no-ops every relay call, with no way to
+        // retry short of locking and unlocking again.
+        if let loadGatedSecret, cachedGatedSecret == nil {
+            guard let secret = loadGatedSecret() else { return false }
+            cachedGatedSecret = secret
         }
+        isLocked = false
         onUnlock?()
         return true
     }

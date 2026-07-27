@@ -60,15 +60,24 @@ final class SingletonGraph {
         else { return nil }
         return pin
     }
+    /// Held rather than captured so `shutdown()` can invalidate it: a
+    /// delegate-backed URLSession retains its delegate and its connection pool
+    /// until invalidated, so without this a superseded graph would keep live
+    /// TLS connections to the relay open — exactly what enabling Hostile
+    /// Location Protection is asking us to tear down.
+    lazy var relaySession = URLSession(
+        configuration: .default, delegate: pinnedSessionDelegate, delegateQueue: nil
+    )
     lazy var httpClient: HTTPClient = {
         let delegate = pinnedSessionDelegate
-        let session = URLSession(
-            configuration: .default, delegate: delegate, delegateQueue: nil
-        )
+        let session = relaySession
         return HTTPClient { request in
             do {
                 return try await session.data(for: request)
-            } catch let error as URLError where error.code == .cancelled && delegate.consumePinFailure() {
+            } catch let error as URLError where error.code == .cancelled
+                && delegate.pinFailed(forHost: request.url?.host() ?? "") {
+                // Scoped to this request's host: an unrelated cancellation
+                // must not inherit another host's mismatch (and vice versa).
                 throw NetworkError.certificateMismatch
             }
         }
@@ -192,6 +201,11 @@ final class SingletonGraph {
         pullPollingScheduler.stopForegroundPolling()
         systemContactsChangeMonitor.stop()
         inboxViewModel.stopAutoRefresh()
+        // Drops in-flight requests, the connection pool, and the session's
+        // strong reference to its delegate. Not `finishTasksAndInvalidate`:
+        // a superseded graph's requests write to a database that is going
+        // away, and the Hostile Location Protection case wants them gone now.
+        relaySession.invalidateAndCancel()
     }
 
     // MARK: - Startup migrations

@@ -13,6 +13,10 @@
 //  carried. Pin checks apply only to the paired relay host — scanned
 //  foreign key-exchange URLs (ScanPgpKeyView) get default TLS handling.
 //
+//  Once a host is pinned the check fails closed: anything this delegate
+//  cannot hash is refused rather than waved through, because the party
+//  choosing the certificate is exactly the party a pin is meant to stop.
+//
 
 import CryptoKit
 import Foundation
@@ -24,7 +28,14 @@ nonisolated final class PinnedSessionDelegate: NSObject, URLSessionDelegate, @un
 
     private let lock = NSLock()
     private var lastSeenByHost: [String: String] = [:]
-    private var pinFailed = false
+    /// Hosts whose last handshake failed the pin, so HTTPClient can map the
+    /// resulting URLError.cancelled to certificateMismatch. Per-host rather
+    /// than one session-wide flag: one delegate backs one URLSession backing
+    /// every client, and a task cancelled for an ordinary reason (a view
+    /// tearing down its request) also surfaces as URLError.cancelled — with a
+    /// single Bool it would consume an unrelated host's pin failure and
+    /// report interception on the wrong request.
+    private var pinFailedHosts: Set<String> = []
 
     init(pinnedHash: @escaping @Sendable (_ host: String) -> String?) {
         self.pinnedHash = pinnedHash
@@ -37,27 +48,60 @@ nonisolated final class PinnedSessionDelegate: NSObject, URLSessionDelegate, @un
     ) {
         guard
             challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-            let trust = challenge.protectionSpace.serverTrust,
-            let hash = Self.spkiSHA256(of: trust)
+            let trust = challenge.protectionSpace.serverTrust
         else {
-            // Not a server-trust challenge, or an unreadable key shape:
-            // let the system's normal TLS evaluation decide.
+            // Not a server-trust challenge: the system's normal evaluation.
             completionHandler(.performDefaultHandling, nil)
             return
         }
         let host = challenge.protectionSpace.host
+        let observed = Self.spkiSHA256(of: trust)
+        // Both of these read outside the lock: `pinnedHash` goes to the
+        // Keychain, and holding a lock across that buys nothing.
+        let decision = Self.decision(pinned: pinnedHash(host), observed: observed)
+
         lock.lock()
-        lastSeenByHost[host] = hash
+        if let observed { lastSeenByHost[host] = observed }
+        switch decision {
+        case .refuse:
+            pinFailedHosts.insert(host)
+        case .proceed:
+            // A handshake that satisfies the pin clears any earlier failure,
+            // so a repaired certificate stops reporting a mismatch without
+            // needing a relaunch.
+            pinFailedHosts.remove(host)
+        }
         lock.unlock()
 
-        if let pinned = pinnedHash(host), pinned != hash {
-            lock.lock()
-            pinFailed = true
-            lock.unlock()
+        switch decision {
+        case .refuse:
             completionHandler(.cancelAuthenticationChallenge, nil)
-            return
+        case .proceed:
+            completionHandler(.performDefaultHandling, nil)
         }
-        completionHandler(.performDefaultHandling, nil)
+    }
+
+    enum PinDecision: Equatable {
+        /// Hand off to the system's normal TLS evaluation.
+        case proceed
+        case refuse
+    }
+
+    /// The pinning rule, pure so it is directly testable — a real handshake
+    /// can't be staged in a unit test, and this is the part that must not be
+    /// wrong.
+    ///
+    /// `observed` is nil when the leaf's key shape has no SPKI header in the
+    /// table below, so no hash can be computed. For a pinned host that MUST
+    /// refuse: the attacker picks the algorithm of the certificate they
+    /// present, so treating "unsupported shape" as "nothing to check" would
+    /// hand a free bypass to anyone who can already get a system-trusted cert
+    /// for the host — which is the entire threat pinning exists to cover.
+    /// Unpinned hosts (scanned foreign key-exchange URLs) are unaffected.
+    static func decision(pinned: String?, observed: String?) -> PinDecision {
+        guard let pinned, !pinned.isEmpty else { return .proceed }
+        guard let observed, observed == pinned else { return .refuse }
+        return .proceed
     }
 
     /// The SPKI hash observed on the most recent handshake with `host` —
@@ -68,14 +112,13 @@ nonisolated final class PinnedSessionDelegate: NSObject, URLSessionDelegate, @un
         return lastSeenByHost[host]
     }
 
-    /// Reads and clears the pin-failure flag, so HTTPClient can map the
-    /// resulting URLError.cancelled to certificateMismatch.
-    func consumePinFailure() -> Bool {
+    /// Whether the last handshake with `host` failed the pin. Sticky until a
+    /// handshake there succeeds — every request to a pin-failing host is
+    /// genuinely a certificate mismatch, so there is nothing to consume.
+    func pinFailed(forHost host: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        let failed = pinFailed
-        pinFailed = false
-        return failed
+        return pinFailedHosts.contains(host)
     }
 
     // MARK: - SPKI hashing
@@ -109,9 +152,11 @@ nonisolated final class PinnedSessionDelegate: NSObject, URLSessionDelegate, @un
         return SHA256.hash(data: spki).map { String(format: "%02x", $0) }.joined()
     }
 
-    /// Fixed SPKI prefixes per key shape (the TrustKit table). Unknown
-    /// shapes return nil and fall back to default TLS handling — never a
-    /// wrong hash.
+    /// Fixed SPKI prefixes per key shape (the TrustKit table, plus P-521).
+    /// Unknown shapes return nil — never a wrong hash — and the challenge
+    /// handler turns that nil into a *refusal* for any pinned host rather
+    /// than a fallback, so a gap here costs availability, never protection.
+    /// Every entry is a known-answer test in PinnedSessionTests.
     private static func spkiHeader(keyType: String?, keySizeInBits: Int?) -> [UInt8]? {
         let rsa = kSecAttrKeyTypeRSA as String
         let ec = kSecAttrKeyTypeECSECPrimeRandom as String
@@ -141,6 +186,12 @@ nonisolated final class PinnedSessionDelegate: NSObject, URLSessionDelegate, @un
             return [
                 0x30, 0x76, 0x30, 0x10, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02,
                 0x01, 0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22, 0x03, 0x62, 0x00,
+            ]
+        case (ec, 521):
+            return [
+                0x30, 0x81, 0x9b, 0x30, 0x10, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d,
+                0x02, 0x01, 0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x23, 0x03, 0x81, 0x86,
+                0x00,
             ]
         default:
             return nil

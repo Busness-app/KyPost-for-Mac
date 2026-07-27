@@ -23,6 +23,14 @@ private let rsaExpectedSpki = "d45acab703640fa9dbab3fe499f0bd1cfd4db3298bf23e8ce
 private let ecCertBase64 = "MIIBfzCCASWgAwIBAgIUOElCaYhAhyE3AAB9mgf5PguNcdEwCgYIKoZIzj0EAwIwFTETMBEGA1UEAwwKcmVsYXkudGVzdDAeFw0yNjA3MjYyMzU1MDRaFw0yNjA4MjUyMzU1MDRaMBUxEzARBgNVBAMMCnJlbGF5LnRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQTajE7GZknDPURD+kx5WA8Ybz6Y1rUqyArcE8dIzXarPXmuX4G4w6w3QK0ZLK8cfGldiDzlPeOPrcRLApKiVLho1MwUTAdBgNVHQ4EFgQUt1BRIS2y5s9ib52uqwbo5sQ6bWkwHwYDVR0jBBgwFoAUt1BRIS2y5s9ib52uqwbo5sQ6bWkwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiEArAoNowtzduTDXdnMP5hJJemjAhw3WpcWw/i4486LWxACIC7CKFEpf9rQidAuALy1NFZIFgQzht1lmafpeDJsZRZd"
 private let ecExpectedSpki = "293de4192605d3a987e9f46ce37ef5fac20247d825187db18ce0860dce790ce1"
 
+/// CN=relay.test, EC P-521, self-signed (DER, base64).
+private let ec521CertBase64 = "MIICBzCCAWigAwIBAgIUGh4KKPqF1742hVGc1c9ZcVMhPFcwCgYIKoZIzj0EAwQwFTETMBEGA1UEAwwKcmVsYXkudGVzdDAeFw0yNjA3MjcwMTAxNDlaFw0yNjA4MjYwMTAxNDlaMBUxEzARBgNVBAMMCnJlbGF5LnRlc3QwgZswEAYHKoZIzj0CAQYFK4EEACMDgYYABABUMf/d72uuceZ7MpZrcQNiFuUcIbgW5ZisMVysuOGRFEVj5pIOPyDb0C6H8rths4Wg50dxRMveSlsNvX8qdYUbeQBtqlKKA17Ob9dE7tJTW4rdz1RcLleWZGSRdXIlPeU1MXZ7w4uutR+mYjP+8IZ2CScFPB0O9DKhyqs03XU2NUhdBaNTMFEwHQYDVR0OBBYEFELRvSCTw/OcSRSyQY2U9BCVpZFKMB8GA1UdIwQYMBaAFELRvSCTw/OcSRSyQY2U9BCVpZFKMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwQDgYwAMIGIAkIAik7Rk3A8gPMwR0xJ4j7bRQPw5PekM4YQGF+J/ywork+f07sTmOHFBYqAa7aJg7Tr3+HVORJZhoUL5gdTIz+Jzl0CQgF0xWoigr996FdtKyHaCnlE0a4md5ULnQpCG4+wfgoOncjI5ta9K3fgGwM7KGyfuHvFn30aayfcO3A0G6Vf5i52tw=="
+private let ec521ExpectedSpki = "a5bb99297033185206759a5d68b50d9e9d51a260492f2e82732bd51d93ecc1b5"
+
+/// CN=relay.test, RSA-1024, self-signed (DER, base64). A key shape with no
+/// entry in the SPKI header table — the fail-closed case.
+private let rsa1024CertBase64 = "MIICBjCCAW+gAwIBAgIUHY4ilx0l+y04NW3zlm0mwFtovncwDQYJKoZIhvcNAQELBQAwFTETMBEGA1UEAwwKcmVsYXkudGVzdDAeFw0yNjA3MjcwMTA2NDdaFw0yNjA4MjYwMTA2NDdaMBUxEzARBgNVBAMMCnJlbGF5LnRlc3QwgZ8wDQYJKoZIhvcNAQEBBQADgY0AMIGJAoGBALx1TBNccRq+sCjpVhO1hIMZFuL5dGUvA0+/rZY2zlJEDNO5vTsHygrOhPACwTP6t5zyglbJFpU0iEQ6T2/FuF9zSrXNBZULxSLMmtv8+WVfbpph7HrDNnjLeocSrkssKTDJSxAh9maoKoyffCZqAuR4flp0MSWpTlpstLjq6aUBAgMBAAGjUzBRMB0GA1UdDgQWBBTRD4rZJ9Ji2VtKfRukuiRmfEPuYTAfBgNVHSMEGDAWgBTRD4rZJ9Ji2VtKfRukuiRmfEPuYTAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4GBACRQ3+kEzopKN+COUwU11xpL5iYxZUoauMIQHq8jvySk3BBSlUZRFdWZeERdtHh6p5KR/bk514t4WWQFtlHF6IOlIesi61wg9m7spwIURIL9K3WuZycK2JSTaQTQVAitjOKQKxtW2cvBlnCy+72d9l6k3NmRDBDnch0KWLYVTd81"
+
 private func certificate(fromBase64 base64: String) throws -> SecCertificate {
     let data = try #require(Data(base64Encoded: base64))
     return try #require(SecCertificateCreateWithData(nil, data as CFData))
@@ -39,10 +47,22 @@ private func certificate(fromBase64 base64: String) throws -> SecCertificate {
         #expect(PinnedSessionDelegate.spkiSHA256(ofCertificate: cert) == ecExpectedSpki)
     }
 
-    @Test func recordsTheLastSeenHashPerHostAndFlagsPinFailuresOnce() {
+    @Test func ec521SpkiHashMatchesOpenSSL() throws {
+        let cert = try certificate(fromBase64: ec521CertBase64)
+        #expect(PinnedSessionDelegate.spkiSHA256(ofCertificate: cert) == ec521ExpectedSpki)
+    }
+
+    /// A shape with no header entry must produce no hash at all — never a
+    /// guessed one. `decision` is what turns that nil into a refusal.
+    @Test func anUnsupportedKeyShapeProducesNoHash() throws {
+        let cert = try certificate(fromBase64: rsa1024CertBase64)
+        #expect(PinnedSessionDelegate.spkiSHA256(ofCertificate: cert) == nil)
+    }
+
+    @Test func recordsTheLastSeenHashPerHost() {
         let delegate = PinnedSessionDelegate { _ in nil }
         #expect(delegate.lastSeenHash(forHost: "relay.test") == nil)
-        #expect(!delegate.consumePinFailure())
+        #expect(!delegate.pinFailed(forHost: "relay.test"))
     }
 
     @Test @MainActor func pinnedHashRoundTripsThroughThePairingStore() throws {
@@ -57,5 +77,31 @@ private func certificate(fromBase64 base64: String) throws -> SecCertificate {
         // recovery path.
         try store.clear()
         #expect(store.pinnedSpkiHash == nil)
+    }
+}
+
+// MARK: - The pinning rule
+
+@Suite struct PinDecisionTests {
+    @Test func anUnpinnedHostProceeds() {
+        #expect(PinnedSessionDelegate.decision(pinned: nil, observed: "aa") == .proceed)
+        #expect(PinnedSessionDelegate.decision(pinned: "", observed: "aa") == .proceed)
+        // Even with no readable key: unpinned means default TLS handling.
+        #expect(PinnedSessionDelegate.decision(pinned: nil, observed: nil) == .proceed)
+    }
+
+    @Test func aMatchingPinProceeds() {
+        #expect(PinnedSessionDelegate.decision(pinned: "aa", observed: "aa") == .proceed)
+    }
+
+    @Test func aDifferentKeyIsRefused() {
+        #expect(PinnedSessionDelegate.decision(pinned: "aa", observed: "bb") == .refuse)
+    }
+
+    /// The bypass this closes: an attacker chooses their certificate's key
+    /// algorithm, so a shape this app can't hash must not read as "no pin to
+    /// check" on a host that is pinned.
+    @Test func aPinnedHostWithAnUnhashableKeyIsRefused() {
+        #expect(PinnedSessionDelegate.decision(pinned: "aa", observed: nil) == .refuse)
     }
 }

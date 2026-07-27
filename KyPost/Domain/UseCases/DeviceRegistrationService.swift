@@ -101,10 +101,18 @@ final class DeviceRegistrationService {
             pushSettingsStore.deliveryMode = response.deliveryMode ?? .push
             pushSettingsStore.pullEndpoint = response
                 .resolvedPullEndpoint(srv: params.srv)?.absoluteString
-            // Trust on first use: pin the key this successful pairing
-            // handshake presented. Best effort — a Keychain hiccup here must
-            // not fail an otherwise successful registration.
-            if let host = URL(string: params.srv)?.host(),
+            // Trust on FIRST use: pin the key this handshake presented only
+            // when nothing is pinned yet. `performPair` also runs for every
+            // re-registration (foreground, APNs token refresh), so pinning
+            // unconditionally here would be trust-on-every-use — it would
+            // quietly adopt whatever key was last seen, turning a single
+            // interception into a permanent pin for the attacker's key and
+            // locking out the real relay. Clearing the pairing is the only
+            // way to re-pin, which is the documented rotation recovery.
+            // Best effort: a Keychain hiccup must not fail a good registration.
+            // Empty counts as unpinned, matching the delegate's own lookup.
+            if (securePairingStore.pinnedSpkiHash ?? "").isEmpty,
+               let host = URL(string: params.srv)?.host(),
                let hash = observedSpkiHash?(host) {
                 try? securePairingStore.setPinnedSpkiHash(hash)
             }

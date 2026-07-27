@@ -184,6 +184,10 @@ final class ComposeViewModel {
     /// synchronously, before this `Task { }`-wrapped action body ever runs.
     func confirmPickupFallback(_ pickup: PendingPickup) async {
         guard !isSending, !isSent, !didSend else { return }
+        // Claimed here rather than in `deliver`, so nothing can slip between
+        // the guard above and the in-flight state (see `send`).
+        isSending = true
+        defer { isSending = false }
         // A fresh attempt starts with a clean slate: an earlier notice or
         // keyless-address list must not linger over whatever this one produces.
         noticeMessage = nil
@@ -210,10 +214,10 @@ final class ComposeViewModel {
         for field in RecipientField.allCases where !commitPendingInput(for: field) {
             return
         }
-        // `handOff` deliberately doesn't own this flag — when `deliver` calls
-        // it the in-flight send already holds it, and a nested defer would
-        // clear it early. This is the only caller outside `deliver`, so it
-        // guards here; otherwise a double-tap saves two drafts.
+        // Entry points own this flag; `handOff` and `deliver` don't, so a
+        // nested defer can't clear it early when `deliver` hands off. Claimed
+        // before the first `await` below — otherwise a double-tap slips
+        // through the guard above and saves two drafts.
         isSending = true
         defer { isSending = false }
         await handOff(draft: outgoingEmail(fontTraits: fontTraits))
@@ -444,6 +448,12 @@ final class ComposeViewModel {
         // through an onChange, and a second ⌘↩ in that gap would post the
         // message twice.
         guard !isSending, !isSent, !didSend else { return }
+        // Claimed here, not in `deliver`: the recipient preflight below is an
+        // `await` on a network round-trip, and a guard that only closes after
+        // it leaves a window in which a second ⌘↩ passes the check above and
+        // posts the message a second time.
+        isSending = true
+        defer { isSending = false }
         // A fresh attempt starts with a clean slate: an earlier notice must not
         // linger over whatever this one produces. `keylessWarning` is cleared
         // here too so a rejected recipient below doesn't leave a stale address
@@ -488,9 +498,11 @@ final class ComposeViewModel {
         )
     }
 
+    /// Like `handOff`, this deliberately doesn't own `isSending`: its callers
+    /// claim it before their first `await` so no suspension point sits between
+    /// their guard and the claim. A nested defer here would clear the flag
+    /// early on the `clientSideNeeded` path, which hands off through `handOff`.
     private func deliver(_ email: OutgoingEmail) async {
-        isSending = true
-        defer { isSending = false }
         // This attempt's outcome is the only one that counts: an earlier
         // refusal must not outlive it and keep a stale dialog answerable.
         pendingPickup = nil

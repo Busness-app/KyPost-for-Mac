@@ -295,6 +295,49 @@ private func makePairing(lastDeviceId: String? = "dev-1", deviceSecret: String =
         #expect(outcome == nil)
     }
 
+    // MARK: - TOFU pinning capture
+
+    @Test func theFirstSuccessfulPairingPinsTheObservedKey() async throws {
+        let json = #"{"ok": true, "deviceId": "dev-7", "deviceSecret": "s-7"}"#
+        let env = try makeEnvironment(client: stubClient(json: json))
+        env.service.observedSpkiHash = { host in
+            host == "relay.example.com" ? "hash-first" : nil
+        }
+
+        _ = await env.service.pair(params: params, deviceToken: "t")
+
+        #expect(env.pairingStore.pinnedSpkiHash == "hash-first")
+    }
+
+    /// Trust on FIRST use, not on every use. `performPair` also runs on every
+    /// foreground and APNs token refresh, so re-pinning here would silently
+    /// adopt whatever key was last seen — one interception would become a
+    /// permanent pin for the attacker's key and lock out the real relay.
+    @Test func reregistrationNeverRepinsAnAlreadyPinnedRelay() async throws {
+        let json = #"{"ok": true, "deviceId": "dev-8"}"#
+        let env = try makeEnvironment(client: stubClient(json: json), paired: true)
+        try env.pairingStore.setPinnedSpkiHash("hash-first")
+        env.service.observedSpkiHash = { _ in "hash-attacker" }
+
+        _ = await env.service.reregisterIfPaired(deviceToken: "t2")
+
+        #expect(env.pairingStore.pinnedSpkiHash == "hash-first")
+    }
+
+    /// Clearing the pairing is the documented rotation recovery, so the next
+    /// pairing must be free to pin again.
+    @Test func pinningResumesAfterThePairingIsCleared() async throws {
+        let json = #"{"ok": true, "deviceId": "dev-7", "deviceSecret": "s-7"}"#
+        let env = try makeEnvironment(client: stubClient(json: json), paired: true)
+        try env.pairingStore.setPinnedSpkiHash("hash-first")
+        env.service.observedSpkiHash = { _ in "hash-rotated" }
+
+        try env.pairingStore.clear()
+        _ = await env.service.pair(params: params, deviceToken: "t")
+
+        #expect(env.pairingStore.pinnedSpkiHash == "hash-rotated")
+    }
+
     /// Re-registration must carry the stored deviceId so the server updates
     /// the existing device row instead of pairing the computer again.
     @Test func reregisterSendsStoredDeviceId() async throws {

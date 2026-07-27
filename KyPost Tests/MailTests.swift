@@ -482,6 +482,42 @@ private func makeOutgoing(
     }
 }
 
+// MARK: - Email body navigation policy (default-deny)
+
+@MainActor
+@Suite struct EmailBodyNavigationPolicyTests {
+    private func policy(_ urlString: String, isLink: Bool = false) -> EmailBodyWebView.BodyNavigation {
+        EmailBodyWebView.navigationPolicy(url: URL(string: urlString), isLinkActivation: isLink)
+    }
+
+    @Test func theMessageDocumentItselfLoads() {
+        #expect(policy("about:blank") == .allow)
+    }
+
+    @Test func linkTapsOpenInTheBrowserAndNeverInTheReader() {
+        let url = URL(string: "https://example.com/thread")!
+        #expect(policy(url.absoluteString, isLink: true) == .openInBrowser(url))
+    }
+
+    /// The bypass this closes: a meta refresh is plain HTML and a main-frame
+    /// navigation, so neither `allowsContentJavaScript = false` nor
+    /// `loadsSubresources = false` touches it. Allowing everything that isn't
+    /// a link tap would let a message beacon home on open, straight past the
+    /// blocked-remote-content banner.
+    @Test func aRedirectTheUserNeverClickedIsBlocked() {
+        #expect(policy("https://tracker.example/beacon?id=victim") == .block)
+    }
+
+    @Test func aFormPostToAnArbitraryHostIsBlocked() {
+        #expect(policy("https://tracker.example/collect") == .block)
+    }
+
+    @Test func aNavigationWithNoURLIsBlocked() {
+        #expect(EmailBodyWebView.navigationPolicy(url: nil, isLinkActivation: false) == .block)
+        #expect(EmailBodyWebView.navigationPolicy(url: nil, isLinkActivation: true) == .block)
+    }
+}
+
 // MARK: - Attachment cache path sanitization
 
 @MainActor

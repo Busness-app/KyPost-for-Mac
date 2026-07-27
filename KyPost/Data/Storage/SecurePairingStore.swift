@@ -66,7 +66,25 @@ final class SecurePairingStore {
         self.keychain = keychain
     }
 
+    /// Writes the pairing, or leaves the device unpaired.
+    ///
+    /// The individual Keychain writes can't be made atomic, so the failure is
+    /// resolved instead of left half-applied: `loadPairing` only requires
+    /// sub/srv/pairingToken, so a throw between them would otherwise leave a
+    /// new subject pointing at the previous server — credentials that look
+    /// valid and are silently wrong. Unwinding to "not paired" is the louder,
+    /// recoverable outcome, and the caller already surfaces the error
+    /// (DeviceRegistrationService.performPair).
     func savePairing(_ pairing: Pairing) throws {
+        do {
+            try writePairing(pairing)
+        } catch {
+            try? clear()
+            throw error
+        }
+    }
+
+    private func writePairing(_ pairing: Pairing) throws {
         try keychain.set(pairing.sub, forKey: Key.sub)
         // Re-registration mints a fresh secret on every success; while the
         // gate is on it must land behind user presence, never in the plain
@@ -152,10 +170,21 @@ final class SecurePairingStore {
         }
     }
 
+    /// Unpair. Every key gets its own attempt: stopping at the first failure
+    /// would leave the device secret, pairing token, and pin behind on a
+    /// device the user just unpaired — `deviceSecret` is only the second entry
+    /// in `Key.all`. The first error still propagates, so a partial wipe is
+    /// reported rather than passing for success.
     func clear() throws {
         secretGate?.removeAll()
+        var firstError: Error?
         for key in Key.all {
-            try keychain.remove(key)
+            do {
+                try keychain.remove(key)
+            } catch {
+                firstError = firstError ?? error
+            }
         }
+        if let firstError { throw firstError }
     }
 }

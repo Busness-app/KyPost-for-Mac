@@ -125,21 +125,55 @@ private final class StubGatedStore: GatedCredentialStoring {
         #expect(try env.pairingStore.loadPairing()?.deviceSecret == "s1")
     }
 
-    @Test func aDeclinedPresencePromptLeavesReadsUnavailableUntilTheNextUnlock() async throws {
+    /// Declining the presence prompt has to leave the app locked. Unlocking
+    /// without the secret would show a working UI whose every relay call
+    /// silently no-ops, and `requestUnlock` is the only place the in-memory
+    /// copy can be repopulated — so it must not be spent on a failed load.
+    @Test func aDeclinedPresencePromptKeepsTheAppLocked() async throws {
         let env = try makeEnvironment()
         _ = await env.lockManager.requestUnlock()
         env.service.enable()
         env.lockManager.lock()
 
         env.gatedStore.failLoad = true
-        _ = await env.lockManager.requestUnlock()
+        #expect(await !env.lockManager.requestUnlock())
+        #expect(env.lockManager.isLocked)
         #expect(throws: MailSourceError.credentialUnavailable) {
             try env.pairingStore.loadPairing()
         }
 
+        // Retrying is just another unlock — no relock needed to get out.
         env.gatedStore.failLoad = false
-        env.lockManager.lock()
+        #expect(await env.lockManager.requestUnlock())
+        #expect(!env.lockManager.isLocked)
+        #expect(try env.pairingStore.loadPairing()?.deviceSecret == "s1")
+    }
+
+    /// The gate can only be reached while the app lock is on. If a partial
+    /// write ever leaves it enabled without the lock, nothing in the running
+    /// session can undo it — relaunching repairs it.
+    @Test func launchRepairsAGateLeftEnabledWithoutTheAppLock() async throws {
+        let env = try makeEnvironment()
         _ = await env.lockManager.requestUnlock()
+        env.service.enable()
+        // The state Settings now refuses to create.
+        try env.lockStore.setLockEnabled(false)
+
+        let freshManager = AppLockManager(
+            store: env.lockStore, authenticator: StubAuthenticator()
+        )
+        let freshService = CredentialGateService(
+            appLockStore: env.lockStore,
+            securePairingStore: env.pairingStore,
+            gatedStore: env.gatedStore,
+            lockManager: freshManager
+        )
+        freshService.wireAtLaunch()
+
+        #expect(!freshService.isEnabled)
+        #expect(!env.lockStore.credentialGateEnabled)
+        #expect(env.gatedStore.stored == nil)
+        // The pairing works again without any unlock, which is the point.
         #expect(try env.pairingStore.loadPairing()?.deviceSecret == "s1")
     }
 

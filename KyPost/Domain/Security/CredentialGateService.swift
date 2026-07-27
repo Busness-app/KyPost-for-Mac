@@ -43,8 +43,18 @@ final class CredentialGateService {
 
     /// Re-installs the gate hooks on launch when the flag was already on.
     /// Must run before the first poll (PushLifecycle.onLaunch).
+    ///
+    /// Also the repair point for the one state the gate cannot escape on its
+    /// own: enabled *without* the app lock. The gate's toggle is disabled
+    /// while the lock is off, and `AppLockManager.requestUnlock` returns early
+    /// when `isLocked` is false, so the in-memory secret can never be
+    /// repopulated — every relay call would throw `credentialUnavailable`
+    /// forever. Settings refuses to create that state (see
+    /// SecuritySettingsView), so reaching it means a write failed partway;
+    /// relaunching resolves it with one presence prompt.
     func wireAtLaunch() {
         guard isEnabled else { return }
+        if !appLockStore.lockEnabled, disable() { return }
         wire()
     }
 
@@ -63,11 +73,22 @@ final class CredentialGateService {
             try securePairingStore.setDeviceSecret("")
             try appLockStore.setCredentialGateEnabled(true)
         } catch {
-            // The plain secret stays the source of truth until every step
-            // lands.
-            try? securePairingStore.setDeviceSecret(pairing.deviceSecret)
-            try? gatedStore.remove()
             Log.app.error("Could not enable the credential gate: \(error.localizedDescription)")
+            // The plain secret stays the source of truth until every step
+            // lands — but restore it *before* giving up the gated copy, and
+            // only give that copy up once the restore provably succeeded.
+            // These failures are correlated, not independent: the step that
+            // threw was a Keychain write, and so is the restore. Removing on
+            // a failed restore leaves the device secret nowhere at all, with
+            // re-pairing the only way back.
+            do {
+                try securePairingStore.setDeviceSecret(pairing.deviceSecret)
+                try? gatedStore.remove()
+            } catch {
+                Log.app.error(
+                    "Rollback could not restore the plain device secret; keeping the gated copy as the only surviving one: \(error.localizedDescription)"
+                )
+            }
             return false
         }
         isEnabled = true
@@ -86,12 +107,23 @@ final class CredentialGateService {
         do {
             try securePairingStore.setDeviceSecret(secret)
             try appLockStore.setCredentialGateEnabled(false)
-            try gatedStore.remove()
         } catch {
             Log.app.error("Could not disable the credential gate: \(error.localizedDescription)")
             return false
         }
+        // Past this point the gate is off no matter what: the plain secret is
+        // back and the flag is cleared. A stranded gated copy holds the same
+        // value the plain item now does — not a new exposure, and `store()`
+        // overwrites it on the next enable — so it must not turn into a
+        // reported failure that leaves the caller's UI disagreeing with the
+        // state actually persisted.
+        do {
+            try gatedStore.remove()
+        } catch {
+            Log.app.error("Left the gated device-secret copy behind: \(error.localizedDescription)")
+        }
         isEnabled = false
+        lockManager.cacheGatedSecret(nil)
         unwire()
         return true
     }

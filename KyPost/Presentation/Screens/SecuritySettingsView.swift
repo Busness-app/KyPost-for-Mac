@@ -133,22 +133,38 @@ struct SecuritySettingsContent: View {
         }
     }
 
+    /// Dependency rule: toggles 2 and 3 require the lock, so dropping the lock
+    /// drops them too. The credential gate has to come off *first* and its
+    /// failure has to abort the whole change: its toggle is disabled while the
+    /// lock is off, and once the lock is off `requestUnlock` can no longer
+    /// repopulate the in-memory secret, so turning the lock off over a failed
+    /// `disable()` strands the device secret behind a prompt the user can no
+    /// longer reach — silently, since the app just stops syncing.
+    ///
+    /// Hostile Location Protection stays *after* the lock flag is persisted:
+    /// it rebuilds the graph, and a rebuild while `lockEnabled` is still true
+    /// comes up with a fresh AppLockManager in the locked state.
+    ///
+    /// The cost of going gate-first is that declining the lock's own re-auth
+    /// afterwards leaves the gate off with the lock still on. That state is
+    /// visible, both toggles stay reachable, and nothing stops working — the
+    /// opposite ordering's failure is none of those things.
     private var lockEnabledBinding: Binding<Bool> {
         Binding(
             get: { lockManager.isLockEnabled },
             set: { enabled in
                 Task {
+                    if !enabled, gateService.isEnabled, !gateService.disable() {
+                        lockToggleMessage = String(
+                            localized: "Turn off \"Require unlock for notifications & MFA\" first — it needs to be authenticated before this can be switched off."
+                        )
+                        return
+                    }
                     if await lockManager.setLockEnabled(enabled) {
                         lockToggleMessage = nil
-                        // Dependency rule: toggles 2 and 3 require the lock;
-                        // dropping the lock drops them too.
-                        if !enabled {
-                            if gateService.isEnabled {
-                                _ = gateService.disable()
-                            }
-                            if SingletonGraph.shared.hostileLocationProtectionStore.enabled {
-                                applyHostileProtection(false)
-                            }
+                        if !enabled,
+                           SingletonGraph.shared.hostileLocationProtectionStore.enabled {
+                            applyHostileProtection(false)
                         }
                     } else {
                         lockToggleMessage = enabled

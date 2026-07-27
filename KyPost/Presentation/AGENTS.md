@@ -93,6 +93,19 @@ Domain.
 - **A relay `warning` on a 200 means the message was sent.** Show it as a
   notice, keep the window open, and leave Send disabled (`isSent`) — a retry
   duplicates the message. Never pattern-match the warning's wording.
+- **Entry points own `isSending`, and claim it before their first `await`.**
+  `send`, `confirmPickupFallback` and `handOffToWebmail` set it immediately
+  after their `!isSending, !isSent, !didSend` guard; `deliver` and `handOff`
+  never touch it (a nested `defer` would clear it early on the handoff path).
+  With Encrypt on, the recipient preflight is a live round trip sitting right
+  after that guard — claiming the flag any later lets a second ⌘↩ through and
+  posts the message twice.
+- **The message reader's navigation policy is default-deny.**
+  `EmailBodyWebView.navigationPolicy` allows the `about:` load of the message
+  itself, routes link taps to `openURL`, and blocks everything else. JS off
+  and `loadsSubresources = false` do not cover main-frame navigation — a
+  `<meta http-equiv="refresh">` is neither script nor subresource — so an
+  allow-by-default branch here silently reopens the remote-content beacon.
 
 ## Work Guidance
 

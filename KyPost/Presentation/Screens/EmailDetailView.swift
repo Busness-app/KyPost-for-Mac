@@ -468,10 +468,12 @@ private struct AttachmentDocument: FileDocument {
 /// Sender-controlled HTML is untrusted input, the same way it is in any mail
 /// client: JavaScript execution is disabled unconditionally (mainstream mail
 /// clients — Apple Mail, Thunderbird, Outlook — do the same in their message
-/// view), and remote resources (images, stylesheets, anything with a network
+/// view), remote resources (images, stylesheets, anything with a network
 /// fetch of its own) are blocked by default, matching those clients'
-/// "load remote content" opt-in, so a message can't silently beacon home or
-/// probe the local network the moment it's opened.
+/// "load remote content" opt-in, and navigation out of the message is
+/// default-deny (see `navigationPolicy`) so the block can't be walked around
+/// with a redirect. Together: a message can't silently beacon home or probe
+/// the local network the moment it's opened.
 struct EmailBodyWebView: View {
     let html: String
 
@@ -539,8 +541,36 @@ struct EmailBodyWebView: View {
         return configuration
     }
 
-    /// Only a real link tap reaches here — JavaScript is disabled above, so
-    /// a script-driven redirect of this navigation is no longer possible.
+    /// What a navigation out of the message body is allowed to do.
+    enum BodyNavigation: Equatable {
+        /// The message document itself loading from memory.
+        case allow
+        case openInBrowser(URL)
+        case block
+    }
+
+    /// Default-deny, and pure so the rule is testable without WebKit.
+    ///
+    /// Disabling JavaScript does not make this view's navigation safe on its
+    /// own, and neither does `loadsSubresources`: a `<meta http-equiv=
+    /// "refresh">` is plain HTML and a main-frame navigation, so it is neither
+    /// script nor subresource. Allowing everything that isn't a link tap would
+    /// let a message redirect the reader to a page of the sender's choosing
+    /// the instant it opens — a read receipt that walks straight past the
+    /// blocked-remote-content banner, rendering the sender's page inside the
+    /// reader's own chrome. So: link taps go to the browser, the in-memory
+    /// document loads, everything else is dropped.
+    nonisolated static func navigationPolicy(
+        url: URL?,
+        isLinkActivation: Bool
+    ) -> BodyNavigation {
+        // `page.load(html:)` serves the message against an `about:` base URL;
+        // that navigation is the message itself and has to go through.
+        if url?.scheme?.lowercased() == "about" { return .allow }
+        guard let url else { return .block }
+        return isLinkActivation ? .openInBrowser(url) : .block
+    }
+
     private struct LinksOpenExternally: WebPage.NavigationDeciding {
         let openURL: OpenURLAction
 
@@ -548,11 +578,18 @@ struct EmailBodyWebView: View {
             for action: WebPage.NavigationAction,
             preferences: inout WebPage.NavigationPreferences
         ) async -> WKNavigationActionPolicy {
-            guard action.navigationType == .linkActivated else { return .allow }
-            if let url = action.request.url {
+            switch EmailBodyWebView.navigationPolicy(
+                url: action.request.url,
+                isLinkActivation: action.navigationType == .linkActivated
+            ) {
+            case .allow:
+                return .allow
+            case .openInBrowser(let url):
                 openURL(url)
+                return .cancel
+            case .block:
+                return .cancel
             }
-            return .cancel
         }
     }
 }

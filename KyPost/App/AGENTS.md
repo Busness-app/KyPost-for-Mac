@@ -18,10 +18,13 @@ graph at runtime (`AppEnvironment.rebuild`), so:
 - Every scene root in `KyPostApp` carries `.id(environment.generation)`.
   A new `WindowGroup`/`Settings` scene must too, plus the `LockedOverlay`
   and `protectedFromCapture()` modifiers its siblings have.
-- `SingletonGraph.shutdown()` must stop any new long-lived task a graph
-  child owns (pollers, monitors, auto-refresh loops). If you add one,
-  add its stop call there, or the superseded graph keeps writing to a
-  database the app no longer shows.
+- `SingletonGraph.shutdown()` must stop any new long-lived task or resource
+  a graph child owns (pollers, monitors, auto-refresh loops, and
+  `relaySession`, whose delegate-backed `URLSession` holds its delegate and
+  connection pool until `invalidateAndCancel()`). If you add one, add its
+  stop call there, or the superseded graph keeps writing to a database the
+  app no longer shows — or, worse, keeps relay connections open through the
+  Hostile Location Protection swap that was meant to close them.
 
 `AppEnvironment.onRebuild` re-runs the launch wiring (`PushLifecycle`)
 after a swap; it is nil under tests so no runtime services start there.
@@ -33,6 +36,14 @@ after a swap; it is nil under tests so no runtime services start there.
 `appLockManager.isLocked` — the deferred sync runs from `onUnlock`.
 Reordering these reintroduces either a blank-secret read (gate on) or a
 locked-launch poll.
+
+`wireAtLaunch` is also the credential gate's only repair point: the gate
+enabled *without* the app lock is a state the running session cannot escape
+(its toggle is disabled, and `requestUnlock` returns early once unlocked, so
+the in-memory secret can never come back). Settings refuses to create it —
+`SecuritySettingsView` clears the gate *before* dropping the lock and aborts
+the whole change if that fails — and a relaunch resolves it if a partial
+write ever does.
 
 ## Verification
 

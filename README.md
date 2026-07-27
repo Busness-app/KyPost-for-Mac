@@ -37,10 +37,15 @@ The app talks only to the relay backend — there is no direct IMAP/SMTP. You pa
   behind user presence, so background mail checks and MFA approvals wait
   until you open and unlock the app. On iPhone this covers all background
   delivery; on a Mac it applies while the screen is locked.
-- **Always on**: TOFU certificate pinning (the relay's key is pinned at
-  pairing; a changed certificate means re-pair via Settings → Connection),
-  PGP fingerprints computed locally from the key bytes (a lying relay is
-  refused), backup exclusion for the local store, and screen-capture
+- **Always on**: TOFU certificate pinning — the relay's key is pinned on the
+  *first* pairing and never silently re-pinned afterwards, and once a host is
+  pinned the check fails closed, so a certificate this app can't hash is
+  refused rather than waved through. A changed certificate means re-pair via
+  Settings → Connection. Also: sender HTML renders with JavaScript off,
+  remote content blocked, and navigation out of the message default-denied
+  (so a redirect can't beacon home past the block); PGP fingerprints computed
+  locally from the key bytes (a lying relay is refused); backup exclusion for
+  the local store; and screen-capture
   protection — macOS windows are excluded from recordings/sharing (system
   screenshots can't be blocked); iOS covers content while a recording or
   mirror is active (plain screenshots can't be blocked there either).
