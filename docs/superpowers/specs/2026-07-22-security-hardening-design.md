@@ -1,7 +1,15 @@
 # Security hardening: app lock, Hostile Location Protection, and related mitigations
 
 Date: 2026-07-22
-Status: Draft — ported from kypost-android's 2026-07-22-security-hardening-design.md, not yet reviewed
+Status: Implemented 2026-07-26 — plan at
+`docs/superpowers/plans/2026-07-26-security-hardening.md`, which re-verified
+this design against the tree and ratified its open recommendations
+(LAContext-only unlock; macOS locks on screen lock; in-place graph rebuild).
+Two implementation deltas: Feature 3 uses a `.userPresence`
+access-controlled Keychain item directly (no AES-GCM wrapping layer — the
+Keychain's own access control does that job), and the macOS unlock cover is
+a per-window root overlay rather than a dedicated NSWindow (window-modal
+sheets above it are a known, disclosed limitation).
 
 ## Goal
 

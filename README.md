@@ -21,6 +21,30 @@ The app talks only to the relay backend — there is no direct IMAP/SMTP. You pa
 - **Encrypted and signed send** — for accounts whose key the server holds, Encrypt/Sign travel with the message and the relay does the OpenPGP work. When a recipient has no usable key the relay refuses first and asks: confirming mails them a one-time link and stores that message's plaintext on your server for up to 7 days, named recipients and all. Accounts whose key only the browser can unwrap can't encrypt from here at all — the draft is saved server-side and webmail takes over.
 - **15 themes** — palettes shared verbatim with the web and Android apps; default is **Patina Ky**.
 
+### Security (Settings → Security)
+
+- **Require Unlock to Open** — gates the app behind Face ID / Touch ID /
+  the device passcode (`LAContext`; the OS owns rate-limiting and lockout —
+  there is no app-specific PIN). iOS locks on backgrounding; macOS locks
+  when the screen locks, deliberately *not* on switching apps.
+- **Hostile Location Protection** — keeps no mail, contacts, or attachments
+  on the device; everything lives in memory and reloads from your server.
+  Enabling erases the local cache. Honest limits: attachment previews
+  briefly touch the app's sandboxed temporary directory while open (Quick
+  Look requires a file) and are deleted on dismissal; the erased store is a
+  plain delete, not a forensic overwrite.
+- **Require unlock for notifications & MFA** — moves the relay credential
+  behind user presence, so background mail checks and MFA approvals wait
+  until you open and unlock the app. On iPhone this covers all background
+  delivery; on a Mac it applies while the screen is locked.
+- **Always on**: TOFU certificate pinning (the relay's key is pinned at
+  pairing; a changed certificate means re-pair via Settings → Connection),
+  PGP fingerprints computed locally from the key bytes (a lying relay is
+  refused), backup exclusion for the local store, and screen-capture
+  protection — macOS windows are excluded from recordings/sharing (system
+  screenshots can't be blocked); iOS covers content while a recording or
+  mirror is active (plain screenshots can't be blocked there either).
+
 ## Requirements
 
 - Xcode 26 (deployment target macOS/iOS 26.5)
