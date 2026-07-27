@@ -23,7 +23,7 @@ protocol DeviceAuthenticating {
     func authenticate(reason: String) async -> Bool
 }
 
-struct LocalAuthenticationAuthenticator: DeviceAuthenticating {
+nonisolated struct LocalAuthenticationAuthenticator: DeviceAuthenticating {
     func canAuthenticate() -> Bool {
         LAContext().canEvaluatePolicy(.deviceOwnerAuthentication, error: nil)
     }

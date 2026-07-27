@@ -35,7 +35,7 @@ private struct WindowSharingDisabler: NSViewRepresentable {
 
 #if os(iOS)
 private struct CaptureBlurModifier: ViewModifier {
-    @State private var isCaptured = UIScreen.main.isCaptured
+    @Environment(\.isSceneCaptured) private var isCaptured
 
     func body(content: Content) -> some View {
         content
@@ -47,13 +47,6 @@ private struct CaptureBlurModifier: ViewModifier {
                             .font(AppFont.ui(14, weight: .medium))
                     }
                     .ignoresSafeArea()
-                }
-            }
-            .task {
-                for await _ in NotificationCenter.default.notifications(
-                    named: UIScreen.capturedDidChangeNotification
-                ) {
-                    isCaptured = UIScreen.main.isCaptured
                 }
             }
     }

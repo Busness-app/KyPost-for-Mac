@@ -37,7 +37,7 @@ protocol PairingSecretGate: AnyObject {
 }
 
 final class SecurePairingStore {
-    private enum Key {
+    private nonisolated enum Key {
         static let sub = "sub"
         static let deviceSecret = "deviceSecret"
         static let srv = "srv"
@@ -54,8 +54,8 @@ final class SecurePairingStore {
 
     /// Keychain accounts the pinned session's nonisolated delegate reads
     /// straight off KeychainStorage (it runs off the main actor).
-    static let pinnedSpkiHashKey = Key.pinnedSpkiHash
-    static let srvKey = Key.srv
+    nonisolated static let pinnedSpkiHashKey = Key.pinnedSpkiHash
+    nonisolated static let srvKey = Key.srv
 
     private let keychain: KeychainStorage
     /// Set by CredentialGateService while "Require unlock for notifications
