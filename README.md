@@ -1,122 +1,124 @@
 # KyPost
 
-A native SwiftUI mail client for macOS and iOS that connects to a KyPost mail relay. 
+A native SwiftUI mail client for macOS and iOS. It connects to a KyPost mail relay.
 
-The app talks only to the relay backend — there is no direct IMAP/SMTP. You pair a device once (QR code or deep link) and the relay handles mail access, server-side keyword tabs, push notifications, and contact sync.
+The app talks only to the relay backend. There is no direct IMAP or SMTP. You pair a device one time with a QR code or a deep link. The relay then handles mail access, server-side keyword tabs, push notifications, and contact sync.
 
-> **Naming:** the app is branded **KyPost** throughout — Dock/Home Screen label, About screen, permission prompts, the Xcode project/scheme/folders, and the deep-link scheme (`kypost://`). Bundle IDs and the Keychain access group are deliberately unchanged (`com.urlxl.mail`, etc.) — renaming those is a separate, higher-stakes decision (see `Brand_Refresh_KyPost.md`).
+> **Naming:** the app uses the name **KyPost** everywhere. This covers the Dock and Home Screen label, the About screen, the permission prompts, the Xcode project, scheme and folders, and the deep-link scheme (`kypost://`). The bundle IDs and the Keychain access group stay unchanged on purpose (`com.urlxl.mail` and related IDs). A rename of those IDs is a separate decision with a higher risk. See `Brand_Refresh_KyPost.md`.
 
 ## Features
 
-- **Inbox with keyword tabs** — the relay categorizes mail into tabs/labels; tab visibility is configurable in settings.
-- **Server folders** — Inbox (plus its subfolders), Drafts, Junk, Sent, Trash, and Archive with subfolders. On macOS these live in the sidebar; on iOS they're in the folder menu on the Inbox screen.
-- **HTML email rendering** — themed WebKit reader on both platforms; links open in the default browser. Plain-text messages render natively.
-- **macOS niceties** — three-pane split view, pop-out email windows (double-click or right-click a message), a toggleable preview pane, drag-and-drop of emails onto sidebar folders to move them, menu-bar commands (⌘N compose, ⌘R refresh, ⌘⇧S contact sync), and a native Preferences window (⌘,).
-- **Compose & send** through the relay.
-- **Push notifications** (APNs) for new mail and MFA challenges, with a pull-polling fallback (90 s foreground, background refresh on iOS).
+- **Inbox with keyword tabs** — the relay sorts mail into tabs and labels. You set the tab visibility in the settings.
+- **Server folders** — Inbox and its subfolders, Drafts, Junk, Sent, Trash, and Archive with subfolders. On macOS these folders are in the sidebar. On iOS they are in the folder menu on the Inbox screen.
+- **HTML email rendering** — a themed WebKit reader on both platforms. Links open in the default browser. The app renders plain-text messages natively.
+- **macOS features** — a three-pane split view, pop-out email windows (double-click or right-click a message), a preview pane you can turn on and off, drag-and-drop of emails onto sidebar folders to move them, menu-bar commands (⌘N compose, ⌘R refresh, ⌘⇧S contact sync), and a native Preferences window (⌘,).
+- **Compose and send** through the relay.
+- **Push notifications** (APNs) for new mail and MFA challenges. A polling fallback also runs (90 s in the foreground, background refresh on iOS).
 - **MFA approval** — approve login challenges from a notification tap.
-- **Contact sync** — two-way sync with the relay, with local-first edits and conflict-safe reconciliation. Contacts carry the full extended schema: groups, photo, IM/social handles, websites, relations, extra dates, phonetic names, department, custom fields, pronouns, and a PGP public key.
-- **PGP key exchange via QR** — share your public key in person. *My QR Code* renders a short-lived (2 min) pickup link; *Scan to add contact key* reads someone else's, shows their fingerprint for out-of-band confirmation, and saves the key to a contact. iOS scans with the camera (paste as a fallback); macOS pastes the link (no VisionKit scanner).
-- **Encryption state on every message** — messages the server decrypted say so, so you can tell it read your mail; messages your browser alone can open say that too, and link out to webmail. This app holds no PGP private key by design (see the server's `docs/E2E_PGP.md`).
-- **Encrypted and signed send** — for accounts whose key the server holds, Encrypt/Sign travel with the message and the relay does the OpenPGP work. When a recipient has no usable key the relay refuses first and asks: confirming mails them a one-time link and stores that message's plaintext on your server for up to 7 days, named recipients and all. Accounts whose key only the browser can unwrap can't encrypt from here at all — the draft is saved server-side and webmail takes over.
-- **15 themes** — palettes shared verbatim with the web and Android apps; default is **Patina Ky**.
+- **Contact sync** — two-way sync with the relay. Local edits win first, and the reconciliation keeps the data safe from conflicts. Contacts carry the full extended schema: groups, photo, IM and social handles, websites, relations, extra dates, phonetic names, department, custom fields, pronouns, and a PGP public key.
+- **PGP key exchange with QR** — share your public key in person. *My QR Code* makes a pickup link that expires in 2 minutes. *Scan to add contact key* reads the link of another person, shows their fingerprint for out-of-band confirmation, and saves the key to a contact. iOS scans with the camera and accepts a pasted link as a fallback. macOS accepts only a pasted link, because it has no VisionKit scanner.
+- **Encryption state on every message** — a message that the server decrypted says so, and you can then see that the server read your mail. A message that only your browser can open says that too, and links out to webmail. This app holds no PGP private key by design. See `docs/E2E_PGP.md` in the server repo.
+- **Encrypted and signed send** — for an account whose key the server holds, the Encrypt and Sign flags travel with the message, and the relay does the OpenPGP work. If a recipient has no usable key, the relay refuses first and asks you. If you confirm, the relay mails a one-time link to the recipient. It also stores the plaintext of that message on your server for up to 7 days, together with the named recipients. An account whose key only the browser can unwrap cannot encrypt from this app. The app saves the draft on the server and webmail takes over.
+- **15 themes** — the palettes match the web and Android apps exactly. The default theme is **Patina Ky**.
 
 ### Security (Settings → Security)
 
-- **Require Unlock to Open** — gates the app behind Face ID / Touch ID /
-  the device passcode (`LAContext`; the OS owns rate-limiting and lockout —
-  there is no app-specific PIN). iOS locks on backgrounding; macOS locks
-  when the screen locks, deliberately *not* on switching apps.
+- **Require Unlock to Open** — gates the app behind Face ID, Touch ID, or
+  the device passcode (`LAContext`). The OS owns the rate-limiting and the
+  lockout, and there is no app-specific PIN. iOS locks the app when you send
+  it to the background. macOS locks the app when the screen locks, and not
+  when you switch apps.
 - **Hostile Location Protection** — keeps no mail, contacts, or attachments
-  on the device; everything lives in memory and reloads from your server.
-  Enabling erases the local cache. Honest limits: attachment previews
-  briefly touch the app's sandboxed temporary directory while open (Quick
-  Look requires a file) and are deleted on dismissal; the erased store is a
-  plain delete, not a forensic overwrite.
-- **Require unlock for notifications & MFA** — moves the relay credential
-  behind user presence, so background mail checks and MFA approvals wait
-  until you open and unlock the app. On iPhone this covers all background
-  delivery; on a Mac it applies while the screen is locked.
-- **Always on**: TOFU certificate pinning — the relay's key is pinned on the
-  *first* pairing and never silently re-pinned afterwards, and once a host is
-  pinned the check fails closed, so a certificate this app can't hash is
-  refused rather than waved through. A changed certificate means re-pair via
-  Settings → Connection. Also: sender HTML renders with JavaScript off,
-  remote content blocked, and navigation out of the message default-denied
-  (so a redirect can't beacon home past the block); PGP fingerprints computed
-  locally from the key bytes (a lying relay is refused); backup exclusion for
-  the local store; and screen-capture
-  protection — macOS windows are excluded from recordings/sharing (system
-  screenshots can't be blocked); iOS covers content while a recording or
-  mirror is active (plain screenshots can't be blocked there either).
+  on the device. All data stays in memory and reloads from your server. The
+  app erases the local cache when you turn this option on. There are two
+  honest limits. An attachment preview writes a file into the sandboxed
+  temporary directory of the app while the preview is open, because Quick
+  Look needs a file, and the app deletes the file on dismissal. The erase of
+  the store is a plain delete, not a forensic overwrite.
+- **Require unlock for notifications and MFA** — moves the relay credential
+  behind user presence. Background mail checks and MFA approvals then wait
+  until you open and unlock the app. On an iPhone this covers all background
+  delivery. On a Mac it applies while the screen is locked.
+- **Always on**: TOFU certificate pinning. The app pins the key of the relay
+  at the *first* pairing and never re-pins it silently afterward. After the
+  app pins a host, the check fails closed, so the app refuses a certificate
+  that it cannot hash. If the certificate changes, pair again in
+  Settings → Connection. The app also applies these protections. Sender HTML
+  renders with JavaScript off and remote content blocked. Navigation out of
+  the message is denied by default, so a redirect cannot beacon home past the
+  block. The app computes PGP fingerprints locally from the key bytes, so it
+  refuses a relay that lies. The local store carries a backup exclusion.
+  Screen-capture protection is on: macOS excludes the windows from recordings
+  and screen sharing, and iOS covers the content while a recording or a mirror
+  is active. Neither platform can block a plain system screenshot.
 
 ## Requirements
 
-- Xcode 26 (deployment target macOS/iOS 26.5)
+- Xcode 26 (deployment target macOS and iOS 26.5)
 - A running llama-labels backend (the live deployment is behind Cloudflare at `mail.urlxl.com`)
 - For push: an APNs key configured on the backend
 
-No external Swift package dependencies — persistence is SwiftData, networking is URLSession, rendering is WebKit.
+The app has no external Swift package dependencies. It uses SwiftData for persistence, URLSession for networking, and WebKit for rendering.
 
 ## Getting started
 
 1. Open `KyPost.xcodeproj` in Xcode.
-2. Select the *KyPost* scheme and your destination (My Mac or an iOS device/simulator).
+2. Select the *KyPost* scheme and your destination (My Mac, or an iOS device or simulator).
 3. Build and run.
-4. Pair the device: in the web frontend, open **Notifications → Pair Desktop App** (or scan the mobile pairing QR on iOS). The `kypost://native-pair?...` deep link registers the device and stores credentials in the Keychain.
+4. Pair the device. In the web frontend, open **Notifications → Pair Desktop App**. On iOS, scan the mobile pairing QR code. The `kypost://native-pair?...` deep link registers the device and stores the credentials in the Keychain.
 
-Until a device is paired, the inbox shows a prompt directing you to Settings → Connection.
+Until you pair a device, the inbox shows a prompt that directs you to Settings → Connection.
 
 ## Architecture
 
-The target builds for both platforms from one codebase, laid out in `KyPost/`:
+The target builds for both platforms from one codebase in `KyPost/`:
 
 | Layer | Contents |
 | --- | --- |
 | `App/` | Entry point, scenes, app delegate, DI graph (`SingletonGraph`), polling scheduler, notification dispatcher |
-| `Data/` | Relay clients (`RelayMailSource`, sync/push/registration clients), SwiftData DAOs and entities, Keychain and settings stores |
+| `Data/` | Relay clients (`RelayMailSource`, sync, push and registration clients), SwiftData DAOs and entities, Keychain and settings stores |
 | `Domain/` | Models, repositories (mail, keywords, contacts, push), use cases (send, pairing, MFA) |
-| `Presentation/` | Shared SwiftUI screens and view models, macOS-specific root/preferences views, style-guide components |
-| `Style/` | Theme palettes and manager (binding contract with web `theme.ts` / Android `AppTheme.kt`) |
+| `Presentation/` | Shared SwiftUI screens and view models, macOS-specific root and preferences views, style-guide components |
+| `Style/` | Theme palettes and manager (binding contract with web `theme.ts` and Android `AppTheme.kt`) |
 
-Platform split: iOS uses a tab layout (`MainTabView`); macOS uses `NavigationSplitView` (`MacRootView`) plus a per-email `WindowGroup` for pop-out readers.
+The platforms split at the root view. iOS uses a tab layout (`MainTabView`). macOS uses `NavigationSplitView` (`MacRootView`) plus a per-email `WindowGroup` for the pop-out readers.
 
 ### Wire contracts
 
-The relay endpoints and payload shapes are defined by the Android reference repo (`llama-mobile`), primarily `Mobile_Mail_Relay.md` and `Mobile_Contact_Sync.md`:
+The Android reference repo (`llama-mobile`) defines the relay endpoints and the payload shapes. The primary documents are `Mobile_Mail_Relay.md` and `Mobile_Contact_Sync.md`:
 
 - `GET /api/inbox` — emails grouped by tab (`{tabs, byTab, cursor, delta, removed}`)
-- `GET /api/inbox/folders?parent=` — folder listing (full paths, e.g. `INBOX/Receipts`)
-- `POST /api/inbox/actions` — bulk read/archive/spam/delete/move
+- `GET /api/inbox/folders?parent=` — folder listing (full paths, for example `INBOX/Receipts`)
+- `POST /api/inbox/actions` — bulk read, archive, spam, delete and move
 - `POST /api/mail/send` — comma-joined recipient strings
-- `POST /api/mail/draft` — save a draft (same body shape as send, no PGP flags)
-- `GET /api/pgp/bootstrap` — this account's key custody (`hasIdentity`, `protection`)
+- `POST /api/mail/draft` — save a draft (the same body shape as send, without the PGP flags)
+- `GET /api/pgp/bootstrap` — the key custody of this account (`hasIdentity`, `protection`)
 - `POST /api/pgp/recipients/check` — contacts-only recipient key preflight (never `/resolve`)
 - `GET/POST /api/contacts/sync` — cursor-based contact sync
-- `GET /api/pgp/qr/token` — mint a 2-minute PGP key-pickup token/URL (pairing-auth `sub`/`hash`)
-- `GET /api/pgp/qr/key?t=` — fetch a scanned public key + fingerprint (token is the credential)
+- `GET /api/pgp/qr/token` — make a PGP key-pickup token and URL that expire in 2 minutes (pairing-auth `sub` and `hash`)
+- `GET /api/pgp/qr/key?t=` — get a scanned public key and fingerprint (the token is the credential)
 - `POST /api/notifications/native/register` — APNs device registration
 
-When touching any of these, check the Android implementation first rather than guessing.
+Before you change any of these endpoints, read the Android implementation. Do not guess.
 
 ## Testing
 
-Unit tests use Swift Testing (`@Test`/`#expect`) and live in `KyPost Tests/`; UI test stubs are in `KyPost UITests/`. Run them in Xcode (⌘U) or:
+The unit tests use Swift Testing (`@Test` and `#expect`) and live in `KyPost Tests/`. The UI test stubs are in `KyPost UITests/`. Run the tests in Xcode with ⌘U, or with this command:
 
 ```sh
 xcodebuild test -project "KyPost.xcodeproj" -scheme "KyPost"
 ```
 
-Network-facing tests run against a stubbed `HTTPClient` — no backend needed.
+The network-facing tests run against a stubbed `HTTPClient`. They need no backend.
 
 ## Known gaps (v2 candidates)
 
 - Attachments (compose and viewing)
-- Mail cursor/delta sync — every refresh is a full folder snapshot
-- Read/archive/delete actions from the reader (move-via-drag exists on macOS)
-- Draft saving from compose — the PGP webmail handoff saves one server-side, but there's no Save Draft button and no auto-save
-- Server-side search (search runs against the local cache)
-- QR scanning via camera on macOS — pairing and PGP-key links must be pasted (camera scanning works on iOS)
+- Mail cursor and delta sync. Every refresh gets a full folder snapshot.
+- Read, archive and delete actions from the reader. Move-by-drag works on macOS.
+- Draft saving from compose. The PGP webmail handoff saves a draft on the server, but there is no Save Draft button and no auto-save.
+- Server-side search. Search runs against the local cache.
+- QR scanning with the camera on macOS. You must paste the pairing links and the PGP key links. Camera scanning works on iOS.
 
 ## License
 
