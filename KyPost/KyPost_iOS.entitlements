@@ -6,7 +6,7 @@
 	<string>development</string>
 	<key>keychain-access-groups</key>
 	<array>
-		<string>$(AppIdentifierPrefix)com.urlxl.llama-Mail-for-Mac</string>
+		<string>$(AppIdentifierPrefix)com.urlxl.mail</string>
 	</array>
 </dict>
 </plist>

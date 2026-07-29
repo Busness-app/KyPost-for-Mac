@@ -66,8 +66,9 @@ struct MacRootView: View {
             DesktopPairingView(initialParams: params).environment(\.theme, theme)
         }
         .sheet(item: $router.mfaRoute) { route in
-            MfaApprovalView(challengeId: route.challengeId).environment(\.theme, theme)
+            MfaApprovalView(challenge: route.challenge).environment(\.theme, theme)
         }
+        .lockAwareRouting(router)
         .task {
             await inboxViewModel.load()
             inboxViewModel.startAutoRefresh()

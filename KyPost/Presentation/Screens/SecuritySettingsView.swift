@@ -3,10 +3,12 @@
 //  KyPost
 //
 //  Security settings (security-hardening plan, Task 3): the three toggles
-//  with Android's order and dependency rules. Only "Require Unlock to
-//  Open" is live; Hostile Location Protection and the credential gate ship
-//  disabled until their tasks land. Shared row content feeds both the iOS
-//  screen here and MacPreferencesView's Security pane.
+//  with Android's order and dependency rules, plus the certificate-pin
+//  status row. Shared row content feeds both the iOS screen here and
+//  MacPreferencesView's Security pane.
+//
+//  Every *off* path re-authenticates. Turning a protection off is the
+//  destructive direction, and the pane is reachable from the macOS menu bar.
 //
 
 import SwiftUI
@@ -48,19 +50,23 @@ struct SecuritySettingsContent: View {
                     .foregroundStyle(SemanticColors.danger)
             }
         } footer: {
-            Text("Keeps no cached mail, contacts, or attachments on this device — everything reloads from your server. For border crossings and other device-seizure risks. Requires Require Unlock to Open.\n\nWhat still touches this device: attachment previews use temporary storage briefly while open; erasing is a plain delete, not a forensic overwrite; new-mail notifications you've already received stay in Notification Center; and if \"Sync with Apple Contacts\" is on, your contacts remain in the system Contacts app until you turn that off and remove them.")
+            // The limitation leads. This feature's stated use case is border
+            // crossings, and that is the one context where "removed from the
+            // file system" and "unrecoverable" are not the same claim — the
+            // blocks survive on APFS until something overwrites them.
+            Text("Important: this removes files, it does not overwrite them. Someone with forensic tools and physical possession of an unlocked device may still recover data that was cached before you turned this on. Turn it on before you have anything worth finding, not after.\n\nWhile on, KyPost keeps no mail, contacts, or attachments on this device — everything reloads from your server. Requires Require Unlock to Open.\n\nAlso still on this device: attachment previews use temporary storage briefly while open; new-mail notifications you've already received stay in Notification Center; and if \"Sync with Apple Contacts\" is on, your contacts remain in the system Contacts app until you turn that off and remove them.")
         }
         .confirmationDialog(
             "Enable Hostile Location Protection?",
             isPresented: $hostileConfirmationShown,
             titleVisibility: .visible
         ) {
-            Button("Erase Local Cache & Enable", role: .destructive) {
+            Button("Remove Local Cache & Enable", role: .destructive) {
                 applyHostileProtection(true)
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Erases mail, contacts, contact photos, attachments, and saved drafts cached on this device, and closes open compose windows. Your mail stays on the server. Cards already exported to Apple Contacts are not removed — use \"Remove Exported Contacts\" for those.")
+            Text("Removes mail, contacts, contact photos, attachments, and saved drafts cached on this device, and closes open compose windows. This is a normal delete, not a forensic wipe — previously cached data may still be recoverable from the disk. Your mail stays on the server. Cards already exported to Apple Contacts are not removed — use \"Remove Exported Contacts\" for those.")
         }
 
         Section {
@@ -139,19 +145,37 @@ struct SecuritySettingsContent: View {
     }
 
     /// Enabling confirms first (delivery stops while locked); disabling
-    /// applies directly, with one user-presence read to restore the secret.
+    /// re-authenticates, then restores the plain secret.
+    ///
+    /// The re-auth is not incidental. `disable()` writes the device secret back
+    /// out of the user-presence Keychain item and into the plain one — a bigger
+    /// downgrade than "Remove Exported Contacts", which already prompts. It
+    /// used to prompt for nothing at all whenever the in-memory copy was warm,
+    /// which is precisely the state an unlocked, unattended Mac is in.
     private var credentialGateBinding: Binding<Bool> {
         Binding(
             get: { gateService.isEnabled },
             set: { enabled in
                 if enabled {
                     credentialGateConfirmationShown = true
-                } else if gateService.disable() {
-                    credentialGateMessage = nil
-                } else {
-                    credentialGateMessage = String(
-                        localized: "Authentication is required to turn this off."
-                    )
+                    return
+                }
+                Task {
+                    guard await lockManager.confirmWithDeviceAuth(
+                        reason: String(localized: "Turn off Require Unlock for Notifications & MFA")
+                    ) else {
+                        credentialGateMessage = String(
+                            localized: "Authentication is required to turn this off."
+                        )
+                        return
+                    }
+                    if gateService.disable() {
+                        credentialGateMessage = nil
+                    } else {
+                        credentialGateMessage = String(
+                            localized: "Could not restore the credential — try again."
+                        )
+                    }
                 }
             }
         )
@@ -178,31 +202,49 @@ struct SecuritySettingsContent: View {
     /// it rebuilds the graph, and a rebuild while `lockEnabled` is still true
     /// comes up with a fresh AppLockManager in the locked state.
     ///
-    /// The cost of going gate-first is that declining the lock's own re-auth
-    /// afterwards leaves the gate off with the lock still on. That state is
-    /// visible, both toggles stay reachable, and nothing stops working — the
-    /// opposite ordering's failure is none of those things.
+    /// Authentication comes before *any* of it. Going gate-first was right, but
+    /// it used to run `disable()` — which writes the device secret back into
+    /// the plain Keychain item — and only then prompt for the lock, so
+    /// declining the prompt still left the downgrade applied. One prompt now
+    /// covers both changes, via `disableLockAfterAuthentication`.
     private var lockEnabledBinding: Binding<Bool> {
         Binding(
             get: { lockManager.isLockEnabled },
             set: { enabled in
                 Task {
-                    if !enabled, gateService.isEnabled, !gateService.disable() {
+                    guard !enabled else {
+                        if await lockManager.setLockEnabled(true) {
+                            lockToggleMessage = nil
+                        } else {
+                            lockToggleMessage = String(
+                                localized: "Set a device passcode or login password first."
+                            )
+                        }
+                        return
+                    }
+                    guard await lockManager.confirmWithDeviceAuth(
+                        reason: String(localized: "Turn off Require Unlock to Open")
+                    ) else {
                         lockToggleMessage = String(
-                            localized: "Turn off \"Require unlock for notifications & MFA\" first — it needs to be authenticated before this can be switched off."
+                            localized: "Authentication is required to turn this off."
                         )
                         return
                     }
-                    if await lockManager.setLockEnabled(enabled) {
-                        lockToggleMessage = nil
-                        if !enabled,
-                           SingletonGraph.shared.hostileLocationProtectionStore.enabled {
-                            applyHostileProtection(false)
-                        }
-                    } else {
-                        lockToggleMessage = enabled
-                            ? String(localized: "Set a device passcode or login password first.")
-                            : String(localized: "Authentication is required to turn this off.")
+                    if gateService.isEnabled, !gateService.disable() {
+                        lockToggleMessage = String(
+                            localized: "Could not restore the credential for \"Require unlock for notifications & MFA\" — turn that off first, then try again."
+                        )
+                        return
+                    }
+                    guard lockManager.disableLockAfterAuthentication() else {
+                        lockToggleMessage = String(
+                            localized: "Could not save the change — try again."
+                        )
+                        return
+                    }
+                    lockToggleMessage = nil
+                    if SingletonGraph.shared.hostileLocationProtectionStore.enabled {
+                        applyHostileProtection(false)
                     }
                 }
             }

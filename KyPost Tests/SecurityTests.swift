@@ -441,3 +441,134 @@ private final class StubGatedStore: GatedCredentialStoring {
         #expect(!allowed.isLocked)
     }
 }
+
+// MARK: - Regressions from the hostile review
+
+@Suite struct AppLockFlagStateTests {
+    /// `lockEnabled` collapsing every read failure into "off" was fine for
+    /// deciding what to show and wrong for deciding to *repair*: one transient
+    /// Keychain status at launch used to read as "the user turned the lock off"
+    /// and move the device secret out from behind user presence for good.
+    @Test func aStoredFlagReportsOnOrOff() throws {
+        let store = makeLockStore()
+        #expect(store.lockState == .off)
+        try store.setLockEnabled(true)
+        #expect(store.lockState == .on)
+        #expect(store.lockEnabled)
+        try store.setLockEnabled(false)
+        #expect(store.lockState == .off)
+        #expect(!store.lockEnabled)
+    }
+}
+
+@MainActor
+@Suite struct UnlockEscapeHatchTests {
+    /// A device whose biometric enrolment changed fails every unlock, and the
+    /// setting that turns the lock off lives behind the lock. Without a way
+    /// out that is a permanent lockout, not a security control.
+    @Test func repeatedFailuresOfferTheReset() async throws {
+        let store = makeLockStore()
+        try store.setLockEnabled(true)
+        let manager = AppLockManager(
+            store: store,
+            authenticator: StubAuthenticator(authResult: false)
+        )
+        #expect(!manager.shouldOfferReset)
+        for _ in 0..<3 { _ = await manager.requestUnlock() }
+        #expect(manager.failedUnlockAttempts == 3)
+        #expect(manager.shouldOfferReset)
+    }
+
+    @Test func aSuccessfulUnlockClearsTheCounter() async throws {
+        let store = makeLockStore()
+        try store.setLockEnabled(true)
+        let manager = AppLockManager(
+            store: store,
+            authenticator: StubAuthenticator(authResult: false)
+        )
+        _ = await manager.requestUnlock()
+        #expect(manager.failedUnlockAttempts == 1)
+
+        let working = AppLockManager(store: store, authenticator: StubAuthenticator())
+        _ = await working.requestUnlock()
+        #expect(working.failedUnlockAttempts == 0)
+    }
+
+    /// The settings screen turns the credential gate off in the same step, and
+    /// that downgrade has to land after an authentication, not before — while
+    /// still costing one prompt rather than two.
+    @Test func disableAfterAuthenticationDoesNotPromptAgain() async throws {
+        let store = makeLockStore()
+        try store.setLockEnabled(true)
+        let stub = StubAuthenticator()
+        let manager = AppLockManager(store: store, authenticator: stub)
+
+        #expect(await manager.confirmWithDeviceAuth(reason: "test"))
+        #expect(stub.authenticateCalls.value == 1)
+        #expect(manager.disableLockAfterAuthentication())
+        #expect(stub.authenticateCalls.value == 1)
+        #expect(!manager.isLockEnabled)
+        #expect(!manager.isLocked)
+        #expect(!store.lockEnabled)
+    }
+}
+
+@MainActor
+@Suite struct LockAwareRoutingTests {
+    private func makeRouter(locked: Bool) -> NavigationRouter {
+        let router = NavigationRouter()
+        router.isLocked = { locked }
+        return router
+    }
+
+    private var challenge: MfaChallenge {
+        MfaChallenge(challengeId: "c1", receivedAt: Date(), matchDigits: "47")
+    }
+
+    /// The lock cover loses to a sheet on both platforms — window-modal on
+    /// macOS, one-presentation-per-view on iOS — so an MFA approval used to be
+    /// reachable on a locked app. Refusing to route is the control.
+    @Test func nothingPresentsWhileLocked() {
+        let router = makeRouter(locked: true)
+        router.handle(.openMfaApproval(challenge))
+        #expect(router.mfaRoute == nil)
+
+        router.handle(.openDesktopPairingFlow(
+            DesktopPairingParams(code: String(repeating: "a", count: 32), srv: "https://x.example")
+        ))
+        #expect(router.desktopPairingParams == nil)
+    }
+
+    @Test func theDeferredActionReplaysOnUnlock() {
+        let router = makeRouter(locked: true)
+        router.handle(.openMfaApproval(challenge))
+        #expect(router.mfaRoute == nil)
+
+        router.isLocked = { false }
+        router.resumeDeferredAction()
+        #expect(router.mfaRoute?.challenge.challengeId == "c1")
+
+        // Replayed once, not on every unlock afterwards.
+        router.mfaRoute = nil
+        router.resumeDeferredAction()
+        #expect(router.mfaRoute == nil)
+    }
+
+    @Test func lockingDismissesEverythingPresented() {
+        let router = makeRouter(locked: false)
+        router.handle(.openMfaApproval(challenge))
+        #expect(router.mfaRoute != nil)
+
+        router.dismissPresentedRoutes()
+        #expect(router.mfaRoute == nil)
+        #expect(router.pairingParams == nil)
+        #expect(router.desktopPairingParams == nil)
+    }
+
+    @Test func routingWorksNormallyWhileUnlocked() {
+        let router = makeRouter(locked: false)
+        router.handle(.openEmail(messageId: "m1"))
+        #expect(router.pendingMessageId == "m1")
+        #expect(router.selectedTab == .inbox)
+    }
+}

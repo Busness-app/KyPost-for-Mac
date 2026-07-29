@@ -17,6 +17,9 @@ struct UnlockView: View {
 
     let manager: AppLockManager
 
+    @State private var resetConfirmationShown = false
+    @State private var resetMessage: String?
+
     var body: some View {
         VStack(spacing: 20) {
             Image(systemName: "lock.fill")
@@ -30,10 +33,57 @@ struct UnlockView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(theme.accent)
+
+            // The lock has no bypass, so a device that can no longer satisfy
+            // the authenticator at all — biometric enrolment changed, passcode
+            // removed — would otherwise strand the user permanently: the
+            // setting that turns the lock off lives behind the lock.
+            if manager.shouldOfferReset {
+                VStack(spacing: 8) {
+                    Text("Can't unlock? Resetting removes this device's pairing and everything KyPost has cached here. Your mail stays on your server.")
+                        .font(AppFont.ui(13))
+                        .foregroundStyle(theme.ink.opacity(0.8))
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 360)
+                    Button("Reset KyPost on This Device") {
+                        resetConfirmationShown = true
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(SemanticColors.danger)
+                }
+                .padding(.top, 12)
+            }
+
+            if let resetMessage {
+                Text(resetMessage)
+                    .font(AppFont.ui(13))
+                    .foregroundStyle(SemanticColors.danger)
+                    .multilineTextAlignment(.center)
+            }
         }
+        .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.bg)
+        .confirmationDialog(
+            "Reset KyPost on this device?",
+            isPresented: $resetConfirmationShown,
+            titleVisibility: .visible
+        ) {
+            Button("Erase & Unpair", role: .destructive) { reset() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Removes the pairing, the app lock, and all cached mail, contacts, photos, attachments, and drafts. You'll need to pair this device again from the web app.")
+        }
         .task { await manager.requestUnlock() }
+    }
+
+    private func reset() {
+        do {
+            try AppEnvironment.shared.resetAfterFailedUnlock()
+            resetMessage = nil
+        } catch {
+            resetMessage = "Could not reset: \(error.localizedDescription)"
+        }
     }
 }
 

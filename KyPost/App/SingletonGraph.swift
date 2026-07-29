@@ -72,16 +72,34 @@ final class SingletonGraph {
     lazy var httpClient: HTTPClient = {
         let delegate = pinnedSessionDelegate
         let session = relaySession
-        return HTTPClient { request in
-            do {
-                return try await session.data(for: request)
-            } catch let error as URLError where error.code == .cancelled
-                && delegate.pinFailed(forHost: request.url?.host() ?? "") {
-                // Scoped to this request's host: an unrelated cancellation
-                // must not inherit another host's mismatch (and vice versa).
-                throw NetworkError.certificateMismatch
-            }
+        // Scoped to this request's host: an unrelated cancellation must not
+        // inherit another host's mismatch (and vice versa).
+        let mapPinFailure: @Sendable (URLRequest, Error) -> Error = { request, error in
+            guard let urlError = error as? URLError, urlError.code == .cancelled,
+                  delegate.pinFailed(forHost: request.url?.host() ?? "")
+            else { return error }
+            return NetworkError.certificateMismatch
         }
+        // Both seams, not just the buffering one: attachment downloads go
+        // through the streaming transport, and building this from the
+        // single-transport initializer left them on the uncapped fallback.
+        let streaming = HTTPClient.streamTransport(session: session)
+        return HTTPClient(
+            transport: { request in
+                do {
+                    return try await session.data(for: request)
+                } catch {
+                    throw mapPinFailure(request, error)
+                }
+            },
+            streamTransport: { request, limit in
+                do {
+                    return try await streaming(request, limit)
+                } catch {
+                    throw mapPinFailure(request, error)
+                }
+            }
+        )
     }()
     lazy var nativeRegistrationClient = NativeRegistrationClient(httpClient: httpClient)
     lazy var desktopRegistrationClient = DesktopRegistrationClient(httpClient: httpClient)
@@ -153,6 +171,12 @@ final class SingletonGraph {
         // presented (see PinnedSessionDelegate).
         service.observedSpkiHash = { [pinnedSessionDelegate] host in
             pinnedSessionDelegate.lastSeenHash(forHost: host)
+        }
+        // …and when the registration rode a pooled or resumed connection so no
+        // handshake was ever observed, force one rather than leaving the pin
+        // silently unarmed.
+        service.probeSpkiHash = { [pinnedSessionDelegate] url in
+            await PinnedSessionDelegate.probeHash(url: url, delegate: pinnedSessionDelegate)
         }
         return service
     }()

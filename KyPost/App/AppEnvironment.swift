@@ -16,6 +16,7 @@
 
 import Foundation
 import Observation
+import os
 import UserNotifications
 
 extension Notification.Name {
@@ -28,13 +29,36 @@ extension Notification.Name {
 @Observable
 @MainActor
 final class AppEnvironment {
-    static let shared = AppEnvironment(graph: {
+    /// A `ModelContainer` that will not open — a corrupt store, a migration
+    /// that failed, a full disk — used to crash the app on launch, forever,
+    /// with a crash log the user could do nothing about. Mail lives on the
+    /// server and the local store is a disposable cache, so discarding it is
+    /// the obviously correct response; in-memory is the last resort so the app
+    /// still opens and can be re-paired.
+    static let shared = AppEnvironment(graph: makeLaunchGraph())
+
+    private static func makeLaunchGraph() -> SingletonGraph {
         do {
             return try SingletonGraph()
         } catch {
-            fatalError("Could not build dependency graph: \(error)")
+            Log.storage.error("Local store unusable, recreating it: \(error.localizedDescription)")
         }
-    }())
+        try? AppDatabase.deleteStoreFiles()
+        do {
+            return try SingletonGraph()
+        } catch {
+            Log.storage.error(
+                "Could not recreate the local store, running without one: \(error.localizedDescription)"
+            )
+        }
+        do {
+            return try SingletonGraph(database: AppDatabase(inMemory: true))
+        } catch {
+            // An in-memory SwiftData container failing means the schema itself
+            // is invalid — a programmer error no user action can resolve.
+            fatalError("Could not build an in-memory dependency graph: \(error)")
+        }
+    }
 
     private(set) var graph: SingletonGraph
     /// Keyed into every scene root via .id(generation).
@@ -100,5 +124,33 @@ final class AppEnvironment {
             store.enabled = previous
             throw error
         }
+    }
+
+    /// Escape hatch from the app lock, offered by UnlockView after repeated
+    /// authentication failures.
+    ///
+    /// The lock has no bypass by design, which means a device that can no
+    /// longer satisfy `LAContext` — biometrics reset, passcode removed,
+    /// enrolment changed — otherwise strands the user with their mail behind a
+    /// prompt that can never succeed and a settings screen behind the same
+    /// lock. This is not a bypass: it reveals nothing, it erases. Everything
+    /// cached locally goes, the pairing goes, and the device comes back
+    /// unpaired and unlocked, exactly as if it had been reinstalled.
+    func resetAfterFailedUnlock() throws {
+        // Gated copy and gate flag first: `clear()` routes through the gate,
+        // and it must not be the only thing that removes the gated secret.
+        graph.credentialGateService.removeAll()
+        try? graph.securePairingStore.clear()
+        try? graph.desktopSessionStore.clear()
+        try? graph.appLockStore.setCredentialGateEnabled(false)
+        try graph.appLockStore.setLockEnabled(false)
+        try? AppDatabase.deleteStoreFiles()
+        try? ContactPhotoCache.deleteAll()
+        InboxViewModel.purgeAttachmentTempFiles()
+        UNUserNotificationCenter.current().removeAllDeliveredNotifications()
+        NotificationCenter.default.post(name: .kyPostCloseComposeWindows, object: nil)
+        // The rebuilt graph reads lockEnabled == false, so its AppLockManager
+        // comes up unlocked and the cover goes away.
+        try rebuild { try SingletonGraph() }
     }
 }

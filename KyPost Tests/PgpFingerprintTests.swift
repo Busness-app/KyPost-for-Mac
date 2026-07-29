@@ -2,11 +2,12 @@
 //  PgpFingerprintTests.swift
 //  KyPost Tests
 //
-//  Security-hardening Task 10: locally computed OpenPGP v4 fingerprints.
-//  No GnuPG on the build machine, so the vectors are synthetic packets;
-//  the expected digests are computed straight-line over
-//  0x99 || len || body (the RFC 4880 formula) without going through the
-//  armor/packet parsing under test.
+//  Security-hardening Task 10: locally computed OpenPGP fingerprints, v4
+//  (RFC 4880) and v6 (RFC 9580). No GnuPG on the build machine, so the
+//  vectors are synthetic packets; the expected digests are computed
+//  straight-line over 0x99 || 2-byte len || body and
+//  0x9B || 4-byte len || body without going through the armor/packet
+//  parsing under test.
 //
 
 import CryptoKit
@@ -136,5 +137,46 @@ private func armored(_ packets: Data, headers: String = "Version: KyPostTest\n")
         // Old-format indeterminate length is invalid too.
         let indeterminate = Data([0x9B]) + keyBody
         #expect(PgpFingerprint.compute(fromArmored: armored(indeterminate)) == nil)
+    }
+}
+
+// MARK: - OpenPGP v6 (RFC 9580)
+
+/// GnuPG 2.5 and Sequoia emit v6 keys today. Refusing them made a contact with
+/// a current key render as "Unreadable key", and told anyone scanning a v6
+/// code to fetch a fresh one that would fail in exactly the same way.
+@Suite struct PgpFingerprintV6Tests {
+    /// A minimal v6 Ed25519 primary key packet: version 6, 4-byte creation
+    /// time, algorithm 27, 4-byte key-material length, 32 key bytes — new-format
+    /// header, tag 6, one-octet length.
+    private let armored = """
+        -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+        xioGZVPxABsAAAAgAAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=
+        -----END PGP PUBLIC KEY BLOCK-----
+        """
+
+    /// SHA-256 over 0x9B || 4-byte length || packet body, 32 bytes of it —
+    /// twice the width of a v4 fingerprint, which is how the two are told apart
+    /// on sight.
+    @Test func computesTheV6Fingerprint() throws {
+        let fingerprint = try #require(PgpFingerprint.compute(fromArmored: armored))
+        #expect(fingerprint == "F0FF26E87A94CB93C38D1FA99962FCE01974F2E7AFDE4AF1748474D02AA054A5")
+        #expect(fingerprint.count == 64)
+    }
+
+    /// An unknown version is still refused rather than guessed at — the whole
+    /// point of computing this locally is not trusting a label.
+    @Test func anUnknownVersionIsStillRefused() throws {
+        var packet = try #require(PgpFingerprint.dearmor(armored))
+        // Byte 0 is the header, byte 1 the length, byte 2 the version.
+        packet[packet.startIndex + 2] = 9
+        let reArmored = """
+            -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+            \(packet.base64EncodedString())
+            -----END PGP PUBLIC KEY BLOCK-----
+            """
+        #expect(PgpFingerprint.compute(fromArmored: reArmored) == nil)
     }
 }

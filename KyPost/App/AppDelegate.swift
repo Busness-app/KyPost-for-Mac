@@ -41,14 +41,23 @@ private enum PushLifecycle {
         // While locked, onForeground is skipped; run the deferred sync the
         // moment the user unlocks instead.
         graph.appLockManager.onUnlock = { onForeground() }
-        // A graph rebuild (Hostile Location Protection toggle) needs the
-        // launch wiring re-run against the new graph.
+        Task {
+            await graph.pushNotificationDispatcher.requestAuthorization()
+        }
+    }
+
+    /// A graph rebuild (Hostile Location Protection toggle) needs the launch
+    /// wiring re-run against the new graph.
+    ///
+    /// Installed once from the platform delegate, not from `onLaunch`: doing it
+    /// there meant `onLaunch` assigned a closure that calls `onLaunch`, which
+    /// reassigned the same property — from inside `rebuild`, while that
+    /// property was being invoked. It worked only by ordering luck, and it
+    /// re-ran `requestAuthorization` on every toggle.
+    static func installRebuildHandler() {
         AppEnvironment.shared.onRebuild = {
             onLaunch()
             onForeground()
-        }
-        Task {
-            await graph.pushNotificationDispatcher.requestAuthorization()
         }
     }
 
@@ -106,6 +115,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         PushLifecycle.onLaunch()
+        PushLifecycle.installRebuildHandler()
         application.registerForRemoteNotifications()
         registerBackgroundPull()
         return true
@@ -153,6 +163,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             using: nil
         ) { task in
             Task { @MainActor in
+                // Same gate as onForeground. Without it, background refresh
+                // kept pulling and posting local notifications — sender and
+                // subject included — onto the lock screen of a locked app.
+                if SingletonGraph.shared.appLockManager.isLocked {
+                    task.setTaskCompleted(success: false)
+                    return
+                }
                 await SingletonGraph.shared.pullPollingScheduler.pollNow()
                 task.setTaskCompleted(success: true)
             }
@@ -180,6 +197,7 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         PushLifecycle.onLaunch()
+        PushLifecycle.installRebuildHandler()
         NSApplication.shared.registerForRemoteNotifications()
         PushLifecycle.onForeground()
 

@@ -105,3 +105,60 @@ private func certificate(fromBase64 base64: String) throws -> SecCertificate {
         #expect(PinnedSessionDelegate.decision(pinned: "aa", observed: nil) == .refuse)
     }
 }
+
+// MARK: - The redirect rule
+
+/// Requests carry the device secret in `X-Kypost-Device-Secret`, and
+/// URLSession only strips `Authorization` across origins — a custom header
+/// follows the redirect. Since the pin covers exactly one host, a relay
+/// answering `302 Location: https://elsewhere/` handed the credential to a
+/// host nothing was checking.
+@Suite struct RedirectRuleTests {
+    private let origin = URL(string: "https://relay.example.com/api/inbox")!
+
+    @Test func sameHostRedirectIsAllowed() {
+        #expect(PinnedSessionDelegate.allowsRedirect(
+            from: origin,
+            to: URL(string: "https://relay.example.com/api/inbox?page=2")!
+        ))
+    }
+
+    @Test func crossHostRedirectIsRefused() {
+        #expect(!PinnedSessionDelegate.allowsRedirect(
+            from: origin,
+            to: URL(string: "https://evil.example/collect")!
+        ))
+    }
+
+    /// A subdomain is a different host and a different certificate.
+    @Test func subdomainRedirectIsRefused() {
+        #expect(!PinnedSessionDelegate.allowsRedirect(
+            from: origin,
+            to: URL(string: "https://attacker.relay.example.com/collect")!
+        ))
+    }
+
+    @Test func downgradeToPlaintextIsRefused() {
+        #expect(!PinnedSessionDelegate.allowsRedirect(
+            from: origin,
+            to: URL(string: "http://relay.example.com/api/inbox")!
+        ))
+    }
+
+    @Test func hostComparisonIgnoresCase() {
+        #expect(PinnedSessionDelegate.allowsRedirect(
+            from: origin,
+            to: URL(string: "https://Relay.Example.COM/api/inbox")!
+        ))
+    }
+
+    @Test func anUnparseableDestinationIsRefused() {
+        #expect(!PinnedSessionDelegate.allowsRedirect(from: origin, to: nil))
+        #expect(!PinnedSessionDelegate.allowsRedirect(from: nil, to: origin))
+        // No host at all (a scheme-only or relative URL) fails closed.
+        #expect(!PinnedSessionDelegate.allowsRedirect(
+            from: origin,
+            to: URL(string: "https:///collect")!
+        ))
+    }
+}

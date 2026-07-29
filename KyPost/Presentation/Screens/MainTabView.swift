@@ -47,9 +47,10 @@ struct MainTabView: View {
                 .environment(\.theme, themeManager.palette)
         }
         .sheet(item: $router.mfaRoute) { route in
-            MfaApprovalView(challengeId: route.challengeId)
+            MfaApprovalView(challenge: route.challenge)
                 .environment(\.theme, themeManager.palette)
         }
+        .lockAwareRouting(router)
 #if os(iOS)
         .fullScreenCover(isPresented: lockBinding) {
             UnlockView(manager: SingletonGraph.shared.appLockManager)

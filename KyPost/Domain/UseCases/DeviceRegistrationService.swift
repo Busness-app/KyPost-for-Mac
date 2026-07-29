@@ -8,6 +8,7 @@
 //
 
 import Foundation
+import os
 
 extension PairingParams {
     /// Rebuilds link params from a stored pairing, for re-registration.
@@ -21,6 +22,11 @@ extension PairingParams {
     }
 }
 
+/// `@MainActor` because `inFlight` and `observedSpkiHash` are unsynchronised
+/// mutable state and every caller (PushPairingViewModel, the `@MainActor`
+/// PushLifecycle) already runs here. Under Swift 5 language mode the compiler
+/// says nothing about that, so the isolation is stated rather than assumed.
+@MainActor
 final class DeviceRegistrationService {
     private let client: NativeRegistrationClient
     private let securePairingStore: SecurePairingStore
@@ -29,6 +35,10 @@ final class DeviceRegistrationService {
     /// handshake with the given host. Wired by SingletonGraph to the pinned
     /// session's delegate; nil in tests (no pin is recorded).
     var observedSpkiHash: ((_ host: String) -> String?)?
+    /// Forces a fresh handshake when `observedSpkiHash` has nothing, because
+    /// the registration rode a pooled or resumed connection and no challenge
+    /// ever fired. Wired by SingletonGraph; nil in tests.
+    var probeSpkiHash: ((_ url: URL) async -> String?)?
 
     /// One registration per (pairing token, device token). A pairing deep
     /// link is delivered to every open main window and each auto-pairs, so
@@ -112,9 +122,25 @@ final class DeviceRegistrationService {
             // Best effort: a Keychain hiccup must not fail a good registration.
             // Empty counts as unpinned, matching the delegate's own lookup.
             if (securePairingStore.pinnedSpkiHash ?? "").isEmpty,
-               let host = URL(string: params.srv)?.host(),
-               let hash = observedSpkiHash?(host) {
-                try? securePairingStore.setPinnedSpkiHash(hash)
+               let srvURL = URL(string: params.srv),
+               let host = srvURL.host() {
+                // `observedSpkiHash` only has a value when this registration
+                // happened to open a new TLS connection. Connection reuse and
+                // session resumption skip the challenge entirely, which used to
+                // leave the pin permanently unarmed with nothing logged and
+                // `.success` returned — arming failed open while the docs said
+                // pinning was always on. The probe removes the coincidence.
+                var hash = observedSpkiHash?(host)
+                if hash == nil {
+                    hash = await probeSpkiHash?(srvURL)
+                }
+                if let hash {
+                    try? securePairingStore.setPinnedSpkiHash(hash)
+                } else {
+                    Log.app.error(
+                        "Could not record a certificate pin for the relay; this connection falls back to system trust. Settings → Security reports it as Not pinned."
+                    )
+                }
             }
         }
         return outcome

@@ -50,6 +50,19 @@ final class AppLockManager {
     /// (the Keychain-backed store itself is not observation-tracked).
     private(set) var isLockEnabled: Bool
 
+    /// Consecutive failed unlock attempts, reset by any success.
+    ///
+    /// Drives UnlockView's escape hatch. A device whose biometric enrolment
+    /// changed, or whose passcode was removed, fails `evaluatePolicy` every
+    /// time — and since the lock's own settings live behind the lock, the user
+    /// would have no way back at all. Not a lockout counter: the OS owns
+    /// rate-limiting, this only decides when to offer the reset.
+    private(set) var failedUnlockAttempts = 0
+
+    /// Whether to offer the destructive reset (see
+    /// `AppEnvironment.resetAfterFailedUnlock`).
+    var shouldOfferReset: Bool { failedUnlockAttempts >= 3 }
+
     /// Runs after a successful unlock — the lock-trigger task wires the
     /// deferred foreground sync here.
     var onUnlock: (() -> Void)?
@@ -91,6 +104,7 @@ final class AppLockManager {
     func requestUnlock() async -> Bool {
         guard isLocked else { return true }
         guard await authenticator.authenticate(reason: String(localized: "Unlock KyPost")) else {
+            failedUnlockAttempts += 1
             return false
         }
         // Repopulate the gated secret before clearing the lock — this is the
@@ -101,9 +115,13 @@ final class AppLockManager {
         // looks fine and silently no-ops every relay call, with no way to
         // retry short of locking and unlocking again.
         if let loadGatedSecret, cachedGatedSecret == nil {
-            guard let secret = loadGatedSecret() else { return false }
+            guard let secret = loadGatedSecret() else {
+                failedUnlockAttempts += 1
+                return false
+            }
             cachedGatedSecret = secret
         }
+        failedUnlockAttempts = 0
         isLocked = false
         onUnlock?()
         return true
@@ -138,6 +156,23 @@ final class AppLockManager {
                 reason: String(localized: "Turn off Require Unlock to Open")
             ) else { return false }
         }
+        return applyLockEnabled(enabled)
+    }
+
+    /// Turns the lock off for a caller that has already authenticated.
+    ///
+    /// Security settings turns the credential gate off in the same step, and
+    /// that downgrade has to happen *after* an authentication, not before —
+    /// while still costing the user one prompt rather than two. Deliberately
+    /// not a flag on `setLockEnabled`: a boolean that decides whether
+    /// authentication happens is the last parameter anyone should be able to
+    /// pass by accident.
+    @discardableResult
+    func disableLockAfterAuthentication() -> Bool {
+        applyLockEnabled(false)
+    }
+
+    private func applyLockEnabled(_ enabled: Bool) -> Bool {
         do {
             try store.setLockEnabled(enabled)
         } catch {
@@ -147,6 +182,7 @@ final class AppLockManager {
         isLockEnabled = enabled
         if !enabled {
             isLocked = false
+            failedUnlockAttempts = 0
         }
         return true
     }

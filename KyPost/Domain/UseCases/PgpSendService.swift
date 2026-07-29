@@ -50,7 +50,15 @@ final class PgpSendService {
             // .error, not .debug: this failure silently disables every PGP
             // toggle with no visible sign to the user, so it must be the kind
             // of thing a customer sysdiagnose actually captures.
-            Log.mail.error("PGP bootstrap failed: \(error.localizedDescription, privacy: .public)")
+            //
+            // The *shape* is public, the description is not. `.decoding`
+            // interpolates the failing key path and `.conflict` carries the
+            // relay's response body — recipient addresses among them — and
+            // `.public` wrote all of it into the unified log, which persists
+            // and travels in every sysdiagnose.
+            Log.mail.error(
+                "PGP bootstrap failed: \(String(describing: type(of: error)), privacy: .public) \(error.localizedDescription, privacy: .private)"
+            )
         }
     }
 
@@ -71,7 +79,7 @@ final class PgpSendService {
             )
             return keylessAddresses(in: results)
         } catch {
-            Log.mail.debug("PGP recipient preflight failed: \(error.localizedDescription, privacy: .public)")
+            Log.mail.debug("PGP recipient preflight failed: \(error.localizedDescription, privacy: .private)")
             return []
         }
     }

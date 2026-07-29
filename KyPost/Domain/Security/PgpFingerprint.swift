@@ -10,7 +10,15 @@
 //
 //  V4 fingerprint = SHA-1 over 0x99 || 2-byte length || public-key packet
 //  body (RFC 4880 §12.2). SHA-1 here is mandated by the OpenPGP spec, not
-//  a hashing choice this app owns. Anything malformed returns nil — never
+//  a hashing choice this app owns.
+//
+//  V6 fingerprint = SHA-256 over 0x9B || 4-byte length || public-key packet
+//  body (RFC 9580 §5.5.4). Supported because GnuPG 2.5 and Sequoia emit v6
+//  keys today: without it a contact with a current key rendered as an
+//  unreadable one, and a scanned v6 code told the user to fetch a fresh
+//  code that would fail exactly the same way.
+//
+//  Anything malformed or of an unknown version returns nil — never
 //  trust-and-fall-back to the relay's string.
 //
 
@@ -20,20 +28,41 @@ import Foundation
 enum PgpFingerprint {
     /// Uppercase hex fingerprint of the first public-key packet in an
     /// armored key, or nil when the armor or packet stream is malformed or
-    /// the key isn't v4.
+    /// the key version is one this app cannot fingerprint.
     static func compute(fromArmored armored: String) -> String? {
         guard
             let data = dearmor(armored),
             let body = firstPublicKeyPacketBody(in: data),
-            body.first == 4, // v3 uses a different digest — refuse, don't guess
-            body.count <= Int(UInt16.max)
+            let version = body.first
         else { return nil }
 
-        var message = Data([0x99, UInt8(body.count >> 8), UInt8(body.count & 0xFF)])
-        message.append(body)
-        return Insecure.SHA1.hash(data: message)
-            .map { String(format: "%02X", $0) }
-            .joined()
+        switch version {
+        case 4:
+            guard body.count <= Int(UInt16.max) else { return nil }
+            var message = Data([0x99, UInt8(body.count >> 8), UInt8(body.count & 0xFF)])
+            message.append(body)
+            return Insecure.SHA1.hash(data: message)
+                .map { String(format: "%02X", $0) }
+                .joined()
+        case 6:
+            guard body.count <= Int(UInt32.max) else { return nil }
+            let length = UInt32(body.count)
+            var message = Data([
+                0x9B,
+                UInt8(truncatingIfNeeded: length >> 24),
+                UInt8(truncatingIfNeeded: length >> 16),
+                UInt8(truncatingIfNeeded: length >> 8),
+                UInt8(truncatingIfNeeded: length),
+            ])
+            message.append(body)
+            return SHA256.hash(data: message)
+                .map { String(format: "%02X", $0) }
+                .joined()
+        default:
+            // v3 and v5 use derivations this app does not implement, and an
+            // unknown version is not something to guess at.
+            return nil
+        }
     }
 
     /// Strips the BEGIN/END lines, armor headers ("Version: …" up to the
@@ -62,10 +91,11 @@ enum PgpFingerprint {
         return Data(base64Encoded: base64)
     }
 
-    /// Packet types legal inside one transferable public key (RFC 4880 §11.1)
-    /// after the primary key packet: user id, signature, subkey, user
-    /// attribute, trust, and padding.
-    private static let transferableKeyTags: Set<UInt8> = [13, 2, 14, 17, 12, 61]
+    /// Packet types legal inside one transferable public key after the primary
+    /// key packet: user id (13), signature (2), public subkey (14), user
+    /// attribute (17), trust (12), padding (21, RFC 9580 §5.14), and the
+    /// experimental range's 61 as seen in the wild.
+    private static let transferableKeyTags: Set<UInt8> = [13, 2, 14, 17, 12, 21, 61]
 
     /// Body of the primary public-key packet of a *single* transferable public
     /// key (RFC 4880 §11.1), or nil.

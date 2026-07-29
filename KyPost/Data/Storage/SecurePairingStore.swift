@@ -36,7 +36,16 @@ protocol PairingSecretGate: AnyObject {
     func removeAll()
 }
 
-final class SecurePairingStore {
+/// Reached from every background task that talks to the relay (MailRepository,
+/// PushRepository, ContactSyncRepository) while `secretGate` is written from
+/// the main actor by CredentialGateService. That made an unsynchronised `weak
+/// var` racy in a way that is not a torn read but a `swift_weakLoadStrong`
+/// race — a crash or a resurrected object, not a stale value. The lock is
+/// recursive because `clear()` calls into the gate, whose `removeAll()` unwires
+/// itself by assigning `secretGate = nil` back through this same lock.
+final class SecurePairingStore: @unchecked Sendable {
+    private let lock = NSRecursiveLock()
+
     private nonisolated enum Key {
         static let sub = "sub"
         static let deviceSecret = "deviceSecret"
@@ -58,9 +67,22 @@ final class SecurePairingStore {
     nonisolated static let srvKey = Key.srv
 
     private let keychain: KeychainStorage
+    private weak var storedSecretGate: (any PairingSecretGate)?
+
     /// Set by CredentialGateService while "Require unlock for notifications
     /// & MFA" is on; nil means the plain deviceSecret item is used.
-    weak var secretGate: (any PairingSecretGate)?
+    var secretGate: (any PairingSecretGate)? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return storedSecretGate
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            storedSecretGate = newValue
+        }
+    }
 
     init(keychain: KeychainStorage) {
         self.keychain = keychain
@@ -75,7 +97,12 @@ final class SecurePairingStore {
     /// valid and are silently wrong. Unwinding to "not paired" is the louder,
     /// recoverable outcome, and the caller already surfaces the error
     /// (DeviceRegistrationService.performPair).
+    /// Held across the whole multi-key write so a concurrent `loadPairing`
+    /// cannot observe a half-written pairing — the exact "new subject pointing
+    /// at the previous server" state the unwind below exists to prevent.
     func savePairing(_ pairing: Pairing) throws {
+        lock.lock()
+        defer { lock.unlock() }
         do {
             try writePairing(pairing)
         } catch {
@@ -118,6 +145,8 @@ final class SecurePairingStore {
     /// before that field existed must still load as "paired" (with an empty
     /// secret) rather than silently reading as unpaired.
     func loadPairing() throws -> Pairing? {
+        lock.lock()
+        defer { lock.unlock() }
         guard
             let sub = try keychain.string(forKey: Key.sub), !sub.isEmpty,
             let srv = try keychain.string(forKey: Key.srv), !srv.isEmpty,
@@ -152,6 +181,8 @@ final class SecurePairingStore {
 
     /// Restores a plain-item secret (credential gate turning off).
     func setDeviceSecret(_ secret: String) throws {
+        lock.lock()
+        defer { lock.unlock() }
         try keychain.set(secret, forKey: Key.deviceSecret)
     }
 
@@ -176,6 +207,8 @@ final class SecurePairingStore {
     /// in `Key.all`. The first error still propagates, so a partial wipe is
     /// reported rather than passing for success.
     func clear() throws {
+        lock.lock()
+        defer { lock.unlock() }
         secretGate?.removeAll()
         var firstError: Error?
         for key in Key.all {

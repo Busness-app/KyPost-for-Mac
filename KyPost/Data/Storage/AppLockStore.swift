@@ -17,19 +17,39 @@ final class AppLockStore: Sendable {
         static let credentialGateEnabled = "appLock.credentialGateEnabled"
     }
 
+    /// A stored flag, or the fact that it could not be read.
+    ///
+    /// The distinction matters wherever a `false` triggers a *repair* rather
+    /// than just a quieter UI: `errSecInteractionNotAllowed` at launch is a
+    /// routine, transient status on a Mac whose Keychain is not ready yet, and
+    /// collapsing it into "the user turned this off" let one flaky read move
+    /// the device secret out from behind user presence for good.
+    enum FlagState: Equatable {
+        case on
+        case off
+        case unreadable
+    }
+
     private let keychain: KeychainStorage
 
     init(keychain: KeychainStorage) {
         self.keychain = keychain
     }
 
-    /// Feature 1: Require Unlock to Open. A read failure reports false
-    /// (unlocked) — a Keychain outage severe enough to break this read also
-    /// breaks the pairing credential, so the app is unusable either way and
-    /// locking the user out on top of it helps nobody.
-    var lockEnabled: Bool {
-        (try? keychain.string(forKey: Key.lockEnabled)) == "true"
+    /// Feature 1: Require Unlock to Open. Callers that only decide what to
+    /// *show* use `lockEnabled`, which still reports false on a read failure —
+    /// a Keychain outage severe enough to break this read also breaks the
+    /// pairing credential, so locking the user out on top of it helps nobody.
+    /// Callers that act destructively must use `lockState` instead.
+    var lockState: FlagState {
+        do {
+            return try keychain.string(forKey: Key.lockEnabled) == "true" ? .on : .off
+        } catch {
+            return .unreadable
+        }
     }
+
+    var lockEnabled: Bool { lockState == .on }
 
     func setLockEnabled(_ enabled: Bool) throws {
         try keychain.set(enabled ? "true" : "false", forKey: Key.lockEnabled)
