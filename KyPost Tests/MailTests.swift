@@ -886,3 +886,48 @@ private func makeOutgoing(
         #expect(await repository.send(makeOutgoing()) == .success)
     }
 }
+
+// MARK: - Generated link schemes
+
+/// Escaping the attribute value stops it breaking out of the quotes and does
+/// nothing about the scheme. This app is the *sender* of the HTML it builds, so
+/// a `javascript:` or `data:text/html` href would have been an active payload
+/// shipped under the user's own address, left for the recipient's client to
+/// clean up.
+@Suite struct RichTextHTMLLinkSchemeTests {
+    private let noTraits: RichTextHTML.FontTraits = { _ in (false, false) }
+
+    private func linked(_ urlString: String) -> AttributedString {
+        var text = AttributedString("click")
+        text.link = URL(string: urlString)
+        return text
+    }
+
+    @Test func safeSchemesKeepTheirAnchor() {
+        for scheme in ["https://example.com/a", "http://example.com/a", "mailto:a@example.com"] {
+            let html = RichTextHTML.htmlDocument(from: linked(scheme), fontTraits: noTraits)
+            #expect(html.contains("<a href="), "expected an anchor for \(scheme)")
+        }
+    }
+
+    @Test func activeSchemesLoseTheAnchorButKeepTheText() {
+        for scheme in [
+            "javascript:alert(1)",
+            "JaVaScRiPt:alert(1)",
+            "data:text/html;base64,PHNjcmlwdD4=",
+            "vbscript:msgbox(1)",
+            "file:///etc/passwd",
+        ] {
+            let html = RichTextHTML.htmlDocument(from: linked(scheme), fontTraits: noTraits)
+            #expect(!html.contains("<a href="), "expected no anchor for \(scheme)")
+            #expect(html.contains("click"), "expected the text to survive for \(scheme)")
+        }
+    }
+
+    /// A draft whose only "formatting" is a link the converter drops should
+    /// still send as plain, not as an HTML document with nothing in it.
+    @Test func aDroppedLinkDoesNotCountAsFormatting() {
+        #expect(!RichTextHTML.hasFormatting(linked("javascript:alert(1)"), fontTraits: noTraits))
+        #expect(RichTextHTML.hasFormatting(linked("https://example.com"), fontTraits: noTraits))
+    }
+}

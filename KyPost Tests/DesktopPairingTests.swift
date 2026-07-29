@@ -298,3 +298,58 @@ private let validDesktopLink = URL(
         #expect(NetworkError.from(statusCode: 429) == .rateLimited)
     }
 }
+
+// MARK: - The memo does not outlive the code
+
+/// `completed` was an unbounded map, keyed by pairing code, holding every
+/// attempt's outcome — and the account email it resolved to — for the process
+/// lifetime. Codes are single-use with a 5-minute TTL, so there is nothing to
+/// remember past that.
+@MainActor
+@Suite struct DesktopPairingMemoExpiryTests {
+    private func makeService(counter: Box<Int>, clock: Box<Date>) -> DesktopPairingService {
+        let json = """
+        {"ok": true, "sessionToken": "jwt-token", "expiresIn": 86400, \
+        "userId": "u1", "userEmail": "user@example.com"}
+        """
+        let client = HTTPClient { request in
+            counter.mutate { $0 += 1 }
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+            )!
+            return (Data(json.utf8), response)
+        }
+        return DesktopPairingService(
+            client: DesktopRegistrationClient(httpClient: client),
+            sessionStore: DesktopSessionStore(
+                keychain: KeychainStorage(service: "com.urlxl.mail.tests.\(UUID().uuidString)")
+            ),
+            now: { clock.value }
+        )
+    }
+
+    private var params: DesktopPairingParams {
+        DesktopPairingParams(code: validCode, srv: "https://relay.example.com")
+    }
+
+    @Test func aMemoWithinTheTTLIsStillReused() async {
+        let counter = Box<Int>(0)
+        let clock = Box(Date(timeIntervalSince1970: 0))
+        let service = makeService(counter: counter, clock: clock)
+        _ = await service.pair(params: params)
+        clock.mutate { $0 = $0.addingTimeInterval(60) }
+        _ = await service.pair(params: params)
+        #expect(counter.value == 1)
+    }
+
+    /// Past the TTL the server would answer differently, so the memo must not.
+    @Test func anExpiredMemoIsDropped() async {
+        let counter = Box<Int>(0)
+        let clock = Box(Date(timeIntervalSince1970: 0))
+        let service = makeService(counter: counter, clock: clock)
+        _ = await service.pair(params: params)
+        clock.mutate { $0 = $0.addingTimeInterval(10 * 60) }
+        _ = await service.pair(params: params)
+        #expect(counter.value == 2)
+    }
+}

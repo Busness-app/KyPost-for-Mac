@@ -161,7 +161,9 @@ enum NavigationAction: Equatable, Sendable {
     case openPairingFlow(PairingParams)
     case openDesktopPairingFlow(DesktopPairingParams)
     case openEmail(messageId: String)
-    case openMfaApproval(challengeId: String)
+    /// Carries the whole challenge, not just its id: the approval screen needs
+    /// the number-match digits, and they arrive on the same push payload.
+    case openMfaApproval(MfaChallenge)
 }
 
 struct DeepLinkHandler: Sendable {

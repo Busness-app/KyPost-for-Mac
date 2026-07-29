@@ -17,7 +17,14 @@ struct ApproveMfaChallengeUseCase {
         self.securePairingStore = securePairingStore
     }
 
-    func callAsFunction(challengeId: String, approved: Bool) async -> MfaResponseOutcome {
+    /// `matchDigits` is the number the user picked on the approval screen. The
+    /// backend requires it to approve and ignores it to deny, so a deny path
+    /// can keep calling this without one.
+    func callAsFunction(
+        challengeId: String,
+        approved: Bool,
+        matchDigits: String = ""
+    ) async -> MfaResponseOutcome {
         let loaded: Pairing?
         do {
             loaded = try securePairingStore.loadPairing()
@@ -40,7 +47,8 @@ struct ApproveMfaChallengeUseCase {
             serverUrl: pairing.srv,
             auth: RelayAuth(pairing: pairing),
             challengeId: challengeId,
-            approved: approved
+            approved: approved,
+            matchDigits: matchDigits
         )
     }
 }

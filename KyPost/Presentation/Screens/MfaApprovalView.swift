@@ -2,8 +2,10 @@
 //  MfaApprovalView.swift
 //  KyPost
 //
-//  In-app MFA approval fallback (spec §5) — reached by tapping the MFA
-//  notification body. Same use case as the notification's Approve/Deny.
+//  In-app MFA approval (spec §5) — reached by tapping the MFA notification
+//  body. This is the only place a sign-in can be approved: the notification
+//  offers Deny only, because approving means picking the number the browser is
+//  showing and a banner cannot present that choice.
 //
 
 import SwiftUI
@@ -14,9 +16,9 @@ struct MfaApprovalView: View {
 
     @State private var viewModel: MfaApprovalViewModel
 
-    init(challengeId: String) {
+    init(challenge: MfaChallenge) {
         _viewModel = State(initialValue: MfaApprovalViewModel(
-            challengeId: challengeId,
+            challenge: challenge,
             approveMfaChallenge: SingletonGraph.shared.approveMfaChallengeUseCase
         ))
     }
@@ -32,7 +34,9 @@ struct MfaApprovalView: View {
                     .font(AppFont.ui(20, weight: .semibold))
                     .foregroundStyle(theme.inkStrong)
 
-                Text("A sign-in is waiting for approval from this device.")
+                Text(viewModel.matchOptions == nil
+                     ? "A sign-in is waiting for a response from this device."
+                     : "Tap the number shown in the browser you are signing in from.")
                     .font(AppFont.ui(14))
                     .foregroundStyle(theme.ink)
                     .multilineTextAlignment(.center)
@@ -79,12 +83,33 @@ struct MfaApprovalView: View {
         .tint(theme.accent)
     }
 
+    /// Number matching, or no way to approve at all.
+    ///
+    /// There is deliberately no plain Approve fallback. Number matching exists
+    /// because a contentless Approve button is exactly the tap an MFA-fatigue
+    /// attack harvests — so falling back to that button whenever `matchDigits`
+    /// is missing handed the downgrade to whoever shapes the push payload, and
+    /// the relay is inside this app's threat model. It did not even work: the
+    /// server refuses an approval with no number, so the fallback could only
+    /// ever produce a failure. Deny stays one tap away.
     private var actionButtons: some View {
         VStack(spacing: 10) {
-            Button("Approve") {
-                Task { await viewModel.respond(approved: true) }
+            if let options = viewModel.matchOptions {
+                HStack(spacing: 8) {
+                    ForEach(options, id: \.self) { value in
+                        Button(value) {
+                            Task { await viewModel.choose(value) }
+                        }
+                        .buttonStyle(PrimaryButtonStyle())
+                        .font(AppFont.mono(20, weight: .semibold))
+                    }
+                }
+            } else {
+                Text("This request didn't include a verification number, so it can't be approved from this device. Deny it and start the sign-in again.")
+                    .font(AppFont.ui(13))
+                    .foregroundStyle(SemanticColors.warning)
+                    .multilineTextAlignment(.center)
             }
-            .buttonStyle(PrimaryButtonStyle())
 
             Button("Deny") {
                 Task { await viewModel.respond(approved: false) }

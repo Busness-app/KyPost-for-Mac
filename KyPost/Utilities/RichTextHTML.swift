@@ -21,7 +21,12 @@ enum RichTextHTML {
     /// unformatted drafts should be sent as mode:"plain" instead.
     static func hasFormatting(_ text: AttributedString, fontTraits: FontTraits) -> Bool {
         text.runs.contains { run in
-            if run.underlineStyle != nil || run.strikethroughStyle != nil || run.link != nil {
+            if run.underlineStyle != nil || run.strikethroughStyle != nil {
+                return true
+            }
+            // Only a link the converter would actually emit counts, so a draft
+            // whose sole "formatting" is a dropped scheme still sends as plain.
+            if let link = run.link, isSafeLinkScheme(link) {
                 return true
             }
             guard let font = run.font else { return false }
@@ -56,12 +61,28 @@ enum RichTextHTML {
             if bold {
                 fragment = "<strong>\(fragment)</strong>"
             }
-            if let link = run.link {
+            // Escaping the attribute value stops it breaking out of the quotes;
+            // it does nothing about the scheme. `javascript:` and
+            // `data:text/html` would have shipped an active payload inside a
+            // message this app is the sender of, leaving it to the recipient's
+            // client to clean up. An unsupported scheme keeps its text and
+            // loses only the anchor.
+            if let link = run.link, Self.isSafeLinkScheme(link) {
                 fragment = "<a href=\"\(escape(link.absoluteString))\">\(fragment)</a>"
             }
             fragments += fragment
         }
         return "<html><body>\(fragments)</body></html>"
+    }
+
+    /// Schemes allowed in a generated `href`. An allowlist, not a denylist:
+    /// `javascript:` has enough spellings (case, embedded newlines, entity
+    /// encodings) that enumerating the bad ones is a losing game.
+    static let allowedLinkSchemes: Set<String> = ["http", "https", "mailto", "tel"]
+
+    static func isSafeLinkScheme(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased() else { return false }
+        return allowedLinkSchemes.contains(scheme)
     }
 
     /// Escapes text content and attribute values.

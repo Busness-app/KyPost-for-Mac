@@ -52,10 +52,24 @@ final class CredentialGateService {
     /// forever. Settings refuses to create that state (see
     /// SecuritySettingsView), so reaching it means a write failed partway;
     /// relaunching resolves it with one presence prompt.
+    /// The repair is driven by `lockState`, not `lockEnabled`: only a flag that
+    /// was *successfully read as off* means the user turned the lock off. A
+    /// Keychain read that failed must fail closed and leave the gate wired,
+    /// because the repair's side effect is writing the device secret back into
+    /// the plain, non-presence-gated item — a downgrade no transient error
+    /// should be able to trigger.
     func wireAtLaunch() {
         guard isEnabled else { return }
-        if !appLockStore.lockEnabled, disable() { return }
-        wire()
+        switch appLockStore.lockState {
+        case .off:
+            if disable() { return }
+            wire()
+        case .unreadable:
+            Log.app.error("Could not read the app-lock flag at launch; keeping the credential gate wired")
+            wire()
+        case .on:
+            wire()
+        }
     }
 
     /// Moves the device secret behind user presence. The running session

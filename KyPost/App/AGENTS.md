@@ -28,6 +28,22 @@ graph at runtime (`AppEnvironment.rebuild`), so:
 
 `AppEnvironment.onRebuild` re-runs the launch wiring (`PushLifecycle`)
 after a swap; it is nil under tests so no runtime services start there.
+It is installed once, from the platform delegate
+(`PushLifecycle.installRebuildHandler`), **not** from `onLaunch` — installing
+it there made `onLaunch` assign a closure that calls `onLaunch`, reassigning
+the property from inside `rebuild` while that same property was being invoked,
+and re-ran `requestAuthorization` on every toggle.
+
+`AppEnvironment.shared` never traps on a bad store. A `ModelContainer` that
+will not open falls back to deleting the store files, then to an in-memory
+container; only an invalid *schema* is fatal. Mail lives on the server, so the
+local store is always disposable.
+
+`AppEnvironment.resetAfterFailedUnlock` is the app lock's only escape hatch,
+offered by `UnlockView` once `AppLockManager.shouldOfferReset` is true. It
+erases rather than bypasses: gated secret, pairing, desktop session, both lock
+flags, store, photos, temp attachments, delivered notifications, drafts. Keep
+it that way — anything that unlocks *without* erasing is a bypass.
 
 ## Lock ordering at launch
 
@@ -41,9 +57,22 @@ locked-launch poll.
 enabled *without* the app lock is a state the running session cannot escape
 (its toggle is disabled, and `requestUnlock` returns early once unlocked, so
 the in-memory secret can never come back). Settings refuses to create it —
-`SecuritySettingsView` clears the gate *before* dropping the lock and aborts
-the whole change if that fails — and a relaunch resolves it if a partial
-write ever does.
+`SecuritySettingsView` authenticates first, then clears the gate *before*
+dropping the lock and aborts the whole change if that fails — and a relaunch
+resolves it if a partial write ever does.
+
+That repair is driven by `AppLockStore.lockState`, never `lockEnabled`.
+`lockEnabled` collapses a Keychain read failure into `false`, which is right
+for deciding what to *show* and wrong for deciding to repair: the repair writes
+the device secret back into the plain, non-presence-gated item, and one
+transient `errSecInteractionNotAllowed` at launch used to trigger it
+permanently. Any new caller that acts destructively on this flag uses
+`lockState` and fails closed on `.unreadable`.
+
+Background pull is gated on `appLockManager.isLocked` in the `BGTaskScheduler`
+handler as well as in `onForeground`, and `presentLocally` withholds sender and
+subject while locked. "Require Unlock to Open" reads as "nobody sees my mail
+without authenticating"; a subject line on the lock screen breaks that.
 
 ## Verification
 

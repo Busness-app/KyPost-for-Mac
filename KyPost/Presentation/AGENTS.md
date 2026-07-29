@@ -17,6 +17,37 @@ Domain.
 
 - **Sheets do not inherit `\.theme`.** Every `.sheet` re-injects
   `.environment(\.theme, theme)`. A sheet that skips it renders unthemed.
+- **Nothing presents while the app is locked — the router enforces it, not
+  the cover.** `NavigationRouter.handle` defers the action when `isLocked()`
+  and replays it from `resumeDeferredAction`; `lockAwareRouting(router)` on
+  each scene root wires both directions and dismisses presented routes on
+  lock. The lock cover cannot be the control: on macOS a window-modal sheet
+  renders *above* `LockedOverlay`, and on iOS SwiftUI allows one presentation
+  per view, so a sheet already on screen stops the `fullScreenCover`
+  presenting at all. Either way MFA approval and pairing were reachable on a
+  locked app. A new scene root gets `.lockAwareRouting(router)` alongside its
+  `.id(generation)`, `LockedOverlay`, and `protectedFromCapture()`.
+- **The MFA approval screen has no plain Approve button.** When the payload
+  carries no usable `matchDigits`, `MfaApprovalView` offers Deny and an
+  explanation — never a generic Approve. Number matching exists because a
+  contentless Approve is the tap an MFA-fatigue attack collects, so falling
+  back to that button handed the downgrade to whoever shapes the push payload.
+  `MfaApprovalViewModel.respond` refuses a numberless approval before any
+  request, and the server refuses it too.
+- **Every *off* path in Security settings re-authenticates first.** Turning a
+  protection off is the destructive direction and the pane is reachable from
+  the macOS menu bar. Authentication must precede the downgrade, not follow
+  it: turning the credential gate off writes the device secret back into the
+  plain Keychain item, and doing that before the prompt left it applied even
+  when the user cancelled. The combined lock-off path authenticates once via
+  `confirmWithDeviceAuth` and then uses
+  `AppLockManager.disableLockAfterAuthentication`, so one prompt covers both
+  changes.
+- **Generated HTML uses a link-scheme allowlist.** `RichTextHTML` emits an
+  `<a href>` only for `http`, `https`, `mailto`, `tel`. Escaping the attribute
+  value stops it breaking out of the quotes and does nothing about
+  `javascript:` or `data:text/html` — and this app is the *sender* of the mail
+  it builds, so that would ship an active payload under the user's address.
 - **Fonts carry meaning**: `AppFont.ui` for names and prose, `AppFont.mono`
   for email addresses and other machine text. A bare address rendered in mono
   is the signal a recipient isn't in the address book.

@@ -60,14 +60,17 @@ final class PushNotificationDispatcher: NSObject {
         let mfaCategory = UNNotificationCategory(
             identifier: Self.mfaCategoryId,
             actions: [
-                // .authenticationRequired: approving a sign-in must not be
-                // possible with a single tap on a locked-screen banner — the
-                // device must be unlocked first.
-                UNNotificationAction(
-                    identifier: Self.approveActionId,
-                    title: "Approve",
-                    options: [.authenticationRequired]
-                ),
+                // Deny only. Approving now means picking the number the browser
+                // is showing (the backend verifies it and refuses an approval
+                // without it), and a banner cannot present that choice — an
+                // Approve button here could only ever send a blind approval,
+                // which the server rejects and which is precisely the tap an
+                // MFA-fatigue attack harvests. Body tap opens the approval
+                // screen instead.
+                //
+                // Deny stays: the safe answer must remain one tap away, because
+                // the person most likely to press it is someone being fatigued,
+                // looking at a number they cannot match.
                 UNNotificationAction(identifier: Self.denyActionId, title: "Deny", options: [.destructive]),
             ],
             intentIdentifiers: [],
@@ -117,15 +120,27 @@ final class PushNotificationDispatcher: NSObject {
 
     /// Presents a local notification for a pull-mode arrival (the server
     /// never contacted APNs in pull mode, spec §3).
+    ///
+    /// While the app lock is engaged the sender and subject are withheld:
+    /// "Require Unlock to Open" is the toggle a user reads as "nobody sees my
+    /// mail without authenticating", and putting a subject line on the lock
+    /// screen is the most visible way to break that promise. The full entry is
+    /// still recorded in history and shows once the app is unlocked.
     func presentLocally(
         _ notification: PushNotification,
-        center: UNUserNotificationCenter = .current()
+        center: UNUserNotificationCenter = .current(),
+        redactContent: Bool? = nil
     ) async {
         guard pushSettingsStore.systemNotificationsEnabled else { return }
+        let redact = redactContent ?? SingletonGraph.shared.appLockManager.isLocked
 
         let content = UNMutableNotificationContent()
-        content.title = notification.senderName
-        content.body = notification.emailSubject
+        content.title = redact
+            ? String(localized: "KyPost")
+            : notification.senderName
+        content.body = redact
+            ? String(localized: "New mail — unlock KyPost to read it")
+            : notification.emailSubject
         content.sound = .default
         content.categoryIdentifier = Self.mailCategoryId
         content.userInfo = [
@@ -169,17 +184,29 @@ extension PushNotificationDispatcher: UNUserNotificationCenterDelegate {
         let userInfo = response.notification.request.content.userInfo
 
         switch response.actionIdentifier {
-        case Self.approveActionId, Self.denyActionId:
-            guard let challengeId = userInfo["challengeId"] as? String else { return }
-            let approved = response.actionIdentifier == Self.approveActionId
-            let outcome = await approveMfaChallenge(challengeId: challengeId, approved: approved)
-            Log.push.info("MFA \(approved ? "approve" : "deny") outcome: \(String(describing: outcome))")
-
-        case UNNotificationDefaultActionIdentifier:
-            // Body tap: MFA → in-app approval fallback (spec §5); mail → inbox.
+        case Self.approveActionId:
+            // No longer registered (see `categories`), but a notification
+            // delivered before this build was installed can still carry it.
+            // Route it to the approval screen rather than sending a blind
+            // approval the server would refuse.
             switch PushPayloadMapper.map(userInfo: userInfo) {
             case .mfaChallenge(let challenge):
-                onNavigate?(.openMfaApproval(challengeId: challenge.challengeId))
+                onNavigate?(.openMfaApproval(challenge))
+            default:
+                break
+            }
+
+        case Self.denyActionId:
+            guard let challengeId = userInfo["challengeId"] as? String else { return }
+            // Deny needs no number — the backend ignores matchDigits on a deny.
+            let outcome = await approveMfaChallenge(challengeId: challengeId, approved: false)
+            Log.push.info("MFA deny outcome: \(String(describing: outcome))")
+
+        case UNNotificationDefaultActionIdentifier:
+            // Body tap: MFA → in-app approval screen (spec §5); mail → inbox.
+            switch PushPayloadMapper.map(userInfo: userInfo) {
+            case .mfaChallenge(let challenge):
+                onNavigate?(.openMfaApproval(challenge))
             case .mail(let mail):
                 onNavigate?(.openEmail(messageId: mail.messageId))
             case nil:

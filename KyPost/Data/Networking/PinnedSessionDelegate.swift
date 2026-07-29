@@ -17,12 +17,20 @@
 //  cannot hash is refused rather than waved through, because the party
 //  choosing the certificate is exactly the party a pin is meant to stop.
 //
+//  The delegate also refuses every cross-host redirect. Requests carry the
+//  device secret in X-Kypost-Device-Secret, and URLSession only strips
+//  `Authorization` across origins — a custom header rides along. Without
+//  this, a relay answering `302 Location: https://elsewhere/` hands the
+//  credential to a host the pin does not cover, since `decision` returns
+//  .proceed for anything that is not the paired relay.
+//
 
 import CryptoKit
 import Foundation
+import os
 import Security
 
-nonisolated final class PinnedSessionDelegate: NSObject, URLSessionDelegate, @unchecked Sendable {
+nonisolated final class PinnedSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     /// The pin to enforce for a host, or nil for TOFU/default handling.
     private let pinnedHash: @Sendable (_ host: String) -> String?
 
@@ -81,6 +89,43 @@ nonisolated final class PinnedSessionDelegate: NSObject, URLSessionDelegate, @un
         }
     }
 
+    // MARK: - Redirects
+
+    /// Refuses any redirect that leaves the host the request was authenticated
+    /// to. Passing nil to the completion handler stops the redirect and returns
+    /// the 3xx response body to the caller, which decodes as a failure — the
+    /// credential never moves.
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        // `originalRequest`, not `currentRequest`: on a redirect chain every
+        // hop must stay on the host the caller chose, otherwise a two-step
+        // relay → relay → attacker chain walks off the origin one hop at a
+        // time while each individual hop looks same-host.
+        guard Self.allowsRedirect(from: task.originalRequest?.url, to: request.url) else {
+            Log.app.error("Refused a cross-host redirect to a foreign relay host")
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
+    }
+
+    /// Pure so the rule is testable without a live redirect. Same host, still
+    /// https, both parseable — anything else is refused.
+    static func allowsRedirect(from origin: URL?, to destination: URL?) -> Bool {
+        guard
+            let origin, let destination,
+            destination.scheme?.lowercased() == "https",
+            let originHost = origin.host()?.lowercased(),
+            let destinationHost = destination.host()?.lowercased()
+        else { return false }
+        return originHost == destinationHost
+    }
+
     enum PinDecision: Equatable {
         /// Hand off to the system's normal TLS evaluation.
         case proceed
@@ -119,6 +164,38 @@ nonisolated final class PinnedSessionDelegate: NSObject, URLSessionDelegate, @un
         lock.lock()
         defer { lock.unlock() }
         return pinFailedHosts.contains(host)
+    }
+
+    /// Forces a handshake with `url`'s host and returns the SPKI hash it
+    /// presented.
+    ///
+    /// `lastSeenHash` is only populated by `didReceive challenge`, which
+    /// URLSession fires once per *connection*, not per request. Connection
+    /// reuse and TLS session resumption therefore left the pairing flow with
+    /// nothing to pin and no sign anything was wrong — the same fail-open-on-
+    /// arming bug the SPKI fallback fixed for unusual key shapes, arriving
+    /// through the transport instead of the certificate. A throwaway ephemeral
+    /// session has its own connection pool, so the handshake is guaranteed.
+    ///
+    /// The delegate is shared, so a host that is already pinned is still
+    /// enforced on this connection; on the first pair there is no pin yet and
+    /// the handshake proceeds under normal system trust.
+    static func probeHash(url: URL, delegate: PinnedSessionDelegate) async -> String? {
+        guard let host = url.host() else { return nil }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpMaximumConnectionsPerHost = 1
+        configuration.urlCache = nil
+        configuration.timeoutIntervalForRequest = 15
+        let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+
+        var request = URLRequest(url: url)
+        // HEAD on the origin: no credentials, no body, and the status is
+        // irrelevant — only the handshake matters. A 404 probes a certificate
+        // exactly as well as a 200 does.
+        request.httpMethod = "HEAD"
+        _ = try? await session.data(for: request)
+        return delegate.lastSeenHash(forHost: host)
     }
 
     // MARK: - SPKI hashing

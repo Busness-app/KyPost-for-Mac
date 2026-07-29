@@ -33,11 +33,13 @@
 	<string>KyPost uses the camera to scan pairing QR codes.</string>
 	<key>NSContactsUsageDescription</key>
 	<string>KyPost exports your synced contacts to Apple Contacts when enabled in Preferences.</string>
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<key>NSAllowsLocalNetworking</key>
-		<true/>
-	</dict>
+	<!-- Required by LAContext.deviceOwnerAuthentication (AppLockManager).
+	     Without it, evaluating the policy on a Face ID device terminates the
+	     app; the app lock persists its flag first, so the user is left locked
+	     out of their mail with the setting that would undo it behind the same
+	     lock. UnlockView's reset is the second half of that fix. -->
+	<key>NSFaceIDUsageDescription</key>
+	<string>KyPost uses Face ID to unlock the app and to release your pairing credential.</string>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>com.urlxl.mail.pull</string>

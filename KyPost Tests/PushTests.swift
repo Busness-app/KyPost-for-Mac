@@ -79,6 +79,57 @@ private func makePairing(lastDeviceId: String? = "dev-1", deviceSecret: String =
         #expect(payload == .mfaChallenge(MfaChallenge(challengeId: "c-1", receivedAt: received)))
     }
 
+    @Test func mapsMfaChallengeNumberMatchFields() throws {
+        let received = Date(timeIntervalSince1970: 1_750_000_000)
+        let payload = PushPayloadMapper.map(
+            userInfo: [
+                "type": "mfa_challenge",
+                "challengeId": "c-1",
+                "matchDigits": "47",
+                // Comma-joined, same convention as Keywords.
+                "decoyDigits": "08,91",
+            ],
+            receivedAt: received
+        )
+        #expect(payload == .mfaChallenge(MfaChallenge(
+            challengeId: "c-1",
+            receivedAt: received,
+            matchDigits: "47",
+            decoyDigits: ["08", "91"]
+        )))
+    }
+
+    @Test func dropsMalformedMatchDigits() throws {
+        // These drive tap targets on a security screen, so anything that is not
+        // a two-digit run is treated as absent rather than rendered.
+        for bad in ["4", "471", "4x", "", " "] {
+            let payload = PushPayloadMapper.map(
+                userInfo: ["type": "mfa_challenge", "challengeId": "c-1", "matchDigits": bad]
+            )
+            guard case .mfaChallenge(let challenge) = payload else {
+                Issue.record("Expected an MFA challenge for matchDigits \(bad.debugDescription)")
+                return
+            }
+            #expect(challenge.matchDigits == "")
+        }
+    }
+
+    @Test func dropsMalformedDecoyDigitsAndDuplicates() throws {
+        let payload = PushPayloadMapper.map(
+            userInfo: [
+                "type": "mfa_challenge",
+                "challengeId": "c-1",
+                "matchDigits": "47",
+                "decoyDigits": "08,bad,08,,913,91",
+            ]
+        )
+        guard case .mfaChallenge(let challenge) = payload else {
+            Issue.record("Expected an MFA challenge")
+            return
+        }
+        #expect(challenge.decoyDigits == ["08", "91"])
+    }
+
     @Test func rejectsUnrecognizedPayloads() {
         #expect(PushPayloadMapper.map(userInfo: [:]) == nil)
         #expect(PushPayloadMapper.map(userInfo: ["foo": "bar"]) == nil)
@@ -88,20 +139,76 @@ private func makePairing(lastDeviceId: String? = "dev-1", deviceSecret: String =
     }
 }
 
+// MARK: - Number matching
+
+@Suite struct MfaNumberMatchTests {
+    @Test func returnsNilWithoutAUsableNumber() {
+        // No number from the server means number matching is unavailable, and
+        // the screen then offers Deny only — never a plain Approve button, which
+        // is the tap an MFA-fatigue attack is trying to collect.
+        #expect(MfaNumberMatch.options(challengeId: "c-1", correct: "", serverDecoys: []) == nil)
+        #expect(MfaNumberMatch.options(challengeId: "c-1", correct: "4", serverDecoys: []) == nil)
+        #expect(MfaNumberMatch.options(challengeId: "c-1", correct: "4x", serverDecoys: []) == nil)
+    }
+
+    @Test func includesTheCorrectValueAmongThreeDistinctOptions() throws {
+        let options = try #require(
+            MfaNumberMatch.options(challengeId: "c-1", correct: "47", serverDecoys: ["08", "91"])
+        )
+        #expect(options.count == MfaNumberMatch.choiceCount)
+        #expect(options.contains("47"))
+        #expect(Set(options).count == MfaNumberMatch.choiceCount)
+    }
+
+    @Test func fillsMissingDecoysDeterministically() throws {
+        // A redraw must not reshuffle the buttons under the user's finger, so
+        // the filler is derived from the challenge id rather than randomly.
+        let first = try #require(
+            MfaNumberMatch.options(challengeId: "c-1", correct: "47", serverDecoys: [])
+        )
+        let second = try #require(
+            MfaNumberMatch.options(challengeId: "c-1", correct: "47", serverDecoys: [])
+        )
+        #expect(first == second)
+        #expect(first.count == MfaNumberMatch.choiceCount)
+        #expect(first.contains("47"))
+        #expect(Set(first).count == MfaNumberMatch.choiceCount)
+    }
+
+    @Test func neverOffersTheCorrectValueTwice() throws {
+        // A server decoy colliding with the answer must not produce a duplicate
+        // tile — two correct-looking buttons would make the choice meaningless.
+        let options = try #require(
+            MfaNumberMatch.options(challengeId: "c-1", correct: "47", serverDecoys: ["47", "47"])
+        )
+        #expect(options.filter { $0 == "47" }.count == 1)
+        #expect(Set(options).count == MfaNumberMatch.choiceCount)
+    }
+
+    @Test func orderDoesNotPinTheAnswerToOnePosition() {
+        // Sorting by a hash of (challengeId, value) rather than leaving the
+        // answer appended last, so it is not always the rightmost tile.
+        let positions = (0..<40).compactMap { index -> Int? in
+            MfaNumberMatch.options(challengeId: "challenge-\(index)", correct: "47", serverDecoys: ["08", "91"])?
+                .firstIndex(of: "47")
+        }
+        #expect(Set(positions).count > 1)
+    }
+}
+
 // MARK: - Notification categories
 
 @MainActor
 @Suite struct PushNotificationDispatcherCategoryTests {
-    @Test func approveActionRequiresDeviceAuthentication() throws {
-        // A single tap from a locked-screen banner must not be enough to
-        // approve a sign-in — the device must be unlocked first.
+    @Test func mfaCategoryOffersNoApproveAction() throws {
+        // Approving requires the number the browser is showing, which the
+        // backend verifies and a banner cannot present. An Approve button here
+        // could only send a blind approval — the exact tap an MFA-fatigue
+        // attack harvests, and one the server now refuses anyway.
         let mfa = try #require(
             PushNotificationDispatcher.categories.first { $0.identifier == PushNotificationDispatcher.mfaCategoryId }
         )
-        let approve = try #require(
-            mfa.actions.first { $0.identifier == PushNotificationDispatcher.approveActionId }
-        )
-        #expect(approve.options.contains(.authenticationRequired))
+        #expect(!mfa.actions.contains { $0.identifier == PushNotificationDispatcher.approveActionId })
     }
 
     @Test func denyActionRemainsDestructiveAndUnauthenticated() throws {
@@ -207,6 +314,10 @@ private func makePairing(lastDeviceId: String? = "dev-1", deviceSecret: String =
 
 // MARK: - DeviceRegistrationService
 
+// DeviceRegistrationService is @MainActor: `inFlight` and the pin-capture
+// closures are unsynchronised mutable state, and every production caller
+// already runs there.
+@MainActor
 @Suite struct DeviceRegistrationServiceTests {
     private struct Environment {
         var service: DeviceRegistrationService
@@ -530,9 +641,12 @@ private func makePairing(lastDeviceId: String? = "dev-1", deviceSecret: String =
             #expect(!body.contains("subscriberHash"))
             #expect(!body.contains("deviceId"))
             #expect(body.contains(#""approve":true"#))
+            // Threaded from the approval screen through to the wire — the
+            // backend refuses an approval that does not carry it.
+            #expect(body.contains(#""matchDigits":"47""#))
         }
         let useCase = try makeUseCase(client: client, paired: true)
-        let outcome = await useCase(challengeId: "c-1", approved: true)
+        let outcome = await useCase(challengeId: "c-1", approved: true, matchDigits: "47")
         #expect(outcome == .success)
     }
 
@@ -617,5 +731,108 @@ private func makePairing(lastDeviceId: String? = "dev-1", deviceSecret: String =
         let useCase = try makeUseCase(client: client, pairing: makePairing())
         let outcome = await useCase()
         #expect(outcome == .unauthorized)
+    }
+}
+
+// MARK: - The number-match downgrade
+
+@MainActor
+@Suite struct MfaApprovalViewModelTests {
+    private func makeUseCase(_ client: HTTPClient) -> ApproveMfaChallengeUseCase {
+        let (_, keychain) = scratchStores()
+        let store = SecurePairingStore(keychain: keychain)
+        try? store.savePairing(makePairing())
+        return ApproveMfaChallengeUseCase(
+            client: MfaResponseClient(httpClient: client),
+            securePairingStore: store
+        )
+    }
+
+    /// A payload with no usable number leaves no way to approve. The plain
+    /// Approve fallback handed the whole anti-fatigue control to whoever shapes
+    /// the push payload — and the server refuses a numberless approval anyway,
+    /// so it could only ever produce a failure.
+    @Test func aChallengeWithoutANumberOffersNoOptions() {
+        let viewModel = MfaApprovalViewModel(
+            challengeId: "c1",
+            approveMfaChallenge: makeUseCase(stubClient())
+        )
+        #expect(viewModel.matchOptions == nil)
+    }
+
+    @Test func approvingWithoutANumberIsRefusedBeforeAnyRequest() async {
+        let sent = Box(0)
+        let client = stubClient { _ in sent.mutate { $0 += 1 } }
+        let viewModel = MfaApprovalViewModel(
+            challengeId: "c1",
+            approveMfaChallenge: makeUseCase(client)
+        )
+        await viewModel.respond(approved: true)
+        #expect(sent.value == 0)
+        guard case .failed = viewModel.state else {
+            Issue.record("expected .failed, got \(viewModel.state)")
+            return
+        }
+    }
+
+    /// Deny must never depend on reading a number off another screen.
+    @Test func denyingWithoutANumberStillWorks() async {
+        let viewModel = MfaApprovalViewModel(
+            challengeId: "c1",
+            approveMfaChallenge: makeUseCase(stubClient(json: #"{"ok": true}"#))
+        )
+        await viewModel.respond(approved: false)
+        #expect(viewModel.state == .done("Sign-in denied"))
+    }
+
+    @Test func aWrongNumberDeniesRatherThanRetries() async {
+        let body = Box("")
+        let client = stubClient(json: #"{"ok": true}"#) { request in
+            body.mutate { $0 = request.httpBody.map { String(decoding: $0, as: UTF8.self) } ?? "" }
+        }
+        let viewModel = MfaApprovalViewModel(
+            challengeId: "c1",
+            matchDigits: "47",
+            decoyDigits: ["11", "22"],
+            approveMfaChallenge: makeUseCase(client)
+        )
+        await viewModel.choose("11")
+        #expect(body.value.contains(#""approve":false"#))
+        guard case .done(let message) = viewModel.state else {
+            Issue.record("expected .done, got \(viewModel.state)")
+            return
+        }
+        #expect(message.contains("not the number"))
+    }
+}
+
+@Suite struct MfaNumberlessRejectionMessageTests {
+    /// A 400 on a numberless approve is not "you picked the wrong number" —
+    /// telling the user they mistyped a number they were never shown sent them
+    /// round a loop with no exit.
+    @Test func aNumberlessRejectionDoesNotBlameTheNumber() async {
+        let outcome = await MfaResponseClient(httpClient: stubClient(status: 400)).respond(
+            serverUrl: "https://relay.example.com",
+            auth: RelayAuth(deviceId: "d1", deviceSecret: "s1"),
+            challengeId: "c1",
+            approved: true,
+            matchDigits: ""
+        )
+        guard case .failure(let message) = outcome else {
+            Issue.record("expected .failure, got \(outcome)")
+            return
+        }
+        #expect(!message.contains("not the number"))
+    }
+
+    @Test func aWrongNumberStillBlamesTheNumber() async {
+        let outcome = await MfaResponseClient(httpClient: stubClient(status: 400)).respond(
+            serverUrl: "https://relay.example.com",
+            auth: RelayAuth(deviceId: "d1", deviceSecret: "s1"),
+            challengeId: "c1",
+            approved: true,
+            matchDigits: "47"
+        )
+        #expect(outcome == .failure("That is not the number shown in the browser"))
     }
 }

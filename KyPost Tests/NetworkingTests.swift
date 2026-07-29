@@ -321,14 +321,60 @@ private let validPairingLink = URL(
             #expect(!body.contains("subscriberHash"))
             #expect(!body.contains("deviceId"))
             #expect(body.contains(#""approve":true"#))
+            // The backend verifies this itself and refuses an approval without
+            // it, so it has to be on the wire.
+            #expect(body.contains(#""matchDigits":"47""#))
         }
         let outcome = await MfaResponseClient(httpClient: client).respond(
             serverUrl: "https://relay.example.com",
             auth: auth,
             challengeId: "c1",
-            approved: true
+            approved: true,
+            matchDigits: "47"
         )
         #expect(outcome == .success)
+    }
+
+    @Test func denySendsNoNumber() async {
+        // Deny must never require the number: the person most likely to press
+        // it is someone being fatigued, looking at a number they cannot match.
+        let client = stubClient(status: 200, json: #"{"ok": true}"#) { request in
+            let body = request.httpBody.flatMap { String(decoding: $0, as: UTF8.self) } ?? ""
+            #expect(body.contains(#""approve":false"#))
+            #expect(body.contains(#""matchDigits":"""#))
+        }
+        let outcome = await MfaResponseClient(httpClient: client).respond(
+            serverUrl: "https://relay.example.com",
+            auth: auth,
+            challengeId: "c1",
+            approved: false,
+            matchDigits: "47"
+        )
+        #expect(outcome == .success)
+    }
+
+    @Test func wrongNumberIsAFailureNotARejection() async {
+        // 400 means the credentials were fine and the challenge is still live —
+        // a re-prompt, not a re-pair, so it must not map to .rejected.
+        let outcome = await MfaResponseClient(httpClient: stubClient(status: 400)).respond(
+            serverUrl: "https://relay.example.com",
+            auth: auth,
+            challengeId: "c1",
+            approved: true,
+            matchDigits: "11"
+        )
+        #expect(outcome == .failure("That is not the number shown in the browser"))
+    }
+
+    @Test func exhaustedAttemptsAreReported() async {
+        let outcome = await MfaResponseClient(httpClient: stubClient(status: 429)).respond(
+            serverUrl: "https://relay.example.com",
+            auth: auth,
+            challengeId: "c1",
+            approved: true,
+            matchDigits: "11"
+        )
+        #expect(outcome == .failure("Too many incorrect attempts — start the sign-in again"))
     }
 
     @Test(arguments: [403, 409])
@@ -479,5 +525,69 @@ private let validPairingLink = URL(
             "X-Kypost-Device-Id": "device-1",
             "X-Kypost-Device-Secret": "secret-1",
         ])
+    }
+}
+
+// MARK: - Response size limits
+
+/// `session.data(for:)` buffers the whole body before returning, so an
+/// attachment download let the relay choose this app's memory footprint.
+@Suite struct ResponseSizeLimitTests {
+    private let url = URL(string: "https://relay.example.com/api/mail/attachment")!
+
+    @Test func anOversizedBodyIsRefused() async {
+        let client = HTTPClient { request in
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+            )!
+            return (Data(repeating: 0x41, count: 4096), response)
+        }
+        await #expect(throws: NetworkError.responseTooLarge) {
+            try await client.getData(url: url, maxBytes: 1024)
+        }
+    }
+
+    @Test func aBodyWithinTheCapIsReturned() async throws {
+        let payload = Data(repeating: 0x41, count: 512)
+        let client = HTTPClient { request in
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+            )!
+            return (payload, response)
+        }
+        let data = try await client.getData(url: url, maxBytes: 1024)
+        #expect(data == payload)
+    }
+
+    /// The default cap has to clear a real attachment; a limit that rejects
+    /// ordinary mail is an outage, not a control.
+    @Test func theDefaultCapAllowsARealisticAttachment() {
+        #expect(HTTPClient.maxAttachmentBytes >= 25 * 1024 * 1024)
+    }
+
+    /// The 409 body is interpolated into logs and toasts, so it is bounded.
+    @Test func theConflictBodyIsTruncated() throws {
+        let huge = String(repeating: "x", count: NetworkError.maxConflictBodyBytes * 4)
+        let error = try #require(
+            NetworkError.from(statusCode: 409, body: Data(huge.utf8))
+        )
+        guard case .conflict(let body) = error else {
+            Issue.record("expected .conflict, got \(error)")
+            return
+        }
+        #expect(body.count == NetworkError.maxConflictBodyBytes)
+    }
+
+    /// Truncation must not break the discriminator the send path reads.
+    @Test func aSmallConflictBodyStillDecodes() throws {
+        let error = try #require(NetworkError.from(
+            statusCode: 409,
+            body: Data(#"{"clientSideNeeded": true}"#.utf8)
+        ))
+        guard case .conflict(let body) = error else {
+            Issue.record("expected .conflict, got \(error)")
+            return
+        }
+        #expect(RelayMailSource.conflictError(body: body) == .clientSideNeeded)
     }
 }
