@@ -81,12 +81,24 @@ final class AppLockManager {
         cachedGatedSecret = secret
     }
 
+    /// The unsealed OpenPGP key holder, cleared whenever the lock engages.
+    ///
+    /// Injected so a test can prove it happens. Defaulted to the shared
+    /// instance so no caller has to remember to pass it — the clearing lives
+    /// inside `lock()` rather than behind the `onLock` callback for the same
+    /// reason: Android's equivalent holder was missed by a path that forgot to
+    /// call it, and the wipe then reported success with the account's private
+    /// key still in the process heap.
+    private let enrollmentSession: EnrollmentSession
+
     init(
         store: AppLockStore,
-        authenticator: any DeviceAuthenticating = LocalAuthenticationAuthenticator()
+        authenticator: any DeviceAuthenticating = LocalAuthenticationAuthenticator(),
+        enrollmentSession: EnrollmentSession = .shared
     ) {
         self.store = store
         self.authenticator = authenticator
+        self.enrollmentSession = enrollmentSession
         isLockEnabled = store.lockEnabled
         isLocked = store.lockEnabled
     }
@@ -94,6 +106,12 @@ final class AppLockManager {
     /// Engages the lock (backgrounding on iOS, screen lock on macOS).
     /// No-op while the feature is off.
     func lock() {
+        // Before the early return, deliberately. The plaintext private key is
+        // dropped whenever this is called, whether or not the app lock feature
+        // is switched on and whether or not the lock was already engaged —
+        // those are settings about the UI gate, not a reason to keep an
+        // unsealed key in memory.
+        enrollmentSession.clear()
         guard isLockEnabled, !isLocked else { return }
         isLocked = true
         cachedGatedSecret = nil

@@ -119,6 +119,12 @@ final class AppEnvironment {
                 graph.enrollmentVault.destroy()
                 graph.mailCursorStore.clear()
             }
+            // The unsealed copy goes in both directions, unlike the sealed
+            // one. Turning the mode *off* does not restore a key, but leaving
+            // a decrypted private key in memory across the switch would mean
+            // the mode that promises this device holds nothing briefly held
+            // the most sensitive thing there is.
+            EnrollmentSession.shared.clear()
             // The compose scene value is archived for state restoration, and a
             // reply's body is the full quoted plaintext of the received
             // message. `.id(generation)` recreates the view inside the window,
@@ -155,6 +161,10 @@ final class AppEnvironment {
         // envelope that survived it would be the account's private key left on
         // a device whose pairing and lock were both just erased.
         graph.enrollmentVault.destroy()
+        // Destroying the sealed envelope is not enough on its own: an unsealed
+        // copy may be held right now, and this path promises the device comes
+        // back as if reinstalled.
+        EnrollmentSession.shared.clear()
         graph.mailCursorStore.clear()
         try? graph.appLockStore.setCredentialGateEnabled(false)
         try graph.appLockStore.setLockEnabled(false)

@@ -323,3 +323,81 @@ private func freshSession() -> EnrollmentSession { EnrollmentSession() }
         #expect(!session.isHeld)
     }
 }
+
+/// Local stand-in for LAContext, which cannot run headless. SecurityTests has
+/// its own; that one is file-private and counts calls, neither of which these
+/// tests need.
+private struct AlwaysAuthenticates: DeviceAuthenticating {
+    func canAuthenticate() -> Bool { true }
+    func authenticate(reason: String) async -> Bool { true }
+}
+
+// MARK: - Session boundaries
+
+/// The invariant these protect is the one Android got wrong: the holder was
+/// missed by a path that forgot to clear it, and the wipe then reported
+/// "Complete" with the account's private key still in the process heap. A
+/// documented rule that nothing enforces is not a rule.
+@Suite(.serialized) @MainActor struct EnrollmentSessionBoundaryTests {
+
+    @Test func engagingTheAppLockDropsTheKey() throws {
+        let session = EnrollmentSession()
+        session.put(armoredKey: "PRIVATE")
+        let store = try AppLockStore(keychain: KeychainStorage(service: scratchService()))
+        try store.setLockEnabled(true)
+        let manager = AppLockManager(
+            store: store,
+            authenticator: AlwaysAuthenticates(),
+            enrollmentSession: session
+        )
+        manager.lock()
+        #expect(!session.isHeld)
+    }
+
+    /// The clearing happens **before** the early return, so it does not depend
+    /// on the app-lock feature being switched on. Someone who never enabled the
+    /// lock still backgrounds the app, and the key is no less sensitive for it.
+    @Test func theKeyIsDroppedEvenWhenTheAppLockIsOff() throws {
+        let session = EnrollmentSession()
+        session.put(armoredKey: "PRIVATE")
+        let store = try AppLockStore(keychain: KeychainStorage(service: scratchService()))
+        try store.setLockEnabled(false)
+        let manager = AppLockManager(
+            store: store,
+            authenticator: AlwaysAuthenticates(),
+            enrollmentSession: session
+        )
+        manager.lock()
+        #expect(!session.isHeld)
+    }
+
+    /// Already-locked is not a reason to keep it either.
+    @Test func lockingTwiceStillLeavesNothingHeld() throws {
+        let session = EnrollmentSession()
+        let store = try AppLockStore(keychain: KeychainStorage(service: scratchService()))
+        try store.setLockEnabled(true)
+        let manager = AppLockManager(
+            store: store,
+            authenticator: AlwaysAuthenticates(),
+            enrollmentSession: session
+        )
+        manager.lock()
+        session.put(armoredKey: "PRIVATE-AGAIN")
+        manager.lock()
+        #expect(!session.isHeld)
+    }
+
+    /// Only the policy, not the trigger: the kernel event cannot be raised
+    /// from a test. What is checked is that what runs *on* pressure actually
+    /// drops the key — the half that could silently stop being true.
+    @Test func theMemoryPressurePolicyDropsTheKey() {
+        EnrollmentSession.shared.put(armoredKey: "PRIVATE")
+        #expect(EnrollmentSession.shared.isHeld)
+        MemoryPressureWatch.dropSensitiveState()
+        #expect(!EnrollmentSession.shared.isHeld)
+    }
+}
+
+private func scratchService() -> String {
+    "com.urlxl.mail.tests.\(UUID().uuidString)"
+}
