@@ -1013,3 +1013,74 @@ private func makeOutgoing(
         #expect(!email.hasAttachments)
     }
 }
+
+// MARK: - Relay error outcomes (parity brief C5)
+
+@Suite struct RelayErrorOutcomeTests {
+    @Test func aRateLimitCarriesItsRetryAfterSeconds() {
+        let outcome = MailOutcome.from(NetworkError.rateLimited(retryAfter: 900))
+        #expect(outcome == .rateLimited(retryAfter: 900))
+    }
+
+    @Test func aRateLimitWithoutAUsableHeaderStillBacksOff() {
+        // nil is "we were not told", not "retry now" — the caller must back
+        // off either way, so this stays a rateLimited outcome.
+        #expect(MailOutcome.from(NetworkError.rateLimited(retryAfter: nil))
+            == .rateLimited(retryAfter: nil))
+    }
+
+    @Test func retryAfterIsReadableRatherThanRaw() {
+        // "900 seconds" is not something a user can act on.
+        #expect(NetworkError.formatRetryAfter(30) == "30 seconds")
+        #expect(NetworkError.formatRetryAfter(90) == "a minute")
+        #expect(NetworkError.formatRetryAfter(900) == "15 minutes")
+    }
+
+    @Test func onlyDeltaSecondsCountAsARetryAfter() throws {
+        let url = try #require(URL(string: "https://relay.test"))
+        func header(_ value: String?) -> HTTPURLResponse? {
+            HTTPURLResponse(
+                url: url,
+                statusCode: 429,
+                httpVersion: nil,
+                headerFields: value.map { ["Retry-After": $0] }
+            )
+        }
+        #expect(NetworkError.retryAfterSeconds(from: try #require(header("120"))) == 120)
+        #expect(NetworkError.retryAfterSeconds(from: try #require(header(" 45 "))) == 45)
+        #expect(NetworkError.retryAfterSeconds(from: try #require(header(nil))) == nil)
+        // The HTTP-date form is legal but unhandled; it must read as absent
+        // rather than as zero, since "retry immediately" is the one answer a
+        // malformed header must not produce.
+        let dated = try #require(header("Wed, 21 Oct 2026 07:28:00 GMT"))
+        #expect(NetworkError.retryAfterSeconds(from: dated) == nil)
+        #expect(NetworkError.retryAfterSeconds(from: try #require(header("-5"))) == nil)
+    }
+
+    @Test func anUnconfiguredAccountIsNotAGenericFailure() {
+        // The relay answers plain text; the body is the only discriminator on
+        // this path, since a 400 carries no JSON field like the two 409s do.
+        let body = "imap configuration is required before mail can be fetched"
+        #expect(RelayMailSource.notConfiguredMessage(body: body) == body)
+        #expect(MailOutcome.from(NetworkError.badRequest(body: body)) == .notConfigured(body))
+    }
+
+    @Test func anOrdinaryBadRequestStaysAFailure() {
+        let outcome = MailOutcome.from(NetworkError.badRequest(body: "missing subject"))
+        #expect(outcome == .failure("missing subject"))
+        #expect(RelayMailSource.notConfiguredMessage(body: "missing subject") == nil)
+    }
+
+    @Test func anUpstreamFailureIsDistinctFromAFlatServerError() {
+        // 502 is retryable with backoff; the other 5xx are not, and telling
+        // the user to retry is only honest for the one that is.
+        guard case .upstreamFailure = MailOutcome.from(NetworkError.server(statusCode: 502)) else {
+            Issue.record("expected .upstreamFailure for 502")
+            return
+        }
+        guard case .failure = MailOutcome.from(NetworkError.server(statusCode: 500)) else {
+            Issue.record("expected .failure for 500")
+            return
+        }
+    }
+}

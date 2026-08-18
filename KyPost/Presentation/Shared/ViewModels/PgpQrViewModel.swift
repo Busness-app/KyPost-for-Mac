@@ -78,7 +78,7 @@ final class MyPgpQrViewModel {
             state = .pairingRejected
         } catch NetworkError.serviceUnavailable {
             state = .unavailable
-        } catch NetworkError.server(statusCode: 400) {
+        } catch NetworkError.badRequest {
             state = .noPgpIdentity
         } catch {
             state = .failed(error.localizedDescription)
@@ -182,7 +182,7 @@ final class ScanPgpKeyViewModel {
                 message: "They haven't set up a PGP key yet.",
                 canRescan: true
             )
-        } catch NetworkError.server(statusCode: 400) {
+        } catch NetworkError.badRequest {
             state = .failed(
                 message: "That doesn't look like a KyPost key code.",
                 canRescan: true

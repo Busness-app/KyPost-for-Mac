@@ -295,7 +295,11 @@ private let validDesktopLink = URL(
     }
 
     @Test func rateLimitStatusMapping() {
-        #expect(NetworkError.from(statusCode: 429) == .rateLimited)
+        // No headers passed here, so no Retry-After to carry.
+        #expect(NetworkError.from(statusCode: 429) == .rateLimited(retryAfter: nil))
+        #expect(
+            NetworkError.from(statusCode: 429, retryAfter: 60) == .rateLimited(retryAfter: 60)
+        )
     }
 }
 

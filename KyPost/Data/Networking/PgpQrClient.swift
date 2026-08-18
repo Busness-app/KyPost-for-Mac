@@ -13,8 +13,9 @@
 //                                         only gate, so it works unauthenticated
 //
 //  Error mapping deliberately stays in the ViewModels rather than here:
-//  NetworkError collapses 401/403 into .unauthorized and leaves 400/404 as
-//  .server(statusCode:), which is lossy in general but unambiguous per
+//  NetworkError collapses 401/403 into .unauthorized, carries 400 as
+//  .badRequest(body:) and leaves 404 as .server(statusCode:), which is lossy
+//  in general but unambiguous per
 //  endpoint — /token can return 401 but never 403, and /key can return 403 but
 //  never 401 (it has no auth to fail). See PgpQrViewModel.
 //

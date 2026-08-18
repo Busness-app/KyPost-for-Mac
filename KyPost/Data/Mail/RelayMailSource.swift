@@ -440,6 +440,22 @@ final class RelayMailSource: MailSource {
         return nil
     }
 
+    /// The relay's 400 for an account with no mail set up, as its plain-text
+    /// body, or nil for an ordinary malformed request.
+    ///
+    /// Prefix match on the documented wording (`Mobile_Mail_Relay.md`'s error
+    /// table, Android's `MailOutcome.NotConfigured`) because that is the only
+    /// discriminator the relay offers on this path — a 400 carries no JSON
+    /// field to key off, unlike the two 409s. Kept here with the other
+    /// relay-specific knowledge rather than in HTTPClient.
+    static func notConfiguredMessage(body: String) -> String? {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.lowercased().hasPrefix("imap configuration is required") else {
+            return nil
+        }
+        return trimmed
+    }
+
     // MARK: - Private
 
     private func endpoint(_ path: String) throws -> URL {

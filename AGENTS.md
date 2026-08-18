@@ -98,6 +98,25 @@ Default section order:
 
 ## Local Contracts
 
+### Relay error mapping (`Data/Mail/MailSource.swift`)
+
+- `NetworkError.from` sees a status code and a body, never headers. Anything
+  header-derived — currently `Retry-After` — is parsed at the call site holding
+  the `HTTPURLResponse` and passed in. Android hit the same wall and resolved
+  it the same way; do not try to read headers inside the mapper.
+- A `Retry-After` that is not delta-seconds reads as **absent, never zero**.
+  "Retry immediately" is the one answer a malformed header must not produce.
+- 400 carries its body as `.badRequest(body:)`, because the relay answers
+  plain text there and the body is the only discriminator — unlike the two
+  409s, which are told apart by JSON field. Deciding what that text *means*
+  belongs in `RelayMailSource`, not `HTTPClient`.
+- An unconfigured account (400 "imap configuration is required…") is its own
+  outcome. Never build UI for the server's web-only mail configuration
+  endpoints: an unconfigured relay is an empty state pointing at the web app,
+  not a form.
+- 502 is `.upstreamFailure` and retryable with backoff; other 5xx are not.
+  Telling the user to retry is only honest for the one that is.
+
 ### MFA number matching (`Domain/Models/MfaNumberMatch.swift`)
 
 - **Every value comes from the server.** Never invent decoys. This client used
