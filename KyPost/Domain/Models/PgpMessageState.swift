@@ -64,6 +64,19 @@ nonisolated func pgpRowSymbol(_ state: PgpMessageState) -> String? {
     }
 }
 
+/// The one marker a row shows for its OpenPGP state, signature included.
+///
+/// A failed signature or a changed signer key **outranks** the content state:
+/// "we couldn't read this" is a smaller thing to say than "the key this sender
+/// signs with is not the one you pinned". Where neither applies, the content
+/// state's own marker stands.
+nonisolated func pgpRowSymbol(
+    content: PgpMessageState,
+    signature: PgpSignatureState
+) -> String? {
+    signatureRowSymbol(signature) ?? pgpRowSymbol(content)
+}
+
 /// Spelled-out row label for VoiceOver, or nil when the row carries no marker.
 nonisolated func pgpRowAccessibilityLabel(state: PgpMessageState, subject: String) -> String? {
     switch state {

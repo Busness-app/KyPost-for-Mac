@@ -327,7 +327,7 @@ is a real gap before building anything.
 
 ---
 
-## Phase 6 — The signature trust model — **next**
+## Phase 6 — The signature trust model — **done 2026-08-18**
 
 Prerequisite for Phase 9, and worth shipping on its own. Our `PgpMessageState`
 has the four content states; Android has those **plus** a six-value
@@ -360,7 +360,7 @@ signature can become a trusted state.
 
 ---
 
-## Phase 7 — Device enrollment (no OpenPGP dependency)
+## Phase 7 — Device enrollment — **next** (no OpenPGP dependency)
 
 The ceremony that seals the account's private key to this device. **This phase
 needs no third-party code** — CryptoKit and the Secure Enclave cover all of it.

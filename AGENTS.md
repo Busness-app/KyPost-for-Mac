@@ -98,6 +98,35 @@ Default section order:
 
 ## Local Contracts
 
+### PGP signature trust (`Domain/Models/PgpSignatureState.swift`)
+
+- **There is no client-side `From` parser, and there must not be one.** Android
+  deleted theirs after a differential harness over 111 adversarial headers found
+  27 divergences from the server's parser — worst, the RFC 5322 comment
+  `Bob (Eve <eve@evil>) <bob@x>`, where the server binds `bob@x` and the client
+  bound `eve@evil`, letting any contact forge a verified badge for anyone.
+  Three fix rounds each closed one construct and opened another. The server
+  ships `signerKeys` already narrowed to the sender it resolved; consume that
+  narrowing, never reproduce it.
+- This app has two address parsers and **neither may reach a verdict**:
+  `RelayMailSource.splitSender` fills display fields, and `EmailAddress.parse`
+  builds outgoing recipients. Audited 2026-08-18; keep them apart.
+- Six states, not verified/unverified. The line that matters is **identity**
+  (`verifiedConfirmed` — confirmed out of band) versus **continuity**
+  (`verifiedSeenBefore` — same key as last time). Most keys arrive by Autocrypt
+  harvest, so a flat "verified" overclaims for nearly all of them. The wording
+  is part of the contract.
+- Ordering is load-bearing: a `conflict` outranks both a good key and an
+  invalid signature for the same sender, because reporting the survivor as
+  verified hides precisely the event worth reporting.
+- `signerUnknown` is **not an accusation** and does not mark a row: an ordinary
+  correspondent not yet in the address book, a rotated key, and a forgery are
+  locally indistinguishable.
+- Key-id extraction is injected. An unparseable bound key must only ever shrink
+  the candidate set, never grant a pass, and subkey ids must match — a signing
+  subkey's id differs from the primary's, so matching only the primary rejects
+  every normally signed message.
+
 ### Phishing flag and message-body navigation
 
 - `$Phishing` is the reserved RFC 8621 keyword the server sets on mail

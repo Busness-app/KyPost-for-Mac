@@ -194,3 +194,150 @@ import Testing
         #expect(webmailMessageURL(serverUrl: "https://mail.example.com", mailbox: "INBOX", messageId: " ") == nil)
     }
 }
+
+// MARK: - Signature trust model (Phase 6)
+
+@Suite struct PgpSignatureStateTests {
+    /// Stands in for the OpenPGP key-id extraction the crypto core will
+    /// supply: maps an armored key to the ids it contains.
+    private func keyIDs(_ table: [String: Set<String>]) -> (String) -> Set<String> {
+        { table[$0] ?? [] }
+    }
+
+    private func signature(
+        present: Bool = true,
+        valid: Bool = true,
+        keyID: String = "AAAA"
+    ) -> RawSignature {
+        RawSignature(present: present, valid: valid, signerKeyID: keyID)
+    }
+
+    @Test func anUnsignedMessageSaysNothing() {
+        #expect(signatureState(
+            signature: signature(present: false),
+            signerKeys: [SignerKey(publicKey: "k")],
+            keyIDs: keyIDs(["k": ["AAAA"]])
+        ) == .none)
+    }
+
+    /// Not an accusation: an ordinary correspondent not yet in the address
+    /// book, a rotated key, and a forgery are locally indistinguishable.
+    @Test func noBoundKeyIsUnknownRatherThanInvalid() {
+        #expect(signatureState(
+            signature: signature(), signerKeys: [], keyIDs: keyIDs([:])
+        ) == .signerUnknown)
+
+        // Bound keys exist, but none of them made this signature.
+        #expect(signatureState(
+            signature: signature(keyID: "ZZZZ"),
+            signerKeys: [SignerKey(publicKey: "k")],
+            keyIDs: keyIDs(["k": ["AAAA"]])
+        ) == .signerUnknown)
+    }
+
+    /// The one alarm worth raising, and it outranks a good key for the same
+    /// sender — reporting the survivor as verified would hide exactly the
+    /// event worth reporting.
+    @Test func aConflictOutranksAGoodKeyForTheSameSender() {
+        #expect(signatureState(
+            signature: signature(),
+            signerKeys: [
+                SignerKey(publicKey: "k", verified: true),
+                SignerKey(publicKey: "", conflict: true),
+            ],
+            keyIDs: keyIDs(["k": ["AAAA"]])
+        ) == .keyChanged)
+    }
+
+    /// Checked before validity, too: a changed key is the more important
+    /// thing to say than a signature that fails against it.
+    @Test func aConflictOutranksAnInvalidSignature() {
+        #expect(signatureState(
+            signature: signature(valid: false),
+            signerKeys: [SignerKey(publicKey: "", conflict: true)],
+            keyIDs: keyIDs([:])
+        ) == .keyChanged)
+    }
+
+    @Test func aSignatureThatDoesNotVerifyIsInvalid() {
+        #expect(signatureState(
+            signature: signature(valid: false),
+            signerKeys: [SignerKey(publicKey: "k")],
+            keyIDs: keyIDs(["k": ["AAAA"]])
+        ) == .invalid)
+    }
+
+    /// Continuity, not identity. Most keys arrive by Autocrypt harvest, so a
+    /// flat "verified" would overclaim for nearly all of them.
+    @Test func anUnconfirmedBoundKeyClaimsContinuityOnly() {
+        #expect(signatureState(
+            signature: signature(),
+            signerKeys: [SignerKey(publicKey: "k", verified: false)],
+            keyIDs: keyIDs(["k": ["AAAA"]])
+        ) == .verifiedSeenBefore)
+    }
+
+    @Test func onlyAnOutOfBandConfirmationClaimsIdentity() {
+        #expect(signatureState(
+            signature: signature(),
+            signerKeys: [SignerKey(publicKey: "k", verified: true)],
+            keyIDs: keyIDs(["k": ["AAAA"]])
+        ) == .verifiedConfirmed)
+    }
+
+    /// A signing subkey's id differs from the primary key's, so matching only
+    /// the primary would reject every normally signed message.
+    @Test func aSubkeyIdStillMatchesItsBoundKey() {
+        #expect(signatureState(
+            signature: signature(keyID: "SUBKEY"),
+            signerKeys: [SignerKey(publicKey: "k", verified: true)],
+            keyIDs: keyIDs(["k": ["PRIMARY", "SUBKEY"]])
+        ) == .verifiedConfirmed)
+    }
+
+    /// An unparseable bound key must only ever shrink the candidate set, never
+    /// grant a pass.
+    @Test func anUnparseableKeyGrantsNothing() {
+        #expect(signatureState(
+            signature: signature(),
+            signerKeys: [SignerKey(publicKey: "garbage", verified: true)],
+            keyIDs: keyIDs([:])
+        ) == .signerUnknown)
+    }
+}
+
+@Suite struct SignatureRowMarkerTests {
+    /// Only the two alarms mark. `signerUnknown` is the ordinary state for a
+    /// correspondent not in the address book; a glyph on most rows carries
+    /// nothing actionable.
+    @Test func onlyTheAlarmsMarkARow() {
+        #expect(signatureRowSymbol(.keyChanged) != nil)
+        #expect(signatureRowSymbol(.invalid) != nil)
+        #expect(signatureRowSymbol(.signerUnknown) == nil)
+        #expect(signatureRowSymbol(.verifiedSeenBefore) == nil)
+        #expect(signatureRowSymbol(.verifiedConfirmed) == nil)
+        #expect(signatureRowSymbol(.none) == nil)
+    }
+
+    /// "The key this sender signs with is not the one you pinned" outranks
+    /// "we couldn't read this".
+    @Test func aSignatureAlarmOutranksTheContentState() {
+        #expect(pgpRowSymbol(content: .clientProtected, signature: .keyChanged)
+            == signatureRowSymbol(.keyChanged))
+        #expect(pgpRowSymbol(content: .clientProtected, signature: .none)
+            == pgpRowSymbol(.clientProtected))
+        #expect(pgpRowSymbol(content: .none, signature: .signerUnknown) == nil)
+    }
+
+    /// Wording is the contract: continuity must not read as identity, and an
+    /// unsaved key must not read as an accusation.
+    @Test func theLabelsDoNotOverclaim() {
+        #expect(signatureLabel(.verifiedConfirmed)?.contains("confirmed") == true)
+        #expect(signatureLabel(.verifiedSeenBefore)?.contains("same key") == true)
+        #expect(signatureLabel(.verifiedSeenBefore)?.lowercased().contains("verified") == false)
+        #expect(signatureLabel(.none) == nil)
+        #expect(signatureIsAlarming(.keyChanged))
+        #expect(signatureIsAlarming(.invalid))
+        #expect(!signatureIsAlarming(.signerUnknown))
+    }
+}
