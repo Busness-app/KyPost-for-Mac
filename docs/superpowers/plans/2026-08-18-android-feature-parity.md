@@ -167,7 +167,7 @@ a different sentence to the user:
 
 ---
 
-## Phase 2 — Mail delta sync — **next**
+## Phase 2 — Mail delta sync — **done 2026-08-18**
 
 The largest non-PGP item. Every refresh here fetches a full folder snapshot;
 Android has a cursor, a delta merge and a documented self-heal.
@@ -194,7 +194,7 @@ and the `forceFullResync` path. Three things must not be lost in translation:
 
 ---
 
-## Phase 3 — Phishing flag
+## Phase 3 — Phishing flag — **next**
 
 Tiny and high-value. The server sets the RFC 8621 reserved keyword `$Phishing`
 on inbound mail impersonating KyPost itself. Android's `mail/PhishingFlag.kt`

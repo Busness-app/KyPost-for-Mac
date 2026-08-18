@@ -20,7 +20,15 @@ protocol MailSource: Sendable {
     /// Deletes `folder` (a full path). Only ever offered for a folder the
     /// listing marked `deletable`.
     func deleteFolder(folder: String) async throws
-    func fetchEmails(folder: String, from: Int, to: Int) async throws -> [Email]
+    /// Fetches a folder. `since` is the opaque server cursor from a previous
+    /// fetch, or "" for the whole window. Cursors are server-issued strings;
+    /// never assume they are numeric or ordered.
+    func fetchEmails(
+        folder: String,
+        from: Int,
+        to: Int,
+        since: String
+    ) async throws -> MailFetchResult
     func search(folder: String, query: String) async throws -> [String]
     func setKeywords(folder: String, messageId: String, keywords: [String]) async throws
     func move(messageIds: [String], from mailbox: String, to targetMailbox: String) async throws
@@ -56,6 +64,32 @@ extension MailSource {
     func listFolders() async throws -> [MailFolder] {
         try await listFolders(parent: nil)
     }
+
+    /// Full-window fetch, for callers with no cursor to offer.
+    func fetchEmails(folder: String, from: Int, to: Int) async throws -> MailFetchResult {
+        try await fetchEmails(folder: folder, from: from, to: to, since: "")
+    }
+}
+
+/// One folder fetch's result. `isDelta` false means `emails` is a full
+/// snapshot — the pre-delta shape, and what a relay without cursor support
+/// always returns.
+struct MailFetchResult: Equatable, Sendable {
+    var emails: [Email] = []
+    var cursor: String = ""
+    /// The rest only matter when `isDelta` is true.
+    var isDelta = false
+    var updatedIds: Set<String> = []
+    var removedIds: [String] = []
+    /// True when this response describes the server's whole window rather than
+    /// just what changed — i.e. we sent since=0.
+    ///
+    /// **Not the wire's `delta` flag.** A relay predating the matching server
+    /// fix labels a since=0 response `delta: true` all the same, so this, not
+    /// the flag, is what says `emails` is complete enough to prune the folder
+    /// against. Pruning is the only self-heal for a removal we were never
+    /// told about.
+    var isFullWindow = false
 }
 
 /// Mail-layer failures that aren't plain network errors.

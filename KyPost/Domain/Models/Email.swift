@@ -28,6 +28,11 @@ struct Email: Identifiable, Hashable, Sendable {
     /// not say. When the server *did* say, the reader must honour it rather
     /// than sniffing the body — see EmailBodyRendering.swift.
     var bodyMode: String = ""
+    /// True when the relay sent this row without a body at all — a delta
+    /// "updated" entry. Distinct from an empty body, and never persisted: the
+    /// merge uses it to keep the cached body rather than overwrite it. See
+    /// the hazard note on RelayEmailDTO.body.
+    var bodyOmitted: Bool = false
     /// Relay `hasAttachments`, for the list-row marker. The inbox listing
     /// carries no attachment metadata, so the paperclip is all this supports;
     /// the actual list is fetched lazily on open.

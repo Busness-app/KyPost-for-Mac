@@ -88,6 +88,12 @@ struct RelayEmailDTO: Decodable, Equatable, Sendable {
             senderName: name,
             senderEmail: address,
             subject: subject ?? "",
+            // An omitted body is NOT an empty one. A delta "updated" entry
+            // carries no body, and writing "" here made such a row
+            // indistinguishable from a client-protected message — so the
+            // reader claimed end-to-end encryption for mail the server had
+            // decrypted. `bodyOmitted` carries the distinction to the merge,
+            // which preserves whatever body is already cached.
             body: body ?? "",
             sentTo: sentTo ?? "",
             cc: cc ?? "",
@@ -96,6 +102,7 @@ struct RelayEmailDTO: Decodable, Equatable, Sendable {
             read: (status ?? "unread").lowercased() != "unread",
             starred: false,
             bodyMode: bodyMode ?? "",
+            bodyOmitted: body == nil,
             hasAttachments: hasAttachments ?? false,
             pgpEncrypted: pgpEncrypted ?? false,
             pgpSigned: pgpSigned ?? false,
@@ -145,6 +152,17 @@ struct RelayInboxResponse: Decodable, Sendable {
     /// Flattens the per-tab groups; each email keeps its tab as a keyword.
     /// Sorted newest first — the per-tab dictionary has no stable iteration
     /// order, and EmailDAO.getFolder reads the cache in the same order.
+    /// Ids the server marked as changed rather than new. Only meaningful on a
+    /// delta response; empty otherwise, which makes every row "new" and the
+    /// merge a plain upsert.
+    func updatedIds() -> Set<String> {
+        Set(
+            (byTab ?? [:]).values.flatMap { $0 }
+                .filter { $0.changeType?.lowercased() == "updated" }
+                .map(\.messageId)
+        )
+    }
+
     func allEmails(folder: String) -> [Email] {
         (byTab ?? [:])
             .flatMap { tab, emails in
@@ -342,21 +360,35 @@ final class RelayMailSource: MailSource {
         )
     }
 
-    func fetchEmails(folder: String, from: Int, to: Int) async throws -> [Email] {
-        // ponytail: since=0 forces a full snapshot on every fetch. Cursor
-        // persistence + delta merging (Android MailCursorStore, Part 5) is v2;
-        // full snapshots pair with MailRepository.replaceFolderSnapshot.
+    func fetchEmails(
+        folder: String,
+        from: Int,
+        to: Int,
+        since: String
+    ) async throws -> MailFetchResult {
+        // "" and "0" both mean the whole window; the relay's own default is 0.
+        let sinceValue = since.isEmpty ? "0" : since
         let response = try await httpClient.get(
             RelayInboxResponse.self,
             url: try endpoint("api/inbox"),
             query: [
                 URLQueryItem(name: "limit", value: String(max(to, 1))),
                 URLQueryItem(name: "mailbox", value: folder),
-                URLQueryItem(name: "since", value: "0"),
+                URLQueryItem(name: "since", value: sinceValue),
             ],
             headers: auth.headerFields
         )
-        return response.allEmails(folder: folder)
+        let emails = response.allEmails(folder: folder)
+        return MailFetchResult(
+            emails: emails,
+            cursor: response.cursor?.value ?? "",
+            isDelta: response.delta ?? false,
+            updatedIds: response.updatedIds(),
+            removedIds: response.removed ?? [],
+            // Derived from what we asked for, never from the wire's `delta`
+            // flag — see MailFetchResult.isFullWindow.
+            isFullWindow: sinceValue == "0"
+        )
     }
 
     func search(folder: String, query: String) async throws -> [String] {

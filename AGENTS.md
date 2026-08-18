@@ -98,6 +98,35 @@ Default section order:
 
 ## Local Contracts
 
+### Mail delta sync (`Data/Mail`, `Data/Storage/MailCursorStore.swift`)
+
+- **`isFullWindow` is derived from what we asked for, never from the wire's
+  `delta` flag.** A relay predating the matching server fix labels a `since=0`
+  response `delta: true` all the same, and only a full window can say what is
+  *absent*.
+- **Only a full window may prune.** A partial delta describes what changed;
+  everything it omits is still legitimately in the mailbox. Pruning against one
+  deletes the folder.
+- **An "updated" row carries no body.** Merge into the existing row and keep
+  the cached body; a blank incoming `bodyMode` never overwrites a known one. If
+  there is no existing row, **skip it** — storing it creates a row whose empty
+  body is indistinguishable from a client-protected message, and the reader
+  then claims end-to-end encryption for mail the server decrypted. A
+  metadata-only delta is not a delivery.
+- **Advance the cursor only after the rows are committed.** A crash between
+  the two costs a refetch; the other order loses messages permanently.
+- Cursors are opaque server strings — never assume numeric or ordered. Scoped
+  per pairing *and* folder, with the resync stamp on its **own** scope key:
+  sharing one lets writing the stamp re-authorise a stale cursor for a new
+  pairing.
+- Folder names are unvalidated server strings, so cursor keys hash them. That
+  stops a crafted name colliding with another folder's key, and keeps the
+  user's folder taxonomy out of a plaintext defaults file. Under Hostile
+  Location Protection the store is memory-only for the same reason.
+- **A push tap forces a full resync before opening its target.** The cached row
+  is fine for the list; rendering the detail screen from it can show a stale
+  `bodyMode` or stale PGP state.
+
 ### Relay error mapping (`Data/Mail/MailSource.swift`)
 
 - `NetworkError.from` sees a status code and a body, never headers. Anything

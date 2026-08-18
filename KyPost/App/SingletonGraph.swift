@@ -112,10 +112,15 @@ final class SingletonGraph {
 
     // MARK: - Repositories & Use Cases
 
+    lazy var mailCursorStore = MailCursorStore(
+        defaults: userDefaults,
+        hostileLocation: hostileLocationProtectionStore
+    )
     lazy var mailRepository = MailRepository(
         securePairingStore: securePairingStore,
         emailDAO: emailDAO,
-        httpClient: httpClient
+        httpClient: httpClient,
+        cursorStore: mailCursorStore
     )
     lazy var keywordRepository = KeywordRepository(settingsStore: keywordSettingsStore)
     lazy var sendEmailUseCase = SendEmailUseCase(repository: mailRepository)

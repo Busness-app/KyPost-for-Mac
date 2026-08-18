@@ -589,7 +589,11 @@ struct MacRootView: View {
 
     private func openPendingMessageIfNeeded() {
         guard let messageId = router.pendingMessageId else { return }
-        if let email = inboxViewModel.email(withServerId: messageId) {
+        Task {
+            // Resync before opening: the cached row may carry a stale bodyMode
+            // or stale PGP state, and the detail screen renders from it.
+            await inboxViewModel.refreshForPushTap()
+            guard let email = inboxViewModel.email(withServerId: messageId) else { return }
             section = .inbox(keyword: nil)
             selectedEmails = [email]
             router.pendingMessageId = nil

@@ -199,12 +199,15 @@ final class InboxViewModel {
         await refresh()
     }
 
-    func refresh() async {
+    func refresh(forceFullResync: Bool = false) async {
         guard !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
         do {
-            apply(emails: try await mailRepository.refreshFolder(folder))
+            apply(emails: try await mailRepository.refreshFolder(
+                folder,
+                forceFullResync: forceFullResync
+            ))
             errorMessage = nil
         } catch MailSourceError.notPaired {
             errorMessage = "Pair this device (Settings → Connection) to load mail."
@@ -239,6 +242,16 @@ final class InboxViewModel {
     /// Resolves a notification tap's messageId to a cached email.
     func email(withServerId serverId: String) -> Email? {
         emails.first { $0.serverId == serverId }
+    }
+
+    /// Resyncs the whole window before a push tap opens its target.
+    ///
+    /// The cached row is fine for the list, but opening it before the resync
+    /// can render the detail screen from stale data — an out-of-date
+    /// `bodyMode`, or PGP state that no longer matches what the server holds.
+    /// A delta fetch is not enough: the row may predate the cursor entirely.
+    func refreshForPushTap() async {
+        await refresh(forceFullResync: true)
     }
 
     /// Attachment metadata for an email, fetched lazily when it's opened

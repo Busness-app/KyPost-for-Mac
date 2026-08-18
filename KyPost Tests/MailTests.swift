@@ -101,7 +101,7 @@ private func makeOutgoing(
             #expect(url.contains("since=0"))
         }
         let source = RelayMailSource(httpClient: client, serverUrl: server, auth: auth)
-        let emails = try await source.fetchEmails(folder: "INBOX", from: 0, to: 50)
+        let emails = try await source.fetchEmails(folder: "INBOX", from: 0, to: 50).emails
 
         #expect(emails.count == 2)
         let full = try #require(emails.first { $0.serverId == "e-1" })
@@ -134,7 +134,7 @@ private func makeOutgoing(
         }
         """
         let source = RelayMailSource(httpClient: stubClient(json: json), serverUrl: server, auth: auth)
-        let emails = try await source.fetchEmails(folder: "INBOX", from: 0, to: 50)
+        let emails = try await source.fetchEmails(folder: "INBOX", from: 0, to: 50).emails
         #expect(emails.map(\.serverId) == ["newest", "middle", "old"])
     }
 
@@ -1168,5 +1168,235 @@ private func makeOutgoing(
         // reject it — rather than this client silently building a path.
         #expect(json.contains("a") && json.contains("b"))
         #expect(request.url?.path() == "/api/inbox/folders")
+    }
+}
+
+// MARK: - Delta sync (Phase 2)
+
+@Suite struct MailDeltaReconcileTests {
+    private func dao() throws -> EmailDAO {
+        EmailDAO(modelContainer: try AppDatabase(inMemory: true).container)
+    }
+
+    private func email(
+        _ id: String,
+        body: String = "cached body",
+        bodyMode: String = "html",
+        subject: String = "Subject",
+        bodyOmitted: Bool = false,
+        pgpEncrypted: Bool = false
+    ) -> Email {
+        var email = Email(
+            serverId: id, folder: "INBOX", senderName: "A", senderEmail: "a@x",
+            subject: subject, body: body, keywords: [],
+            receivedAt: Date(timeIntervalSince1970: 1_000), read: false, starred: false
+        )
+        email.bodyMode = bodyMode
+        email.bodyOmitted = bodyOmitted
+        email.pgpEncrypted = pgpEncrypted
+        return email
+    }
+
+    /// The hazard RelayMailSource.swift documented before delta was switched
+    /// on: an "updated" row carries no body, and writing "" over the cached
+    /// one makes a server-decrypted message read as client-protected — so the
+    /// reader sends the user to webmail for mail they can already open.
+    @Test func anUpdatedRowKeepsTheBodyItAlreadyHas() async throws {
+        let dao = try dao()
+        try await dao.replaceFolderSnapshot(
+            folder: "INBOX",
+            emails: [email("m1", body: "<p>real</p>", pgpEncrypted: true)]
+        )
+
+        try await dao.applyDelta(
+            folder: "INBOX",
+            emails: [email("m1", body: "", bodyMode: "", subject: "New subject",
+                           bodyOmitted: true, pgpEncrypted: true)],
+            updatedIds: ["m1"],
+            removedIds: [],
+            pruneAgainstEmails: false
+        )
+
+        let stored = try #require(try await dao.getEmail(serverId: "m1"))
+        #expect(stored.body == "<p>real</p>")
+        #expect(stored.bodyMode == "html")   // a blank incoming mode never wins
+        #expect(stored.subject == "New subject")
+        #expect(pgpMessageState(
+            pgpEncrypted: stored.pgpEncrypted,
+            pgpDecryptError: stored.pgpDecryptError,
+            body: stored.body
+        ) == .decryptedByServer)
+    }
+
+    /// With no row to merge into, storing the metadata-only entry creates one
+    /// whose empty body is indistinguishable from a client-protected message.
+    /// We do not have this message; a metadata-only delta is not a delivery.
+    @Test func anUpdatedRowWeNeverHadIsSkippedRatherThanInvented() async throws {
+        let dao = try dao()
+        try await dao.applyDelta(
+            folder: "INBOX",
+            emails: [email("ghost", body: "", bodyOmitted: true)],
+            updatedIds: ["ghost"],
+            removedIds: [],
+            pruneAgainstEmails: false
+        )
+        #expect(try await dao.getEmail(serverId: "ghost") == nil)
+    }
+
+    @Test func newRowsAreInsertedAndRemovedIdsDeleted() async throws {
+        let dao = try dao()
+        try await dao.replaceFolderSnapshot(folder: "INBOX", emails: [email("old")])
+        try await dao.applyDelta(
+            folder: "INBOX",
+            emails: [email("fresh", body: "<p>new</p>")],
+            updatedIds: [],
+            removedIds: ["old"],
+            pruneAgainstEmails: false
+        )
+        #expect(try await dao.getEmail(serverId: "old") == nil)
+        #expect(try await dao.getEmail(serverId: "fresh")?.body == "<p>new</p>")
+    }
+
+    /// A partial delta describes only what changed. Everything it omits is
+    /// still legitimately in the mailbox, so pruning against it would delete
+    /// the whole folder bar the few rows that happened to change.
+    @Test func aPartialDeltaNeverPrunesTheFolder() async throws {
+        let dao = try dao()
+        try await dao.replaceFolderSnapshot(
+            folder: "INBOX", emails: [email("keep1"), email("keep2")]
+        )
+        try await dao.applyDelta(
+            folder: "INBOX",
+            emails: [email("keep1", subject: "edited")],
+            updatedIds: ["keep1"],
+            removedIds: [],
+            pruneAgainstEmails: false
+        )
+        #expect(try await dao.getFolder(folder: "INBOX", limit: 50).count == 2)
+    }
+
+    /// A full window can say what is *absent*, and pruning against it is the
+    /// only self-heal for a removal this device was never told about.
+    @Test func aFullWindowPrunesWhatItDoesNotMention() async throws {
+        let dao = try dao()
+        try await dao.replaceFolderSnapshot(
+            folder: "INBOX", emails: [email("stays"), email("deletedOnTheWeb")]
+        )
+        try await dao.applyDelta(
+            folder: "INBOX",
+            emails: [email("stays")],
+            updatedIds: [],
+            removedIds: [],
+            pruneAgainstEmails: true
+        )
+        #expect(try await dao.getEmail(serverId: "deletedOnTheWeb") == nil)
+        #expect(try await dao.getEmail(serverId: "stays") != nil)
+    }
+
+    @Test func pruningIsScopedToItsOwnFolder() async throws {
+        let dao = try dao()
+        var other = email("elsewhere")
+        other.folder = "Archive"
+        try await dao.replaceFolderSnapshot(folder: "INBOX", emails: [email("inboxRow")])
+        try await dao.replaceFolderSnapshot(folder: "Archive", emails: [other])
+        try await dao.applyDelta(
+            folder: "INBOX", emails: [], updatedIds: [], removedIds: [],
+            pruneAgainstEmails: true
+        )
+        #expect(try await dao.getEmail(serverId: "inboxRow") == nil)
+        #expect(try await dao.getEmail(serverId: "elsewhere") != nil)
+    }
+}
+
+@Suite struct MailCursorStoreTests {
+    private func store(
+        hostileLocation: Bool = false,
+        now: @escaping @Sendable () -> Date = Date.init
+    ) -> (MailCursorStore, UserDefaults) {
+        let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        let hlp = HostileLocationProtectionStore(defaults: defaults)
+        hlp.enabled = hostileLocation
+        return (MailCursorStore(defaults: defaults, hostileLocation: hlp, now: now), defaults)
+    }
+
+    @Test func roundTripsACursorPerFolder() {
+        let (store, _) = store()
+        store.saveCursor(pairingId: "sub1", folder: "INBOX", cursor: "c-1")
+        store.saveCursor(pairingId: "sub1", folder: "Archive", cursor: "c-2")
+        #expect(store.cursor(pairingId: "sub1", folder: "INBOX") == "c-1")
+        #expect(store.cursor(pairingId: "sub1", folder: "Archive") == "c-2")
+    }
+
+    /// Re-pairing must not put the previous relay's token on the wire to a
+    /// server that never issued it.
+    @Test func adifferentPairingDoesNotSeeTheOldCursor() {
+        let (store, _) = store()
+        store.saveCursor(pairingId: "sub1", folder: "INBOX", cursor: "c-1")
+        #expect(store.cursor(pairingId: "sub2", folder: "INBOX") == "")
+    }
+
+    /// Android's bug: recording a resync shared the cursor's scope key, so the
+    /// stamp re-authorised a stale cursor for the new pairing.
+    @Test func recordingAResyncDoesNotReauthoriseAStaleCursor() {
+        let (store, _) = store()
+        store.saveCursor(pairingId: "sub1", folder: "INBOX", cursor: "c-1")
+        store.recordFullResync(pairingId: "sub2", folder: "INBOX")
+        #expect(store.cursor(pairingId: "sub2", folder: "INBOX") == "")
+        #expect(store.cursor(pairingId: "sub1", folder: "INBOX") == "c-1")
+    }
+
+    @Test func aFolderNamedLikeAnotherFoldersKeyCannotCollide() {
+        // The folder name is an unvalidated server string. Hashing the key
+        // means no name can be crafted to land on another folder's slot.
+        let (store, _) = store()
+        store.saveCursor(pairingId: "s", folder: "INBOX", cursor: "inbox-cursor")
+        store.saveCursor(pairingId: "s", folder: "scope_INBOX", cursor: "other-cursor")
+        #expect(store.cursor(pairingId: "s", folder: "INBOX") == "inbox-cursor")
+        #expect(store.cursor(pairingId: "s", folder: "scope_INBOX") == "other-cursor")
+    }
+
+    @Test func theFolderTaxonomyNeverReachesTheDefaultsKeys() {
+        let (store, defaults) = store()
+        store.saveCursor(pairingId: "s", folder: "Archive/Legal/Asylum-Case", cursor: "c")
+        let keys = defaults.dictionaryRepresentation().keys.joined(separator: " ")
+        #expect(!keys.contains("Asylum"))
+        #expect(!keys.contains("Legal"))
+    }
+
+    @Test func aFullResyncIsForcedWhenNoneWasEverRecorded() {
+        let (store, _) = store()
+        #expect(store.shouldForceFullResync(pairingId: "s", folder: "INBOX"))
+        store.recordFullResync(pairingId: "s", folder: "INBOX")
+        #expect(!store.shouldForceFullResync(pairingId: "s", folder: "INBOX"))
+    }
+
+    @Test func aFullResyncIsForcedAgainADayLater() {
+        let clock = Box(Date(timeIntervalSince1970: 0))
+        let (store, _) = store(now: { clock.value })
+        store.recordFullResync(pairingId: "s", folder: "INBOX")
+        clock.value = Date(timeIntervalSince1970: 23 * 3_600)
+        #expect(!store.shouldForceFullResync(pairingId: "s", folder: "INBOX"))
+        clock.value = Date(timeIntervalSince1970: 24 * 3_600)
+        #expect(store.shouldForceFullResync(pairingId: "s", folder: "INBOX"))
+    }
+
+    /// Under Hostile Location Protection these keys would spell out which
+    /// folders exist and when each was last read.
+    @Test func hostileLocationProtectionKeepsEverythingOffDisk() {
+        let (store, defaults) = store(hostileLocation: true)
+        store.saveCursor(pairingId: "s", folder: "INBOX", cursor: "c-1")
+        store.recordFullResync(pairingId: "s", folder: "INBOX")
+        #expect(store.cursor(pairingId: "s", folder: "INBOX") == "c-1")
+        let keys = defaults.dictionaryRepresentation().keys.joined(separator: " ")
+        #expect(!keys.contains("mail.cursorValue"))
+        #expect(!keys.contains("mail.resyncStamp"))
+    }
+
+    @Test func aBlankCursorIsNeverStored() {
+        // A relay may answer with no cursor; that must not clear a good one.
+        let (store, _) = store()
+        store.saveCursor(pairingId: "s", folder: "INBOX", cursor: "c-1")
+        store.saveCursor(pairingId: "s", folder: "INBOX", cursor: "")
+        #expect(store.cursor(pairingId: "s", folder: "INBOX") == "c-1")
     }
 }
