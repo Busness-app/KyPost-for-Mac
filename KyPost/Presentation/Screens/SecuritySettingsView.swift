@@ -19,6 +19,7 @@ struct SecuritySettingsContent: View {
 
     private var lockManager: AppLockManager { SingletonGraph.shared.appLockManager }
     @State private var lockToggleMessage: String?
+    @State private var enrollmentShown = false
     @State private var hostileConfirmationShown = false
     @State private var hostileProtectionMessage: String?
     private var gateService: CredentialGateService { SingletonGraph.shared.credentialGateService }
@@ -67,6 +68,29 @@ struct SecuritySettingsContent: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Removes mail, contacts, contact photos, attachments, and saved drafts cached on this device, and closes open compose windows. This is a normal delete, not a forensic wipe — previously cached data may still be recoverable from the disk. Your mail stays on the server. Cards already exported to Apple Contacts are not removed — use \"Remove Exported Contacts\" for those.")
+        }
+
+        Section {
+            Button("Set Up Encrypted Mail on This Device…") { enrollmentShown = true }
+                .sheet(isPresented: $enrollmentShown) {
+                    DeviceEnrollmentView(
+                        viewModel: DeviceEnrollmentViewModel { onState in
+                            SingletonGraph.shared.makeEnrollmentCeremony(onState: onState)
+                        }
+                    )
+                    .environment(\.theme, theme)
+                }
+                .disabled(SingletonGraph.shared.hostileLocationProtectionStore.enabled)
+        } header: {
+            Text("Encrypted mail")
+        } footer: {
+            // States the trade rather than burying it. Enrolling is the one
+            // action here that moves the account's private key onto this
+            // device, and the user is choosing that, not just enabling a
+            // convenience.
+            Text(SingletonGraph.shared.hostileLocationProtectionStore.enabled
+                ? "Unavailable while Hostile Location Protection is on — that's the mode where this device holds nothing. Turning protection on also erases a key already set up here."
+                : "Lets this device read and send mail encrypted to a key only your browser holds, instead of handing off to webmail. Your PGP private key is stored on this device, protected by your lock screen. Turning on Hostile Location Protection erases it.")
         }
 
         Section {

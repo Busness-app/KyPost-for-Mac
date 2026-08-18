@@ -360,7 +360,7 @@ signature can become a trusted state.
 
 ---
 
-## Phase 7 — Device enrollment — **next** (no OpenPGP dependency)
+## Phase 7 — Device enrollment — **done 2026-08-18** (no OpenPGP dependency)
 
 The ceremony that seals the account's private key to this device. **This phase
 needs no third-party code** — CryptoKit and the Secure Enclave cover all of it.
@@ -444,7 +444,7 @@ because one call site forgot it and sent the device credential unpinned.
 
 ---
 
-## Phase 8 — The OpenPGP crypto core
+## Phase 8 — The OpenPGP crypto core — **next; needs your go-ahead on XCFramework sourcing**
 
 **This is where the dependency lands, and where two README claims die.**
 

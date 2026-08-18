@@ -113,6 +113,33 @@ final class SingletonGraph {
     // MARK: - Repositories & Use Cases
 
     lazy var enrollmentVault = EnrollmentVault(keychain: keychain)
+
+    /// Builds a ceremony against the current pairing, or nil when unpaired.
+    /// Rebuilt per attempt so a re-pair between attempts cannot reuse stale
+    /// credentials.
+    func makeEnrollmentCeremony(
+        onState: @escaping @Sendable (EnrollmentState) -> Void
+    ) -> EnrollmentCeremony? {
+        guard let pairing = try? securePairingStore.loadPairing(),
+              let deviceId = pairing.lastDeviceId, !deviceId.isEmpty
+        else { return nil }
+        let auth = RelayAuth(pairing: pairing)
+        let vault = enrollmentVault
+        let hostileStore = hostileLocationProtectionStore
+        return EnrollmentCeremony(
+            transport: EnrollmentClient(
+                httpClient: httpClient,
+                bootstrapClient: pgpSendClient,
+                serverUrl: pairing.srv,
+                auth: auth
+            ),
+            sealer: VaultSealer(vault: vault, deviceId: deviceId),
+            deviceId: deviceId,
+            hostileLocationEnabled: { hostileStore.enabled },
+            hasDeviceCredential: { vault.hasDeviceCredential },
+            onState: onState
+        )
+    }
     lazy var mailCursorStore = MailCursorStore(
         defaults: userDefaults,
         hostileLocation: hostileLocationProtectionStore
