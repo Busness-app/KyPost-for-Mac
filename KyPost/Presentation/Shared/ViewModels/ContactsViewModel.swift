@@ -13,6 +13,11 @@ import Observation
 final class ContactsViewModel {
     private let repository: ContactSyncRepository
 
+    /// Group names for one contact, resolved against the pulled group list.
+    func groupNames(for contact: Contact) async -> [String] {
+        await repository.groupNames(for: contact)
+    }
+
     private(set) var contacts: [Contact] = []
     /// Compose's autocomplete and the address book search this instead of the
     /// store; see ContactSearch. Rebuilt in `load()` — the one place

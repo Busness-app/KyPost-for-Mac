@@ -128,10 +128,6 @@ enum SystemContactMapper {
         return "name+phone:\(name)|\(digits)"
     }
 
-    nonisolated static func matchKey(for contact: Contact) -> String? {
-        matchKey(name: contact.name, email: contact.primaryEmail, phone: contact.primaryPhone)
-    }
-
     /// Every identity an app contact can match under: one key per email
     /// address, else the name+phone fallback.
     ///

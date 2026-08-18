@@ -1121,3 +1121,77 @@ private final class ResponseQueue: @unchecked Sendable {
         return bodies.count > 1 ? bodies.removeFirst() : bodies[0]
     }
 }
+
+// MARK: - Contact groups (Phase 5)
+
+@Suite struct GroupSyncTests {
+    private func dao() throws -> GroupDAO {
+        GroupDAO(modelContainer: try AppDatabase(inMemory: true).container)
+    }
+
+    @Test func decodesTheWrappedListShape() async throws {
+        // GET /api/groups responds {"groups": [...]}, not a bare array.
+        let client = GroupsSyncClient(httpClient: stubClient(json: """
+        {"groups": [
+            {"id": "g1", "name": "Family", "rev": 3},
+            {"id": "g2", "name": "Work"}
+        ]}
+        """))
+        let groups = try await client.pull(
+            serverUrl: "https://relay.test",
+            auth: RelayAuth(deviceId: "d", deviceSecret: "s")
+        )
+        #expect(groups == [
+            ContactGroup(id: "g1", name: "Family", rev: 3),
+            ContactGroup(id: "g2", name: "Work", rev: 0),
+        ])
+    }
+
+    @Test func dropsAGroupWithNoId() async throws {
+        // It cannot be matched to Contact.groupIDs or stored under a unique
+        // key, so inventing one would only create a row nothing can reference.
+        let client = GroupsSyncClient(httpClient: stubClient(json: """
+        {"groups": [{"name": "Nameless"}, {"id": "", "name": "Blank"}, {"id": "ok", "name": "Fine"}]}
+        """))
+        let groups = try await client.pull(
+            serverUrl: "https://relay.test",
+            auth: RelayAuth(deviceId: "d", deviceSecret: "s")
+        )
+        #expect(groups.map(\.id) == ["ok"])
+    }
+
+    /// There is no delta cursor, so every pull is the whole truth: a group
+    /// absent from the response no longer exists.
+    @Test func aFullRefreshRemovesGroupsTheServerNoLongerSends() async throws {
+        let dao = try dao()
+        try await dao.replaceAll([
+            ContactGroup(id: "g1", name: "Family"),
+            ContactGroup(id: "gone", name: "Deleted On The Web"),
+        ])
+        try await dao.replaceAll([ContactGroup(id: "g1", name: "Family")])
+        #expect(try await dao.listAll().map(\.id) == ["g1"])
+    }
+
+    @Test func aFullRefreshUpdatesARenamedGroupInPlace() async throws {
+        let dao = try dao()
+        try await dao.replaceAll([ContactGroup(id: "g1", name: "Old", rev: 1)])
+        try await dao.replaceAll([ContactGroup(id: "g1", name: "New", rev: 2)])
+        let stored = try await dao.listAll()
+        #expect(stored.count == 1)
+        #expect(stored.first?.name == "New")
+        #expect(stored.first?.rev == 2)
+    }
+
+    @Test func resolvesIdsToNamesAndDropsUnknownOnes() async throws {
+        // A bare UUID on a contact card is noise, and an unknown id only means
+        // the groups cache is behind.
+        let dao = try dao()
+        try await dao.replaceAll([
+            ContactGroup(id: "g1", name: "Family"),
+            ContactGroup(id: "g2", name: "Work"),
+        ])
+        #expect(try await dao.names(forIDs: ["g2", "g1"]) == ["Family", "Work"])
+        #expect(try await dao.names(forIDs: ["g1", "not-pulled-yet"]) == ["Family"])
+        #expect(try await dao.names(forIDs: []).isEmpty)
+    }
+}

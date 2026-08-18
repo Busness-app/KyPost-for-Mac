@@ -6,7 +6,8 @@
 //  (single email/phone strings on ContactEntity); V2 adds full contactPayload
 //  parity incl. pgpKey (Client_Contact_Update.md); V3 adds pendingPgpKey to
 //  ContactEntity and the five pgp columns to EmailEntity
-//  (Client_PGP_Update.md); V4 adds bodyMode/hasAttachments to EmailEntity.
+//  (Client_PGP_Update.md); V4 adds bodyMode/hasAttachments to EmailEntity;
+//  V5 adds GroupEntity.
 //  The stages are lightweight: V2 renames email/phone
 //  to legacyEmail/legacyPhone via originalName and adds every new field with a
 //  default. The legacy→array data copy happens in app code
@@ -273,15 +274,31 @@ enum AppSchemaV4: VersionedSchema {
     static let versionIdentifier = Schema.Version(4, 0, 0)
 
     static var models: [any PersistentModel.Type] {
-        // All live top-level models; EmailEntity gained bodyMode and
-        // hasAttachments.
+        // EmailEntity gained bodyMode and hasAttachments. GroupEntity does not
+        // exist yet at this version — adding a model is as much a schema change
+        // as adding a column.
         [EmailEntity.self, ContactEntity.self, PushNotificationEntity.self, KeywordEntity.self]
+    }
+}
+
+enum AppSchemaV5: VersionedSchema {
+    static let versionIdentifier = Schema.Version(5, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        // Adds GroupEntity (GET /api/groups).
+        [
+            EmailEntity.self, ContactEntity.self, PushNotificationEntity.self,
+            KeywordEntity.self, GroupEntity.self,
+        ]
     }
 }
 
 enum AppMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [AppSchemaV1.self, AppSchemaV2.self, AppSchemaV3.self, AppSchemaV4.self]
+        [
+            AppSchemaV1.self, AppSchemaV2.self, AppSchemaV3.self,
+            AppSchemaV4.self, AppSchemaV5.self,
+        ]
     }
 
     static var stages: [MigrationStage] {
@@ -289,6 +306,7 @@ enum AppMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: AppSchemaV1.self, toVersion: AppSchemaV2.self),
             .lightweight(fromVersion: AppSchemaV2.self, toVersion: AppSchemaV3.self),
             .lightweight(fromVersion: AppSchemaV3.self, toVersion: AppSchemaV4.self),
+            .lightweight(fromVersion: AppSchemaV4.self, toVersion: AppSchemaV5.self),
         ]
     }
 }

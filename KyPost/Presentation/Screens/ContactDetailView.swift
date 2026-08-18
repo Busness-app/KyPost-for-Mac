@@ -27,6 +27,10 @@ struct ContactDetailView: View {
 
     @State private var draft: Contact
     @State private var isEditing: Bool
+    /// Empty until the group list is read, and empty for a contact in no
+    /// groups — the card is hidden either way, so there is no flash of an
+    /// empty section while it loads.
+    @State private var groupNames: [String] = []
 
     init(contact: Contact?, viewModel: ContactsViewModel) {
         self.contact = contact
@@ -50,6 +54,9 @@ struct ContactDetailView: View {
         .background(theme.bg)
         .navigationTitle(navigationTitle)
         .toolbar { toolbarContent }
+        .task(id: draft.groupIDs) {
+            groupNames = await viewModel.groupNames(for: draft)
+        }
     }
 
     private var navigationTitle: String {
@@ -102,6 +109,9 @@ struct ContactDetailView: View {
                 }
                 if !draft.birthday.isEmpty || !draft.events.isEmpty || !draft.relations.isEmpty {
                     personalCard
+                }
+                if !groupNames.isEmpty {
+                    groupsCard
                 }
                 if !draft.notes.isEmpty {
                     notesCard
@@ -218,6 +228,17 @@ struct ContactDetailView: View {
                     label: relation.label ?? "Related",
                     value: relation.name
                 )
+            }
+        }
+    }
+
+    /// Group names, resolved from `Contact.groupIDs` against the pulled group
+    /// list. Loaded in `.task` rather than computed: the lookup crosses an
+    /// actor, and SwiftUI re-evaluates `body` far too often for that.
+    private var groupsCard: some View {
+        card {
+            ForEach(groupNames, id: \.self) { name in
+                detailRow(icon: "person.3", label: "Group", value: name)
             }
         }
     }

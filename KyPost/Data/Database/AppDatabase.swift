@@ -14,6 +14,7 @@ final class AppDatabase: Sendable {
         ContactEntity.self,
         PushNotificationEntity.self,
         KeywordEntity.self,
+        GroupEntity.self,
     ])
 
     let container: ModelContainer

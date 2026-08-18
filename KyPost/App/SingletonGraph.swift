@@ -149,8 +149,12 @@ final class SingletonGraph {
         securePairingStore: securePairingStore,
         systemContactsExporter: systemContactsExporter,
         photoCache: contactPhotoCache,
-        verifiedKeyStore: verifiedPgpKeyStore
+        verifiedKeyStore: verifiedPgpKeyStore,
+        groupsClient: groupsSyncClient,
+        groupDAO: groupDAO
     )
+    lazy var groupsSyncClient = GroupsSyncClient(httpClient: httpClient)
+    lazy var groupDAO = GroupDAO(modelContainer: database.container)
     lazy var pushRepository = PushRepository(
         dao: pushNotificationDAO,
         cursorStore: notificationCursorStore,

@@ -9,6 +9,7 @@
 //
 
 import Foundation
+import os
 
 enum ContactSyncError: Error, Equatable {
     /// Contact sync uses relay auth; requires a stored pairing.
@@ -35,6 +36,10 @@ final class ContactSyncRepository {
     /// Keys the user verified out of band, remembered across a `tooOld` wipe
     /// so the re-pull can't pass off a substituted key as a first sighting.
     private let verifiedKeyStore: VerifiedPgpKeyStore?
+    /// Groups are a separate pull with no cursor; nil in tests that don't
+    /// exercise them.
+    private let groupsClient: GroupsSyncClient?
+    private let groupDAO: GroupDAO?
 
     init(
         client: ContactSyncClient,
@@ -44,7 +49,9 @@ final class ContactSyncRepository {
         securePairingStore: SecurePairingStore,
         systemContactsExporter: SystemContactsExporter? = nil,
         photoCache: ContactPhotoCache? = nil,
-        verifiedKeyStore: VerifiedPgpKeyStore? = nil
+        verifiedKeyStore: VerifiedPgpKeyStore? = nil,
+        groupsClient: GroupsSyncClient? = nil,
+        groupDAO: GroupDAO? = nil
     ) {
         self.client = client
         self.contactDAO = contactDAO
@@ -54,6 +61,8 @@ final class ContactSyncRepository {
         self.systemContactsExporter = systemContactsExporter
         self.photoCache = photoCache
         self.verifiedKeyStore = verifiedKeyStore
+        self.groupsClient = groupsClient
+        self.groupDAO = groupDAO
     }
 
     // MARK: - Local CRUD
@@ -216,6 +225,12 @@ final class ContactSyncRepository {
         pendingDeletesStore.clear()
         cursorStore.advance(to: response.cursor)
 
+        // Groups before the export so a card's group membership is resolvable
+        // in the same pass. Best-effort: a groups failure must not fail the
+        // contact sync that already succeeded, since contacts are usable
+        // without their group names and the next pass retries.
+        await syncGroups(serverUrl: pairing.srv, auth: auth)
+
         // Photos before the system-contacts export so freshly-arrived bytes
         // make it onto the cards in the same pass.
         await fetchMissingPhotos(serverUrl: pairing.srv, auth: auth)
@@ -247,7 +262,32 @@ final class ContactSyncRepository {
         )
     }
 
+    /// The groups a contact belongs to, resolved to names. Unknown ids are
+    /// dropped rather than shown raw — a bare UUID on a contact card is noise,
+    /// and it only means the groups cache is behind.
+    func groupNames(for contact: Contact) async -> [String] {
+        guard let groupDAO, !contact.groupIDs.isEmpty else { return [] }
+        return (try? await groupDAO.names(forIDs: contact.groupIDs)) ?? []
+    }
+
+    func allGroups() async -> [ContactGroup] {
+        guard let groupDAO else { return [] }
+        return (try? await groupDAO.listAll()) ?? []
+    }
+
     // MARK: - Private
+
+    /// Full refresh: `GET /api/groups` carries no cursor, so anything absent
+    /// from the response is a group that no longer exists.
+    private func syncGroups(serverUrl: String, auth: RelayAuth) async {
+        guard let groupsClient, let groupDAO else { return }
+        do {
+            let groups = try await groupsClient.pull(serverUrl: serverUrl, auth: auth)
+            try await groupDAO.replaceAll(groups)
+        } catch {
+            Log.sync.error("Group sync failed: \(error.localizedDescription)")
+        }
+    }
 
     /// Best-effort byte fetch for photoRefs the cache doesn't have yet. A 401
     /// means the backend hasn't shipped pairing auth for the photo endpoint
