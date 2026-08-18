@@ -127,7 +127,7 @@ Cheap, unblocks the rest, no runtime change.
 Small, self-contained, no new dependencies. Do this before Phase 2; delta sync
 is much harder to reason about on top of a body whose mode is guessed.
 
-### 1a. `bodyMode` and `hasAttachments`
+### 1a. `bodyMode` and `hasAttachments` — **done 2026-08-18**
 
 `RelayEmailDTO` (`KyPost/Data/Mail/RelayMailSource.swift:44`) decodes neither.
 Android's contract:
@@ -142,13 +142,13 @@ known-plain body natively rather than through WebKit — Android does this so
 reading never requires horizontal scrolling. `hasAttachments` drives the row
 marker. Schema migration required (`AppSchemaVersions.swift`).
 
-### 1b. Folder CRUD
+### 1b. Folder CRUD — **next**
 
 Android's `MailSource` has `createFolder` / `renameFolder` / `deleteFolder`,
 and `FolderInfo` carries `deletable`. Ours lists folders and nothing else. Add
 the three calls, the `deletable` field, and the sidebar/folder-menu affordances.
 
-### 1c. The missing `MailOutcome` cases
+### 1c. The missing `MailOutcome` cases — **done 2026-08-18**
 
 Ours has 8 cases; Android's has 10, and the three it has that we lack are each
 a different sentence to the user:
