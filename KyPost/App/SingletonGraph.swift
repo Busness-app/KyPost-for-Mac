@@ -129,14 +129,23 @@ final class SingletonGraph {
         securePairingStore: securePairingStore
     )
     let contactPhotoCache: ContactPhotoCache
-    lazy var systemContactsExporter = SystemContactsExporter(
-        store: LiveSystemContactStore(),
-        linkStore: systemContactsLinkStore,
-        baselineStore: systemContactsBaselineStore,
-        settings: contactsSettingsStore,
-        contactDAO: contactDAO,
-        photoCache: contactPhotoCache
-    )
+    lazy var systemContactGroupLinkStore = SystemContactGroupLinkStore(defaults: userDefaults)
+    lazy var systemContactsExporter: SystemContactsExporter = {
+        let store = LiveSystemContactStore()
+        return SystemContactsExporter(
+            store: store,
+            linkStore: systemContactsLinkStore,
+            baselineStore: systemContactsBaselineStore,
+            settings: contactsSettingsStore,
+            contactDAO: contactDAO,
+            photoCache: contactPhotoCache,
+            groupLinker: SystemContactGroupLinker(
+                store: store,
+                linkStore: systemContactGroupLinkStore
+            ),
+            groupDAO: groupDAO
+        )
+    }()
     lazy var systemContactsChangeMonitor = SystemContactsChangeMonitor(
         exporter: systemContactsExporter,
         repository: contactSyncRepository

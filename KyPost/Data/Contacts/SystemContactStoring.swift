@@ -21,6 +21,18 @@ protocol SystemContactStoring {
     func update(_ contact: CNMutableContact) async throws
     /// No-op when the card is already gone.
     func delete(identifier: String) async throws
+
+    // MARK: - Groups
+
+    /// Every group visible to the app.
+    func listGroups() async throws -> [CNGroup]
+    /// Caller reads `group.identifier` afterwards to record the link.
+    func addGroup(_ group: CNMutableGroup) async throws
+    func renameGroup(identifier: String, to name: String) async throws
+    /// Membership of one group, as card identifiers.
+    func memberIdentifiers(ofGroup identifier: String) async throws -> [String]
+    func addMember(contactIdentifier: String, toGroup groupIdentifier: String) async throws
+    func removeMember(contactIdentifier: String, fromGroup groupIdentifier: String) async throws
 }
 
 final class LiveSystemContactStore: SystemContactStoring {
@@ -113,6 +125,80 @@ final class LiveSystemContactStore: SystemContactStoring {
         try await onQueue {
             let request = CNSaveRequest()
             request.delete(mutable)
+            try store.execute(request)
+        }
+    }
+    // MARK: - Groups
+
+    func listGroups() async throws -> [CNGroup] {
+        nonisolated(unsafe) let store = self.store
+        return try await onQueue {
+            try store.groups(matching: nil)
+        }
+    }
+
+    func addGroup(_ group: CNMutableGroup) async throws {
+        nonisolated(unsafe) let store = self.store
+        nonisolated(unsafe) let group = group
+        try await onQueue {
+            let request = CNSaveRequest()
+            request.add(group, toContainerWithIdentifier: nil)
+            try store.execute(request)
+        }
+    }
+
+    func renameGroup(identifier: String, to name: String) async throws {
+        nonisolated(unsafe) let store = self.store
+        try await onQueue {
+            let predicate = CNGroup.predicateForGroups(withIdentifiers: [identifier])
+            guard let existing = try store.groups(matching: predicate).first,
+                  let mutable = existing.mutableCopy() as? CNMutableGroup else { return }
+            mutable.name = name
+            let request = CNSaveRequest()
+            request.update(mutable)
+            try store.execute(request)
+        }
+    }
+
+    func memberIdentifiers(ofGroup identifier: String) async throws -> [String] {
+        nonisolated(unsafe) let store = self.store
+        return try await onQueue {
+            let predicate = CNContact.predicateForContactsInGroup(withIdentifier: identifier)
+            // Only the identifier is needed, but keysToFetch cannot be empty.
+            return try store.unifiedContacts(
+                matching: predicate,
+                keysToFetch: [CNContactIdentifierKey as CNKeyDescriptor]
+            ).map(\.identifier)
+        }
+    }
+
+    func addMember(contactIdentifier: String, toGroup groupIdentifier: String) async throws {
+        try await mutateMembership(contactIdentifier, groupIdentifier, add: true)
+    }
+
+    func removeMember(contactIdentifier: String, fromGroup groupIdentifier: String) async throws {
+        try await mutateMembership(contactIdentifier, groupIdentifier, add: false)
+    }
+
+    private func mutateMembership(
+        _ contactIdentifier: String,
+        _ groupIdentifier: String,
+        add: Bool
+    ) async throws {
+        nonisolated(unsafe) let store = self.store
+        try await onQueue {
+            let groupPredicate = CNGroup.predicateForGroups(withIdentifiers: [groupIdentifier])
+            guard let group = try store.groups(matching: groupPredicate).first else { return }
+            let contact = try store.unifiedContact(
+                withIdentifier: contactIdentifier,
+                keysToFetch: [CNContactIdentifierKey as CNKeyDescriptor]
+            )
+            let request = CNSaveRequest()
+            if add {
+                request.addMember(contact, to: group)
+            } else {
+                request.removeMember(contact, from: group)
+            }
             try store.execute(request)
         }
     }

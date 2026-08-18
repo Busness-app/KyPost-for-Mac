@@ -192,6 +192,25 @@ Default section order:
   candidates the challenge-id term cancels out of every comparison, leaving a
   plain numeric sort that put the answer in the same slot on every challenge.
 
+### Contact groups
+
+- `GET /api/groups` is **pull-only and cursorless**. Every pull is the whole
+  truth, so a group absent from the response is deleted locally. This device
+  never creates a backend group (Client_Contact_Update.md Part 2 point 3), so
+  there is no outbox and nothing to reconcile.
+- `CNGroup` materialization is **one direction: backend → device**. A group the
+  user made in Contacts is never turned into a backend group — there is no
+  endpoint for it.
+- Same adoption discipline as cards: an existing link wins, then a group the
+  user already has *by name* is adopted rather than duplicated, then a new one
+  is created. **An adopted group is never renamed and never deleted** — we did
+  not author it.
+- Membership removals are scoped to groups this app links. A card the user also
+  put in their own group stays in it.
+- An unknown group id resolves to no name and is skipped, never rendered as a
+  raw UUID and never given an invented name — it only means the cache is
+  behind.
+
 ### Contact identity (`Data/Contacts/`)
 
 - `SystemContactMapper.matchKeys(for:)` has two overloads — one for `Contact`,

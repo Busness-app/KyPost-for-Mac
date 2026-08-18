@@ -129,7 +129,9 @@ final class SystemContactsExporter {
         baselineStore: SystemContactsBaselineStore,
         settings: ContactsSettingsStore,
         contactDAO: ContactDAO,
-        photoCache: ContactPhotoCache? = nil
+        photoCache: ContactPhotoCache? = nil,
+        groupLinker: SystemContactGroupLinker? = nil,
+        groupDAO: GroupDAO? = nil
     ) {
         self.store = store
         self.linkStore = linkStore
@@ -137,6 +139,28 @@ final class SystemContactsExporter {
         self.settings = settings
         self.contactDAO = contactDAO
         self.photoCache = photoCache
+        self.groupLinker = groupLinker
+        self.groupDAO = groupDAO
+    }
+
+    /// Mirrors backend groups onto CNGroups after a card is written. Nil in
+    /// tests that don't exercise groups; the card export is unaffected.
+    private let groupLinker: SystemContactGroupLinker?
+    private let groupDAO: GroupDAO?
+
+    /// Group membership for one card, best-effort.
+    ///
+    /// Runs after the card exists — a member cannot be added to a group before
+    /// the contact it refers to has an identifier.
+    private func syncGroups(for contact: Contact, cardIdentifier: String) async {
+        guard let groupLinker, let groupDAO else { return }
+        guard let groups = try? await groupDAO.listAll(), !groups.isEmpty else { return }
+        let names = Dictionary(groups.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+        await groupLinker.syncMembership(
+            cardIdentifier: cardIdentifier,
+            groupIDs: contact.groupIDs,
+            groupNames: names
+        )
     }
 
     // MARK: - Authorization
@@ -513,6 +537,7 @@ final class SystemContactsExporter {
                 cnIdentifier: cn.identifier,
                 exportedUpdatedAt: contact.updatedAt
             ))
+            await syncGroups(for: contact, cardIdentifier: cn.identifier)
             summary.created += 1
         } catch {
             // No link written; retried as a create on the next reconcile.
@@ -549,6 +574,7 @@ final class SystemContactsExporter {
                     imported: imported,
                     userOwned: userOwned
                 ))
+                await syncGroups(for: contact, cardIdentifier: cnIdentifier)
                 summary.updated += 1
             } else {
                 // Card deleted in Contacts.app: recreate and repair the link.
