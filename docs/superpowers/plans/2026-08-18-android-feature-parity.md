@@ -447,7 +447,7 @@ because one call site forgot it and sent the device credential unpinned.
 
 ---
 
-## Phase 8 — The OpenPGP crypto core — **in progress**
+## Phase 8 — The OpenPGP crypto core — **done 2026-08-18**
 
 **Sourcing is decided and built: GitHub Actions produces the XCFramework.**
 GopenPGP publishes no release assets — it ships as a Go library, and Proton
@@ -465,10 +465,16 @@ tag would be publishing into this app. Merging the PR edits
 `Dependencies/gopenpgp.env`, which *is* the build trigger — so the rebuild is
 automatic once a person has said yes.
 
-Remaining: run the build once, then pin its URL and checksum as a
-`binaryTarget` and implement `PgpDecrypting`/`PgpEncrypting` against it. The
-first run may need iteration — gomobile's bindable surface for v3 is asserted
-from the package layout, not verified.
+Done: the framework is built, pinned by checksum as a `binaryTarget`, and
+`GopenPGPCrypto` implements both protocols with 15 tests against gpg-produced
+fixtures.
+
+Two things the plan had wrong. The bindable surface is *fuller* than assumed —
+`maxDecompressedMessageSize` and the mandatory-by-default integrity check are
+native, so two invariants Android hand-rolled are configuration here. But
+`keyIDs(inArmoredPublicKey:)` could not be implemented at all: key ids and
+signature issuers live at different levels in this API, so attribution moved to
+entity fingerprints. See AGENTS.md; that seam changed, and its tests with it.
 
 **This is where the dependency lands, and where two README claims die.**
 
