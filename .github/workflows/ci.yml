@@ -61,9 +61,38 @@ jobs:
         #
         # Unit tests only: the UI target drives a real app instance, is flaky
         # headless, and is not what protects this code.
+        #
+        # The output is teed and, on failure, replayed as `::error::`
+        # annotations. This is not decoration: job logs are readable only with
+        # admin rights on the repository, so to anyone else a red run says
+        # nothing but "exit 65". Annotations are readable by anyone who can see
+        # the run, so the reason for a failure travels with it.
+        shell: bash
         run: |
-          set -euo pipefail
+          # `-e` is on by default in this shell, so the failing xcodebuild has
+          # to be caught by `||` or the step dies before it can report anything.
+          set -uo pipefail
+          STATUS=0
           xcodebuild test \
             -scheme KyPost \
             -destination 'platform=macOS' \
-            -only-testing:"KyPost Tests"
+            -only-testing:"KyPost Tests" \
+            2>&1 | tee /tmp/xcodebuild.log || STATUS=$?
+          if [ "$STATUS" -ne 0 ]; then
+            annotate() {
+              # GitHub reads a literal newline as the end of the command, so
+              # multi-line context has to be encoded.
+              # awk, not sed: BSD sed on the macOS runner rejects the usual
+              # newline-slurping one-liner.
+              printf '::error::%s\n' \
+                "$(printf '%s' "$1" | awk 'BEGIN{ORS=""} NR>1{print "%0A"} {print}')"
+            }
+            # Compile/link/signing errors first: these explain everything after.
+            grep -E '(^|[[:space:]])error:|^error:' /tmp/xcodebuild.log \
+              | sort -u | head -10 | while IFS= read -r line; do annotate "$line"; done
+            # Then failing tests, which are the other reason to be here.
+            grep -E '✘|Testing failed:|^[[:space:]]+[A-Za-z_]+Tests\.' /tmp/xcodebuild.log \
+              | sort -u | head -10 | while IFS= read -r line; do annotate "$line"; done
+            annotate "xcodebuild exited $STATUS. Last 40 lines:%0A$(tail -40 /tmp/xcodebuild.log)"
+          fi
+          exit "$STATUS"
