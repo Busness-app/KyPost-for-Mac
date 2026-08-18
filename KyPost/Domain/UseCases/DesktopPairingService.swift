@@ -42,7 +42,7 @@ final class DesktopPairingService {
     /// Guide checklist: validate the code format before sending. The guide
     /// says "32 hex chars" but its own sample codes are alphanumeric, so only
     /// length + alphanumeric are enforced.
-    static func isValidCode(_ code: String) -> Bool {
+    nonisolated static func isValidCode(_ code: String) -> Bool {
         code.count == Config.desktopPairingCodeLength
             && code.allSatisfy { $0.isLetter || $0.isNumber }
     }

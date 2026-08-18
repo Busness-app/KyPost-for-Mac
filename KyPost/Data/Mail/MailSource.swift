@@ -135,6 +135,7 @@ enum MailOutcome: Equatable, Sendable {
         case .conflict: "The server rejected this request."
         case .rateLimited: "Too many attempts — wait a moment and try again."
         case .serviceUnavailable: "The server is temporarily unavailable."
+        case .responseTooLarge: "The server sent more data than this app will accept."
         case .certificateMismatch: error.errorDescription
             ?? "The server's security certificate changed — re-pair the device."
         case .server(let statusCode): "The server returned an error (status \(statusCode))."
