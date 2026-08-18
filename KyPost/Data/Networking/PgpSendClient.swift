@@ -26,6 +26,18 @@ nonisolated struct PgpBootstrapResponse: Decodable, Equatable, Sendable {
     /// "server", "client", or "" — read through `pgpKeyCustody`, which treats
     /// anything unrecognised as "not server".
     var protection: String?
+    /// The account's armored public key.
+    ///
+    /// Decoded for device enrollment, which needs the account's fingerprint to
+    /// bind the envelope's AAD. The fingerprint is computed from **these
+    /// bytes**, never read from the response's own `fingerprint` field — that
+    /// is a claim beside the key with no cryptographic tie to it, and the same
+    /// rule the QR exchange follows.
+    ///
+    /// The rest of the browser-facing fields (`wrappedPrivateKey`,
+    /// `unlockRequired`, `signerPublicKeys`, `payloadEndpoint`, …) stay
+    /// ignored.
+    var publicKey: String?
 }
 
 nonisolated struct PgpRecipientCheckRequest: Encodable, Equatable, Sendable {

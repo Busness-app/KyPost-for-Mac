@@ -133,19 +133,51 @@ actor ContactDAO {
     /// path creates. Returns how many rows were removed.
     func repairImportedDuplicates() throws -> Int {
         let entities = try modelContext.fetch(FetchDescriptor<ContactEntity>())
-        var groups: [String: [ContactEntity]] = [:]
+
+        // Connected components over *every* shared identity, not one key per
+        // row. Grouping by primary email alone could not see the duplicates
+        // the match-key asymmetry produced: the imported row's primary email
+        // is precisely the address the original row did not lead with, so the
+        // pair landed in two different groups and survived the cleanup.
+        var components: [Int: [ContactEntity]] = [:]
+        var componentOfKey: [String: Int] = [:]
+        var nextComponent = 0
+
         for entity in entities {
             let contact = entity.toDomain
-            let name = contact.name
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .lowercased()
-            guard let key = SystemContactMapper.matchKey(for: contact)
-                ?? (name.isEmpty ? nil : "name:\(name)") else { continue }
-            groups[key, default: []].append(entity)
+            var keys = SystemContactMapper.matchKeys(for: contact)
+            if keys.isEmpty {
+                let name = contact.name
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                guard !name.isEmpty else { continue }
+                keys = ["name:\(name)"]
+            }
+
+            // Merge every component these keys already reach into the lowest.
+            let existing = Set(keys.compactMap { componentOfKey[$0] }).sorted()
+            let target: Int
+            if let first = existing.first {
+                target = first
+                for other in existing.dropFirst() {
+                    components[target, default: []] += components[other] ?? []
+                    // Value semantics: this iterates a copy, so rewriting
+                    // entries while walking it is safe.
+                    for (key, owner) in componentOfKey where owner == other {
+                        componentOfKey[key] = target
+                    }
+                    components[other] = nil
+                }
+            } else {
+                target = nextComponent
+                nextComponent += 1
+            }
+            components[target, default: []].append(entity)
+            for key in keys { componentOfKey[key] = target }
         }
 
         var removed = 0
-        for group in groups.values where group.count > 1 {
+        for group in components.values where group.count > 1 {
             let ordered = group.sorted { lhs, rhs in
                 let lhsSynced = !(lhs.uid ?? "").isEmpty
                 let rhsSynced = !(rhs.uid ?? "").isEmpty
@@ -164,9 +196,21 @@ actor ContactDAO {
         return removed
     }
 
-    func clearNeedsSync(localIds: [UUID]) throws {
-        for localId in localIds {
-            try fetchEntity(localId: localId)?.needsSync = false
+    /// Confirms the contacts a push actually sent.
+    ///
+    /// Takes the pushed *snapshots*, not their ids, and clears the flag only
+    /// where the row has not been edited since. A push reads its payload
+    /// before the network call, so an edit landing while it is in flight is
+    /// not in what was sent — clearing by id alone marked that edit synced and
+    /// it was never pushed at all. Android avoids this structurally by
+    /// queueing a payload snapshot per edit; the same guarantee falls out of
+    /// comparing `updatedAt`, which `upsert` already relies on for the
+    /// mirror-image case (a stale server write landing after a local edit).
+    func clearNeedsSync(pushed: [Contact]) throws {
+        for contact in pushed {
+            guard let entity = try fetchEntity(localId: contact.localId) else { continue }
+            guard entity.updatedAt <= contact.updatedAt else { continue }
+            entity.needsSync = false
         }
         try modelContext.save()
     }

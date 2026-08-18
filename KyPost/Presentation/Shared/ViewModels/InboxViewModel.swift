@@ -67,6 +67,53 @@ final class InboxViewModel {
         }
     }
 
+    // MARK: - Folder management
+
+    /// Creates a child of `parent` ("" for top level) and refreshes the tree.
+    func createFolder(parent: String, name: String) async {
+        await folderMutation { await self.mailRepository.createFolder(parent: parent, name: name) }
+    }
+
+    func renameFolder(_ folder: String, to name: String) async {
+        await folderMutation { await self.mailRepository.renameFolder(folder, to: name) }
+    }
+
+    /// Deletes a folder. The caller must only offer this for a folder the
+    /// listing marked `deletable`; the relay is the authority either way and
+    /// refuses the rest.
+    func deleteFolder(_ folder: String) async {
+        let wasSelected = self.folder == folder
+        await folderMutation { await self.mailRepository.deleteFolder(folder) }
+        // Leaving the selection on a folder that no longer exists shows an
+        // empty list with no explanation and no way back.
+        if wasSelected, errorMessage == nil {
+            await selectFolder(StandardFolder.inbox)
+        }
+    }
+
+    private func folderMutation(_ body: () async -> MailOutcome) async {
+        switch await body() {
+        case .success, .sentWithWarning:
+            errorMessage = nil
+            await loadSubfolders()
+        case .rateLimited(let retryAfter):
+            errorMessage = retryAfter.map {
+                "Too many attempts — try again in \(NetworkError.formatRetryAfter($0))."
+            } ?? "Too many attempts — try again later."
+        case .notConfigured:
+            errorMessage = "Set up your mail account in the web app first."
+        case .unauthorized:
+            errorMessage = "Not authorized — re-pair the device or check credentials."
+        case .notPaired:
+            errorMessage = "Pair this device first."
+        case .invalid(let message), .failure(let message), .upstreamFailure(let message):
+            errorMessage = message
+        case .clientSideNeeded, .keylessRecipients:
+            // Neither is reachable on a folder call; both are send refusals.
+            errorMessage = "The server refused that folder change."
+        }
+    }
+
     /// Moves emails to another folder (drag & drop), then re-syncs the list.
     func move(serverIds: [String], to targetFolder: String) async {
         guard !serverIds.isEmpty, targetFolder != folder else { return }
@@ -152,12 +199,15 @@ final class InboxViewModel {
         await refresh()
     }
 
-    func refresh() async {
+    func refresh(forceFullResync: Bool = false) async {
         guard !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
         do {
-            apply(emails: try await mailRepository.refreshFolder(folder))
+            apply(emails: try await mailRepository.refreshFolder(
+                folder,
+                forceFullResync: forceFullResync
+            ))
             errorMessage = nil
         } catch MailSourceError.notPaired {
             errorMessage = "Pair this device (Settings → Connection) to load mail."
@@ -192,6 +242,16 @@ final class InboxViewModel {
     /// Resolves a notification tap's messageId to a cached email.
     func email(withServerId serverId: String) -> Email? {
         emails.first { $0.serverId == serverId }
+    }
+
+    /// Resyncs the whole window before a push tap opens its target.
+    ///
+    /// The cached row is fine for the list, but opening it before the resync
+    /// can render the detail screen from stale data — an out-of-date
+    /// `bodyMode`, or PGP state that no longer matches what the server holds.
+    /// A delta fetch is not enough: the row may predate the cursor entirely.
+    func refreshForPushTap() async {
+        await refresh(forceFullResync: true)
     }
 
     /// Attachment metadata for an email, fetched lazily when it's opened

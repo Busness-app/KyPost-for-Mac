@@ -13,6 +13,18 @@ struct ContactsListView: View {
     @Bindable var viewModel: ContactsViewModel
     @State private var showNewContact = false
     @State private var showScanKey = false
+    @State private var syncIntroShown = false
+
+    /// The self-contact first, everyone else in the order the view model
+    /// supplies. There is at most one, so this is a partition rather than a
+    /// re-sort — the rest of the list keeps whatever order it already had.
+    private var orderedContacts: [Contact] {
+        let contacts = viewModel.contacts
+        guard let selfIndex = contacts.firstIndex(where: \.isSelf) else { return contacts }
+        var ordered = contacts
+        ordered.insert(ordered.remove(at: selfIndex), at: 0)
+        return ordered
+    }
 
     var body: some View {
         Group {
@@ -24,14 +36,33 @@ struct ContactsListView: View {
                     )
                 }
             } else {
-                List(viewModel.contacts) { contact in
+                List(orderedContacts) { contact in
                     NavigationLink(value: contact) {
                         HStack(spacing: 12) {
                             AvatarView(name: contact.name)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(contact.name)
-                                    .font(AppFont.ui(15, weight: .medium))
-                                    .foregroundStyle(theme.inkStrong)
+                                HStack(spacing: 6) {
+                                    Text(contact.name)
+                                        .font(AppFont.ui(15, weight: .medium))
+                                        .foregroundStyle(theme.inkStrong)
+                                    if contactHasLinkedPgpKey(
+                                        contact: contact,
+                                        accountIdentityPresent: viewModel.accountIdentityPresent
+                                    ) == true {
+                                        Image(systemName: "key.fill")
+                                            .font(AppFont.ui(10))
+                                            .foregroundStyle(theme.accent)
+                                            .accessibilityLabel("Has a PGP key")
+                                    }
+                                    if contact.isSelf {
+                                        Text("You")
+                                            .font(AppFont.ui(10, weight: .medium))
+                                            .foregroundStyle(theme.bg)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 1)
+                                            .background(Capsule().fill(theme.accent))
+                                    }
+                                }
                                 Text(contact.primaryEmail)
                                     .font(AppFont.mono(12))
                                     .foregroundStyle(theme.ink.opacity(0.8))
@@ -69,7 +100,11 @@ struct ContactsListView: View {
             ToolbarItem {
                 Menu {
                     Button {
-                        Task { await viewModel.sync() }
+                        if viewModel.shouldExplainSync {
+                            syncIntroShown = true
+                        } else {
+                            Task { await viewModel.sync() }
+                        }
                     } label: {
                         Label("Sync", systemImage: "arrow.triangle.2.circlepath")
                     }
@@ -109,7 +144,26 @@ struct ContactsListView: View {
             // in memory is stale until it reloads.
             if !isPresented { Task { await viewModel.load() } }
         }
-        .task { await viewModel.load() }
+        .confirmationDialog(
+            "Sync contacts with your server?",
+            isPresented: $syncIntroShown,
+            titleVisibility: .visible
+        ) {
+            Button("Sync Contacts") {
+                viewModel.markSyncExplained()
+                Task { await viewModel.sync() }
+            }
+            Button("Not Now", role: .cancel) {}
+        } message: {
+            // Shown once, before the first sync rather than after it: the
+            // point is to say what is about to leave the device while that is
+            // still a choice.
+            Text("Contacts sync both ways with your KyPost server. Contacts you add here are uploaded, and contacts from the server appear here. Your server is the only place they go.")
+        }
+        .task {
+            await viewModel.load()
+            await viewModel.loadAccountIdentity(from: SingletonGraph.shared.pgpSendService)
+        }
         .toast(message: viewModel.statusMessage)
     }
 }

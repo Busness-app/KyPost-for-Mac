@@ -71,7 +71,7 @@ final class MfaResponseClient: Sendable {
             return .success
         } catch NetworkError.unauthorized, NetworkError.conflict(_) {
             return .rejected
-        } catch NetworkError.server(statusCode: 400) {
+        } catch NetworkError.badRequest {
             // The number was wrong, but the credentials were fine and the
             // challenge is still live — a re-prompt, not a re-pair. When no
             // number was sent at all the server rejects for a different reason,

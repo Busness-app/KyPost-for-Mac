@@ -331,7 +331,7 @@ private func makeCompose(
         cursorStore: ContactCursorStore(defaults: defaults),
         pendingDeletesStore: ContactPendingDeletesStore(defaults: defaults),
         securePairingStore: pairingStore
-    ))
+    ), settingsStore: ContactsSettingsStore(defaults: defaults))
     let mailRepository = MailRepository(
         securePairingStore: pairingStore,
         emailDAO: EmailDAO(modelContainer: db.container),

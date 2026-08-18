@@ -247,9 +247,13 @@ private struct ContactKeyPicker: View {
     private var matches: [Contact] {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return viewModel.contacts }
-        return viewModel.contacts.filter {
-            $0.name.localizedCaseInsensitiveContains(query)
-                || $0.primaryEmail.localizedCaseInsensitiveContains(query)
+        return viewModel.contacts.filter { contact in
+            // Every address, not just the first: attaching a scanned key is
+            // exactly when someone types the work address of a contact whose
+            // personal one happens to be stored first, and finding nobody
+            // invites them to create a duplicate contact for the key.
+            contact.name.localizedCaseInsensitiveContains(query)
+                || contact.emails.contains { $0.value.localizedCaseInsensitiveContains(query) }
         }
     }
 

@@ -14,10 +14,18 @@ enum NetworkError: Error, Equatable, LocalizedError {
     case invalidURL
     /// 401/403 — pairing credentials rejected; prompt re-scan (spec §3).
     case unauthorized
+    /// 400 — the request was malformed, or the account has no mail configured
+    /// yet. The relay answers plain text, and the body is the only way to tell
+    /// those apart, so it is retained here exactly as 409's is. Deciding what
+    /// the text *means* is the relay layer's job, not this one's.
+    case badRequest(body: String)
     /// 409 — backend rejected the request state (e.g. expired MFA challenge).
     case conflict(body: String)
-    /// 429 — rate limited (e.g. too many desktop pairing attempts); wait, then retry.
-    case rateLimited
+    /// 429 — rate limited (e.g. too many desktop pairing attempts, or the
+    /// relay's per-device lockout after repeated bad credentials). `retryAfter`
+    /// is the `Retry-After` header in seconds, or nil when it was absent or
+    /// unparseable — callers must still back off rather than retrying at once.
+    case rateLimited(retryAfter: Int?)
     /// The relay presented a different key than the one pinned at pairing
     /// (TOFU). Deliberately distinct from `.transport`: either a legitimate
     /// certificate rotation (clear the pairing and re-pair) or interception.
@@ -31,7 +39,7 @@ enum NetworkError: Error, Equatable, LocalizedError {
     case transport(description: String)
     case decoding(description: String)
 
-    /// Longest 409 body kept for `conflict`. The payload is a small JSON
+    /// Longest body kept for `badRequest` and `conflict`. The payload is a small JSON
     /// discriminator (RelayMailSource.conflictError); the rest is only ever
     /// interpolated into logs and toasts, so an unbounded body would be a free
     /// way to blow those up.
@@ -45,25 +53,64 @@ enum NetworkError: Error, Equatable, LocalizedError {
             String(localized: "The server's security certificate changed and no longer matches this pairing. If you rotated your server's certificate, remove the pairing in Settings → Connection and re-pair; otherwise the connection may be intercepted.")
         case .responseTooLarge:
             String(localized: "The server sent more data than KyPost will accept for this request.")
+        case .rateLimited(let retryAfter):
+            retryAfter.map {
+                String(localized: "Too many attempts — try again in \(NetworkError.formatRetryAfter($0)).")
+            } ?? String(localized: "Too many attempts — try again later.")
         default:
             nil
+        }
+    }
+
+    /// Whole minutes once past a minute: a Retry-After of 900 read back as
+    /// "900 seconds" is not something a user can act on. Mirrors Android's
+    /// `formatRetryAfter`.
+    static func formatRetryAfter(_ seconds: Int) -> String {
+        switch seconds {
+        case ..<60: "\(seconds) seconds"
+        case ..<120: "a minute"
+        default: "\(seconds / 60) minutes"
         }
     }
 
     /// Maps a non-2xx HTTP status to its error. 2xx returns nil. `body` is
     /// retained only for 409, where the relay distinguishes a client-protected
     /// send refusal from an ordinary conflict by its payload.
-    static func from(statusCode: Int, body: Data = Data()) -> NetworkError? {
+    ///
+    /// `retryAfter` is passed in rather than read here: this function sees a
+    /// status code and a body, never the headers. Android hit the same wall
+    /// and resolved it the same way — the seconds are parsed at the call site
+    /// that holds the `HTTPURLResponse`.
+    static func from(
+        statusCode: Int,
+        body: Data = Data(),
+        retryAfter: Int? = nil
+    ) -> NetworkError? {
         switch statusCode {
         case 200..<300: nil
+        case 400: .badRequest(
+            body: String(decoding: body.prefix(maxConflictBodyBytes), as: UTF8.self)
+        )
         case 401, 403: .unauthorized
         case 409: .conflict(
             body: String(decoding: body.prefix(maxConflictBodyBytes), as: UTF8.self)
         )
-        case 429: .rateLimited
+        case 429: .rateLimited(retryAfter: retryAfter)
         case 503: .serviceUnavailable
         default: .server(statusCode: statusCode)
         }
+    }
+
+    /// `Retry-After` as whole seconds. RFC 9110 also allows an HTTP-date form;
+    /// only the delta-seconds form is honoured, and anything else reads as
+    /// absent rather than as zero — "retry immediately" is the one answer a
+    /// malformed header must not produce.
+    static func retryAfterSeconds(from response: HTTPURLResponse) -> Int? {
+        guard let raw = response.value(forHTTPHeaderField: "Retry-After") else { return nil }
+        guard let seconds = Int(raw.trimmingCharacters(in: .whitespaces)), seconds >= 0 else {
+            return nil
+        }
+        return seconds
     }
 }
 
@@ -199,8 +246,47 @@ final class HTTPClient: Sendable {
         headers: [String: String] = [:],
         jsonBody: some Encodable
     ) async throws -> Response {
+        try await send(type, method: "POST", url: url, query: query, headers: headers, jsonBody: jsonBody)
+    }
+
+    func put<Response: Decodable>(
+        _ type: Response.Type,
+        url: URL,
+        query: [URLQueryItem] = [],
+        headers: [String: String] = [:],
+        jsonBody: some Encodable
+    ) async throws -> Response {
+        try await send(type, method: "PUT", url: url, query: query, headers: headers, jsonBody: jsonBody)
+    }
+
+    /// DELETE with no request body — the relay identifies the target with a
+    /// query parameter, not a payload.
+    func delete<Response: Decodable>(
+        _ type: Response.Type,
+        url: URL,
+        query: [URLQueryItem] = [],
+        headers: [String: String] = [:]
+    ) async throws -> Response {
         var request = URLRequest(url: try url.appending(queryOrThrow: query))
-        request.httpMethod = "POST"
+        request.httpMethod = "DELETE"
+        for (field, value) in headers {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
+        return try await decode(execute(request))
+    }
+
+    // MARK: - Private
+
+    private func send<Response: Decodable>(
+        _ type: Response.Type,
+        method: String,
+        url: URL,
+        query: [URLQueryItem],
+        headers: [String: String],
+        jsonBody: some Encodable
+    ) async throws -> Response {
+        var request = URLRequest(url: try url.appending(queryOrThrow: query))
+        request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         for (field, value) in headers {
             request.setValue(value, forHTTPHeaderField: field)
@@ -212,8 +298,6 @@ final class HTTPClient: Sendable {
         }
         return try await decode(execute(request))
     }
-
-    // MARK: - Private
 
     /// `streamingUpTo` routes through the capped streaming transport; nil uses
     /// the buffering one (JSON endpoints, whose bodies the relay's own handlers
@@ -235,7 +319,11 @@ final class HTTPClient: Sendable {
         guard let http = response as? HTTPURLResponse else {
             throw NetworkError.transport(description: "Non-HTTP response")
         }
-        if let error = NetworkError.from(statusCode: http.statusCode, body: data) {
+        if let error = NetworkError.from(
+            statusCode: http.statusCode,
+            body: data,
+            retryAfter: NetworkError.retryAfterSeconds(from: http)
+        ) {
             throw error
         }
         return data

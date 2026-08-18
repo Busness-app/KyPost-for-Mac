@@ -52,11 +52,26 @@ private func certificate(fromBase64 base64: String) throws -> SecCertificate {
         #expect(PinnedSessionDelegate.spkiSHA256(ofCertificate: cert) == ec521ExpectedSpki)
     }
 
-    /// A shape with no header entry must produce no hash at all — never a
-    /// guessed one. `decision` is what turns that nil into a refusal.
-    @Test func anUnsupportedKeyShapeProducesNoHash() throws {
+    /// A shape with no entry in the header table still hashes, via the DER
+    /// fallback that reads the SubjectPublicKeyInfo straight out of the
+    /// certificate.
+    ///
+    /// This used to assert nil, which is what the header table alone produced
+    /// — and that was the bug the fallback fixed, not the contract. The table
+    /// covers six key shapes; for anything else (Ed25519, RSA-1024,
+    /// RSA-8192…) the observed hash was never recorded, so the pin silently
+    /// never armed while the docs said pinning was always on. Enforcement was
+    /// always fail-closed; it was *arming* that failed open.
+    ///
+    /// The expected value is `openssl x509 -pubkey | openssl pkey -pubin
+    /// -outform DER | openssl dgst -sha256` over this certificate, computed
+    /// independently rather than copied from what the code emitted.
+    @Test func anUnsupportedKeyShapeStillHashesViaTheDERFallback() throws {
         let cert = try certificate(fromBase64: rsa1024CertBase64)
-        #expect(PinnedSessionDelegate.spkiSHA256(ofCertificate: cert) == nil)
+        #expect(
+            PinnedSessionDelegate.spkiSHA256(ofCertificate: cert)
+                == "15ba59611ff3b8c20120f6dfb33c443229b826d98c702ef136df2e99ee232b39"
+        )
     }
 
     @Test func recordsTheLastSeenHashPerHost() {

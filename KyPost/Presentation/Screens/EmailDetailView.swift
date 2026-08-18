@@ -47,6 +47,15 @@ struct EmailDetailView: View {
                 .background(theme.panel, in: RoundedRectangle(cornerRadius: Shape.panel))
                 .padding([.horizontal, .top])
 
+            if isPhishing {
+                // Above the PGP bar deliberately: whether the server could
+                // decrypt a message matters less than the message pretending
+                // to be from us.
+                phishingBanner
+                    .padding(.horizontal)
+                    .padding(.top, 10)
+            }
+
             if pgpState != .none {
                 pgpBadges
                     .padding(.horizontal)
@@ -62,8 +71,8 @@ struct EmailDetailView: View {
 
             if suppressesBody {
                 Spacer(minLength: 0)
-            } else if bodyLooksLikeHTML {
-                EmailBodyWebView(html: themedHTML(email.body))
+            } else if !rendersAsPlainText {
+                EmailBodyWebView(html: themedHTML(emailBodyToHTML(email.body, mode: email.bodyMode)))
                     .padding()
             } else {
                 ScrollView {
@@ -319,13 +328,42 @@ struct EmailDetailView: View {
         }
     }
 
-    /// The relay serves HTML bodies inline on /api/inbox; plain-text messages
-    /// come through without markup, so sniff for tags before using WebKit.
-    private var bodyLooksLikeHTML: Bool {
-        email.body.range(
-            of: "<(html|head|body|div|p|br|table|tr|td|a|img|span|ul|ol|li|h[1-6])[\\s>/]",
-            options: [.regularExpression, .caseInsensitive]
-        ) != nil
+    /// Native wrapping `Text` rather than WebKit. Driven by the relay's
+    /// `bodyMode` when it sent one — sniffing a body the server has already
+    /// described is what this replaced. See EmailBodyRendering.swift.
+    private var rendersAsPlainText: Bool {
+        isPlainTextBody(email.body, mode: email.bodyMode)
+    }
+
+    private var isPhishing: Bool { isFlaggedPhishing(email.keywords) }
+
+    /// Wording is deliberate and matches Android's `email_phishing_warning`:
+    /// it names the concrete protection applied, and it tells the user the one
+    /// thing that actually stops the attack — that a pairing request they did
+    /// not start is never legitimate.
+    private var phishingBanner: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.shield.fill")
+                .foregroundStyle(SemanticColors.danger)
+            Text(phishingWarningText)
+                .font(AppFont.ui(12))
+                .foregroundStyle(theme.inkStrong)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(SemanticColors.dangerFill, in: RoundedRectangle(cornerRadius: Shape.field))
+        .overlay(
+            RoundedRectangle(cornerRadius: Shape.field)
+                .strokeBorder(SemanticColors.dangerBorder, lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
+    }
+
+    private var phishingWarningText: String {
+        "This message impersonates KyPost. Links to KyPost app addresses have been blocked. "
+            + "KyPost will never ask you to confirm a pairing request by email — never approve "
+            + "one you did not start yourself, on this device."
     }
 
     private var pgpState: PgpMessageState {
@@ -572,8 +610,21 @@ struct EmailBodyWebView: View {
     ) -> BodyNavigation {
         // `page.load(html:)` serves the message against an `about:` base URL;
         // that navigation is the message itself and has to go through.
-        if url?.scheme?.lowercased() == "about" { return .allow }
+        let scheme = url?.scheme?.lowercased()
+        if scheme == "about" { return .allow }
         guard let url else { return .block }
+        // Handing a link tap to `openURL` hands it to the system, and the
+        // system routes this app's own scheme straight back into this app. A
+        // `kypost://native-pair` link in a message would therefore raise the
+        // pairing confirmation on top of the sender's pretext — the attacker
+        // supplies the story, and we supply the dialog. The message body is
+        // never allowed to reach the app's own URL handlers.
+        //
+        // Restricted to http/https rather than blocking a list of schemes:
+        // a mail body has no business opening `file:`, `tel:` or any other
+        // scheme some installed app claims either, and a denylist would need
+        // updating every time one appears.
+        guard scheme == "http" || scheme == "https" else { return .block }
         return isLinkActivation ? .openInBrowser(url) : .block
     }
 

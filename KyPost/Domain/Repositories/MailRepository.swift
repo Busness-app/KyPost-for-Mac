@@ -12,15 +12,20 @@ final class MailRepository {
     private let securePairingStore: SecurePairingStore
     private let emailDAO: EmailDAO
     private let httpClient: HTTPClient
+    /// Nil in tests that only exercise full snapshots; the delta path then
+    /// behaves exactly as the pre-cursor code did.
+    private let cursorStore: (any MailCursorProviding)?
 
     init(
         securePairingStore: SecurePairingStore,
         emailDAO: EmailDAO,
-        httpClient: HTTPClient
+        httpClient: HTTPClient,
+        cursorStore: (any MailCursorProviding)? = nil
     ) {
         self.securePairingStore = securePairingStore
         self.emailDAO = emailDAO
         self.httpClient = httpClient
+        self.cursorStore = cursorStore
     }
 
     /// The relay source; requires a stored pairing.
@@ -39,12 +44,77 @@ final class MailRepository {
         try await makeSource().listFolders(parent: parent)
     }
 
-    /// Fetches a folder from the server and replaces the cached snapshot.
+    /// Folder management. Each returns a MailOutcome rather than throwing, so
+    /// a 429 or an unconfigured account reads the same here as on the send
+    /// path instead of surfacing a raw error.
+    func createFolder(parent: String, name: String) async -> MailOutcome {
+        await folderMutation { try await $0.createFolder(parent: parent, name: name) }
+    }
+
+    func renameFolder(_ folder: String, to name: String) async -> MailOutcome {
+        await folderMutation { try await $0.renameFolder(folder: folder, name: name) }
+    }
+
+    func deleteFolder(_ folder: String) async -> MailOutcome {
+        await folderMutation { try await $0.deleteFolder(folder: folder) }
+    }
+
+    private func folderMutation(
+        _ body: (any MailSource) async throws -> Void
+    ) async -> MailOutcome {
+        do {
+            try await body(try makeSource())
+            return .success
+        } catch {
+            return MailOutcome.from(error)
+        }
+    }
+
+    /// Fetches a folder from the server and reconciles it into the cache.
+    ///
+    /// Sends the stored cursor when there is one, so the relay can answer with
+    /// just what changed. `forceFullResync` asks for the whole window
+    /// regardless — the documented self-heal for a removal this device was
+    /// never told about, and what a push tap must do before opening its target.
     @discardableResult
-    func refreshFolder(_ folder: String, from: Int = 0, to: Int = 50) async throws -> [Email] {
-        let emails = try await makeSource().fetchEmails(folder: folder, from: from, to: to)
-        try await emailDAO.replaceFolderSnapshot(folder: folder, emails: emails)
-        return emails
+    func refreshFolder(
+        _ folder: String,
+        from: Int = 0,
+        to: Int = 50,
+        forceFullResync: Bool = false
+    ) async throws -> [Email] {
+        guard let pairing = try securePairingStore.loadPairing() else {
+            throw MailSourceError.notPaired
+        }
+        let pairingId = pairing.sub
+        let wantsFullWindow = forceFullResync
+            || cursorStore?.shouldForceFullResync(pairingId: pairingId, folder: folder) ?? true
+        let since = wantsFullWindow
+            ? ""
+            : cursorStore?.cursor(pairingId: pairingId, folder: folder) ?? ""
+
+        let result = try await makeSource()
+            .fetchEmails(folder: folder, from: from, to: to, since: since)
+
+        if result.isDelta {
+            try await emailDAO.applyDelta(
+                folder: folder,
+                emails: result.emails,
+                updatedIds: result.updatedIds,
+                removedIds: result.removedIds,
+                pruneAgainstEmails: result.isFullWindow
+            )
+        } else {
+            try await emailDAO.replaceFolderSnapshot(folder: folder, emails: result.emails)
+        }
+
+        // Only after the rows are committed: a crash between the two costs a
+        // refetch, where advancing first would lose the messages for good.
+        cursorStore?.saveCursor(pairingId: pairingId, folder: folder, cursor: result.cursor)
+        if result.isFullWindow {
+            cursorStore?.recordFullResync(pairingId: pairingId, folder: folder)
+        }
+        return try await emailDAO.getFolder(folder: folder, limit: max(to, 1))
     }
 
     /// Cached emails for offline/instant display.

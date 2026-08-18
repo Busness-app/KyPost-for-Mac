@@ -24,6 +24,19 @@ struct Email: Identifiable, Hashable, Sendable {
     var receivedAt: Date
     var read: Bool
     var starred: Bool
+    /// The relay's `bodyMode`: "html" or "plain", or "" when the server did
+    /// not say. When the server *did* say, the reader must honour it rather
+    /// than sniffing the body — see EmailBodyRendering.swift.
+    var bodyMode: String = ""
+    /// True when the relay sent this row without a body at all — a delta
+    /// "updated" entry. Distinct from an empty body, and never persisted: the
+    /// merge uses it to keep the cached body rather than overwrite it. See
+    /// the hazard note on RelayEmailDTO.body.
+    var bodyOmitted: Bool = false
+    /// Relay `hasAttachments`, for the list-row marker. The inbox listing
+    /// carries no attachment metadata, so the paperclip is all this supports;
+    /// the actual list is fetched lazily on open.
+    var hasAttachments: Bool = false
     /// Relay OpenPGP state. Defaults are the wire contract for a message with
     /// no OpenPGP content — see PgpMessageState.swift for what they mean
     /// together.
@@ -41,6 +54,11 @@ struct Email: Identifiable, Hashable, Sendable {
 /// A folder/mailbox on the relay.
 struct MailFolder: Hashable, Sendable {
     var name: String
+    /// Whether the relay will let this folder be deleted. The built-in
+    /// mailboxes are not deletable, and the server is the authority — do not
+    /// re-derive it from the name, which is how a localised or renamed
+    /// special folder ends up with a Delete item that always fails.
+    var deletable: Bool = false
 }
 
 /// Built-in relay mailboxes. Binding contract: values are the exact

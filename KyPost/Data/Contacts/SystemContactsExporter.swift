@@ -129,7 +129,9 @@ final class SystemContactsExporter {
         baselineStore: SystemContactsBaselineStore,
         settings: ContactsSettingsStore,
         contactDAO: ContactDAO,
-        photoCache: ContactPhotoCache? = nil
+        photoCache: ContactPhotoCache? = nil,
+        groupLinker: SystemContactGroupLinker? = nil,
+        groupDAO: GroupDAO? = nil
     ) {
         self.store = store
         self.linkStore = linkStore
@@ -137,6 +139,28 @@ final class SystemContactsExporter {
         self.settings = settings
         self.contactDAO = contactDAO
         self.photoCache = photoCache
+        self.groupLinker = groupLinker
+        self.groupDAO = groupDAO
+    }
+
+    /// Mirrors backend groups onto CNGroups after a card is written. Nil in
+    /// tests that don't exercise groups; the card export is unaffected.
+    private let groupLinker: SystemContactGroupLinker?
+    private let groupDAO: GroupDAO?
+
+    /// Group membership for one card, best-effort.
+    ///
+    /// Runs after the card exists — a member cannot be added to a group before
+    /// the contact it refers to has an identifier.
+    private func syncGroups(for contact: Contact, cardIdentifier: String) async {
+        guard let groupLinker, let groupDAO else { return }
+        guard let groups = try? await groupDAO.listAll(), !groups.isEmpty else { return }
+        let names = Dictionary(groups.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+        await groupLinker.syncMembership(
+            cardIdentifier: cardIdentifier,
+            groupIDs: contact.groupIDs,
+            groupNames: names
+        )
     }
 
     // MARK: - Authorization
@@ -402,8 +426,15 @@ final class SystemContactsExporter {
 
         let contacts = (try? await contactDAO.listAll()) ?? []
         for contact in contacts where !linkedLocalIds.contains(contact.localId) {
-            guard let key = SystemContactMapper.matchKey(for: contact),
-                  let card = candidates[key]?.first(where: { !consumed.contains($0.identifier) })
+            // Every identity this contact has, not just its primary email:
+            // the card is indexed under all of its own, and matching only on
+            // the primary meant a card carrying the contact's *second*
+            // address was never adopted, so both sides duplicated it.
+            guard let card = SystemContactMapper.matchKeys(for: contact).lazy
+                .compactMap({ key in
+                    candidates[key]?.first { !consumed.contains($0.identifier) }
+                })
+                .first
             else { continue }
             consumed.insert(card.identifier)
             let stale = staleLinks[contact.localId]
@@ -437,12 +468,13 @@ final class SystemContactsExporter {
     /// Single-contact flavor of the adoption pass, for the incremental save
     /// hook: the first unlinked card matching this contact's identity.
     private func adoptableCard(for contact: Contact) async -> CNContact? {
-        guard let key = SystemContactMapper.matchKey(for: contact) else { return nil }
+        let keys = Set(SystemContactMapper.matchKeys(for: contact))
+        guard !keys.isEmpty else { return nil }
         let linkedIdentifiers = Set(linkStore.all().map(\.cnIdentifier))
         let cards = (try? await store.listAll()) ?? []
         return cards.first {
             !linkedIdentifiers.contains($0.identifier)
-                && SystemContactMapper.matchKeys(for: $0).contains(key)
+                && SystemContactMapper.matchKeys(for: $0).contains(where: keys.contains)
         }
     }
 
@@ -463,7 +495,7 @@ final class SystemContactsExporter {
         // cards are baselined so they stay ignored even if their app contact
         // is deleted later.
         let contacts = (try? await contactDAO.listAll()) ?? []
-        var knownKeys = Set(contacts.compactMap { SystemContactMapper.matchKey(for: $0) })
+        var knownKeys = Set(contacts.flatMap { SystemContactMapper.matchKeys(for: $0) })
         for card in cards
         where !linked.contains(card.identifier) && !baseline.contains(card.identifier) {
             let keys = SystemContactMapper.matchKeys(for: card)
@@ -505,6 +537,7 @@ final class SystemContactsExporter {
                 cnIdentifier: cn.identifier,
                 exportedUpdatedAt: contact.updatedAt
             ))
+            await syncGroups(for: contact, cardIdentifier: cn.identifier)
             summary.created += 1
         } catch {
             // No link written; retried as a create on the next reconcile.
@@ -541,6 +574,7 @@ final class SystemContactsExporter {
                     imported: imported,
                     userOwned: userOwned
                 ))
+                await syncGroups(for: contact, cardIdentifier: cnIdentifier)
                 summary.updated += 1
             } else {
                 // Card deleted in Contacts.app: recreate and repair the link.

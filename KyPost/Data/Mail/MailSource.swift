@@ -12,7 +12,23 @@ import Foundation
 protocol MailSource: Sendable {
     /// Lists folders; `parent` scopes to that folder's children (nil = top level).
     func listFolders(parent: String?) async throws -> [MailFolder]
-    func fetchEmails(folder: String, from: Int, to: Int) async throws -> [Email]
+    /// Creates a child folder. `parent` is "" for a top-level folder; `name`
+    /// is one path segment, never a full path — the relay joins them.
+    func createFolder(parent: String, name: String) async throws
+    /// Renames `folder` (a full path) to `name` (one segment).
+    func renameFolder(folder: String, name: String) async throws
+    /// Deletes `folder` (a full path). Only ever offered for a folder the
+    /// listing marked `deletable`.
+    func deleteFolder(folder: String) async throws
+    /// Fetches a folder. `since` is the opaque server cursor from a previous
+    /// fetch, or "" for the whole window. Cursors are server-issued strings;
+    /// never assume they are numeric or ordered.
+    func fetchEmails(
+        folder: String,
+        from: Int,
+        to: Int,
+        since: String
+    ) async throws -> MailFetchResult
     func search(folder: String, query: String) async throws -> [String]
     func setKeywords(folder: String, messageId: String, keywords: [String]) async throws
     func move(messageIds: [String], from mailbox: String, to targetMailbox: String) async throws
@@ -48,6 +64,32 @@ extension MailSource {
     func listFolders() async throws -> [MailFolder] {
         try await listFolders(parent: nil)
     }
+
+    /// Full-window fetch, for callers with no cursor to offer.
+    func fetchEmails(folder: String, from: Int, to: Int) async throws -> MailFetchResult {
+        try await fetchEmails(folder: folder, from: from, to: to, since: "")
+    }
+}
+
+/// One folder fetch's result. `isDelta` false means `emails` is a full
+/// snapshot — the pre-delta shape, and what a relay without cursor support
+/// always returns.
+struct MailFetchResult: Equatable, Sendable {
+    var emails: [Email] = []
+    var cursor: String = ""
+    /// The rest only matter when `isDelta` is true.
+    var isDelta = false
+    var updatedIds: Set<String> = []
+    var removedIds: [String] = []
+    /// True when this response describes the server's whole window rather than
+    /// just what changed — i.e. we sent since=0.
+    ///
+    /// **Not the wire's `delta` flag.** A relay predating the matching server
+    /// fix labels a since=0 response `delta: true` all the same, so this, not
+    /// the flag, is what says `emails` is complete enough to prune the folder
+    /// against. Pruning is the only self-heal for a removal we were never
+    /// told about.
+    var isFullWindow = false
 }
 
 /// Mail-layer failures that aren't plain network errors.
@@ -60,6 +102,9 @@ enum MailSourceError: Error, Equatable {
     case credentialUnavailable
     /// The relay has no endpoint for this operation (e.g. server-side search).
     case unsupported
+    /// Relay 400 whose plain-text body says IMAP configuration is required.
+    /// The account exists but has no mail set up; only the web app can fix it.
+    case notConfigured(String)
     case invalidServerURL
     /// Relay 409 + clientSideNeeded: a client-protected account asked the
     /// server to sign or encrypt and it refused rather than silently sending
@@ -95,6 +140,17 @@ enum MailOutcome: Equatable, Sendable {
     /// mails them a one-time link and stores this message's plaintext on the
     /// server for 7 days.
     case keylessRecipients(addresses: [String], pickupFallbackAvailable: Bool)
+    /// Relay 429 — the per-device lockout after repeated bad credentials.
+    /// `retryAfter` is seconds from the header, nil when it was absent or
+    /// unparseable. Back off either way.
+    case rateLimited(retryAfter: Int?)
+    /// Relay 400 "imap configuration is required…" — the account has no mail
+    /// set up yet. Direct the user to the web app; never build a form for the
+    /// server's web-only configuration endpoints.
+    case notConfigured(String)
+    /// Relay 502 — an upstream IMAP/SMTP failure. Safe to retry with backoff,
+    /// unlike the other failures here.
+    case upstreamFailure(String)
 
     static func from(_ error: Error) -> MailOutcome {
         switch error {
@@ -109,6 +165,15 @@ enum MailOutcome: Equatable, Sendable {
                 addresses: addresses,
                 pickupFallbackAvailable: pickupFallbackAvailable
             )
+        case NetworkError.rateLimited(let retryAfter):
+            .rateLimited(retryAfter: retryAfter)
+        case NetworkError.badRequest(let body):
+            RelayMailSource.notConfiguredMessage(body: body).map(MailOutcome.notConfigured)
+                ?? .failure(Self.message(for: .badRequest(body: body)))
+        case MailSourceError.notConfigured(let message):
+            .notConfigured(message)
+        case NetworkError.server(statusCode: 502):
+            .upstreamFailure(Self.message(for: .server(statusCode: 502)))
         case let networkError as NetworkError:
             .failure(Self.message(for: networkError))
         default:
@@ -132,11 +197,17 @@ enum MailOutcome: Equatable, Sendable {
         switch error {
         case .invalidURL: "This server's address looks wrong."
         case .unauthorized: "Not authorized — re-pair the device or check credentials."
+        case .badRequest(let body):
+            body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "The server rejected this request."
+                : body
         case .conflict: "The server rejected this request."
-        case .rateLimited: "Too many attempts — wait a moment and try again."
+        case .rateLimited: error.errorDescription ?? "Too many attempts — try again later."
         case .serviceUnavailable: "The server is temporarily unavailable."
+        case .responseTooLarge: "The server sent more data than this app will accept."
         case .certificateMismatch: error.errorDescription
             ?? "The server's security certificate changed — re-pair the device."
+        case .server(statusCode: 502): "Couldn't reach the mail server — try again shortly."
         case .server(let statusCode): "The server returned an error (status \(statusCode))."
         case .transport(let description): description
         case .decoding: "The server sent a response this app couldn't read."

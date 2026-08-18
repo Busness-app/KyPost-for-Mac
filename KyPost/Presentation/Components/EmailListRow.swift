@@ -12,6 +12,25 @@ struct EmailListRow: View {
 
     let email: Email
 
+    /// The PGP marker's spelled-out label when there is one, plus the
+    /// paperclip's — VoiceOver announces neither glyph reliably on its own.
+    private var rowAccessibilityLabel: String {
+        var base = pgpRowAccessibilityLabel(state: rowPgpState, subject: email.subject)
+            ?? email.subject
+        if isPhishing {
+            base = "Suspected impersonation of KyPost: \(base)"
+        }
+        return email.hasAttachments ? "\(base), has attachments" : base
+    }
+
+    /// User-facing labels only — IMAP system keywords like `$Phishing` drive
+    /// the warning, not a chip.
+    private var labelChips: [String] {
+        email.keywords.filter { !isSystemKeyword($0) }.sorted()
+    }
+
+    private var isPhishing: Bool { isFlaggedPhishing(email.keywords) }
+
     private var rowPgpState: PgpMessageState {
         pgpMessageState(
             pgpEncrypted: email.pgpEncrypted,
@@ -36,6 +55,13 @@ struct EmailListRow: View {
                         .foregroundStyle(theme.ink.opacity(0.7))
                 }
                 HStack(spacing: 5) {
+                    if isPhishing {
+                        // Outranks the PGP marker: a message impersonating
+                        // KyPost is the more urgent thing to say about it.
+                        Image(systemName: "exclamationmark.shield.fill")
+                            .font(AppFont.ui(12))
+                            .foregroundStyle(SemanticColors.danger)
+                    }
                     if let symbol = pgpRowSymbol(rowPgpState) {
                         Image(systemName: symbol)
                             .font(AppFont.ui(12))
@@ -45,14 +71,17 @@ struct EmailListRow: View {
                         .font(AppFont.ui(14, weight: email.read ? .regular : .medium))
                         .foregroundStyle(email.read ? theme.ink : theme.inkStrong)
                         .lineLimit(1)
+                    if email.hasAttachments {
+                        Image(systemName: "paperclip")
+                            .font(AppFont.ui(11))
+                            .foregroundStyle(theme.ink.opacity(0.7))
+                    }
                 }
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel(
-                    pgpRowAccessibilityLabel(state: rowPgpState, subject: email.subject) ?? email.subject
-                )
-                if !email.keywords.isEmpty {
+                .accessibilityLabel(rowAccessibilityLabel)
+                if !labelChips.isEmpty {
                     HStack(spacing: 5) {
-                        ForEach(email.keywords.sorted(), id: \.self) { keyword in
+                        ForEach(labelChips, id: \.self) { keyword in
                             Text(keyword)
                                 .font(AppFont.ui(11, weight: .medium))
                                 .foregroundStyle(theme.ink)

@@ -55,7 +55,21 @@ struct RelayEmailDTO: Decodable, Equatable, Sendable {
     /// `.clientProtected` and send the user to webmail. Carry nil through as a
     /// distinct "unknown" before enabling delta fetches.
     var body: String?
+    /// "html" or "plain". Absent on an older relay, which is a distinct state
+    /// from either value: the reader falls back to sniffing the body only
+    /// then, never when the server has told us.
+    var bodyMode: String?
+    /// Whether the message carries attachments, for the list-row marker. The
+    /// listing carries no per-attachment metadata; that is a separate lazy
+    /// fetch on open.
+    var hasAttachments: Bool?
     var label: String?
+    /// The message's real IMAP keywords. `omitempty` server-side, so absent
+    /// means none. Previously not decoded at all, which meant `Email.keywords`
+    /// was synthesised from `label`/tab alone and a keyword the server
+    /// actually set — the `$Phishing` anti-phishing flag — never reached this
+    /// client.
+    var keywords: [String]?
     /// "unread" unless the server says otherwise.
     var status: String?
     /// ISO-8601 timestamp.
@@ -74,19 +88,32 @@ struct RelayEmailDTO: Decodable, Equatable, Sendable {
     func toDomain(folder: String, tab: String) -> Email {
         let (name, address) = Self.splitSender(sender ?? "")
         let keyword = (label?.isEmpty == false ? label : tab) ?? tab
+        // Union of the wire keywords and the tab-derived label, not a
+        // replacement: the label drives the tab strip, and the wire list
+        // carries protocol keywords like $Phishing. Dropping either loses
+        // something the UI needs.
         return Email(
             serverId: messageId,
             folder: folder,
             senderName: name,
             senderEmail: address,
             subject: subject ?? "",
+            // An omitted body is NOT an empty one. A delta "updated" entry
+            // carries no body, and writing "" here made such a row
+            // indistinguishable from a client-protected message — so the
+            // reader claimed end-to-end encryption for mail the server had
+            // decrypted. `bodyOmitted` carries the distinction to the merge,
+            // which preserves whatever body is already cached.
             body: body ?? "",
             sentTo: sentTo ?? "",
             cc: cc ?? "",
-            keywords: keyword.isEmpty ? [] : [keyword],
+            keywords: Set(((keywords ?? []) + [keyword]).filter { !$0.isEmpty }),
             receivedAt: Self.parseUtc(atUtc) ?? Date(),
             read: (status ?? "unread").lowercased() != "unread",
             starred: false,
+            bodyMode: bodyMode ?? "",
+            bodyOmitted: body == nil,
+            hasAttachments: hasAttachments ?? false,
             pgpEncrypted: pgpEncrypted ?? false,
             pgpSigned: pgpSigned ?? false,
             pgpVerified: pgpVerified ?? false,
@@ -135,6 +162,17 @@ struct RelayInboxResponse: Decodable, Sendable {
     /// Flattens the per-tab groups; each email keeps its tab as a keyword.
     /// Sorted newest first — the per-tab dictionary has no stable iteration
     /// order, and EmailDAO.getFolder reads the cache in the same order.
+    /// Ids the server marked as changed rather than new. Only meaningful on a
+    /// delta response; empty otherwise, which makes every row "new" and the
+    /// merge a plain upsert.
+    func updatedIds() -> Set<String> {
+        Set(
+            (byTab ?? [:]).values.flatMap { $0 }
+                .filter { $0.changeType?.lowercased() == "updated" }
+                .map(\.messageId)
+        )
+    }
+
     func allEmails(folder: String) -> [Email] {
         (byTab ?? [:])
             .flatMap { tab, emails in
@@ -147,6 +185,19 @@ struct RelayInboxResponse: Decodable, Sendable {
 struct RelayFolderDTO: Decodable, Equatable, Sendable {
     var path: String
     var deletable: Bool?
+}
+
+/// POST /api/inbox/folders. `parent` is "" for a top-level folder.
+struct RelayFolderCreateRequest: Encodable, Sendable {
+    var parent: String
+    var name: String
+}
+
+/// PUT /api/inbox/folders. `folder` is the full existing path, `name` the new
+/// single segment.
+struct RelayFolderRenameRequest: Encodable, Sendable {
+    var folder: String
+    var name: String
 }
 
 struct RelayFolderListResponse: Decodable, Sendable {
@@ -285,24 +336,69 @@ final class RelayMailSource: MailSource {
             query: query,
             headers: auth.headerFields
         )
-        return (response.folders ?? []).map { MailFolder(name: $0.path) }
+        return (response.folders ?? []).map {
+            MailFolder(name: $0.path, deletable: $0.deletable ?? false)
+        }
     }
 
-    func fetchEmails(folder: String, from: Int, to: Int) async throws -> [Email] {
-        // ponytail: since=0 forces a full snapshot on every fetch. Cursor
-        // persistence + delta merging (Android MailCursorStore, Part 5) is v2;
-        // full snapshots pair with MailRepository.replaceFolderSnapshot.
+    func createFolder(parent: String, name: String) async throws {
+        _ = try await httpClient.post(
+            RelayActionResponse.self,
+            url: try endpoint("api/inbox/folders"),
+            headers: auth.headerFields,
+            jsonBody: RelayFolderCreateRequest(parent: parent, name: name)
+        )
+    }
+
+    func renameFolder(folder: String, name: String) async throws {
+        _ = try await httpClient.put(
+            RelayActionResponse.self,
+            url: try endpoint("api/inbox/folders"),
+            headers: auth.headerFields,
+            jsonBody: RelayFolderRenameRequest(folder: folder, name: name)
+        )
+    }
+
+    func deleteFolder(folder: String) async throws {
+        // The target rides in the query string, not a body — DELETE with a
+        // payload is what the relay does not accept here.
+        _ = try await httpClient.delete(
+            RelayActionResponse.self,
+            url: try endpoint("api/inbox/folders"),
+            query: [URLQueryItem(name: "folder", value: folder)],
+            headers: auth.headerFields
+        )
+    }
+
+    func fetchEmails(
+        folder: String,
+        from: Int,
+        to: Int,
+        since: String
+    ) async throws -> MailFetchResult {
+        // "" and "0" both mean the whole window; the relay's own default is 0.
+        let sinceValue = since.isEmpty ? "0" : since
         let response = try await httpClient.get(
             RelayInboxResponse.self,
             url: try endpoint("api/inbox"),
             query: [
                 URLQueryItem(name: "limit", value: String(max(to, 1))),
                 URLQueryItem(name: "mailbox", value: folder),
-                URLQueryItem(name: "since", value: "0"),
+                URLQueryItem(name: "since", value: sinceValue),
             ],
             headers: auth.headerFields
         )
-        return response.allEmails(folder: folder)
+        let emails = response.allEmails(folder: folder)
+        return MailFetchResult(
+            emails: emails,
+            cursor: response.cursor?.value ?? "",
+            isDelta: response.delta ?? false,
+            updatedIds: response.updatedIds(),
+            removedIds: response.removed ?? [],
+            // Derived from what we asked for, never from the wire's `delta`
+            // flag — see MailFetchResult.isFullWindow.
+            isFullWindow: sinceValue == "0"
+        )
     }
 
     func search(folder: String, query: String) async throws -> [String] {
@@ -428,6 +524,22 @@ final class RelayMailSource: MailSource {
             )
         }
         return nil
+    }
+
+    /// The relay's 400 for an account with no mail set up, as its plain-text
+    /// body, or nil for an ordinary malformed request.
+    ///
+    /// Prefix match on the documented wording (`Mobile_Mail_Relay.md`'s error
+    /// table, Android's `MailOutcome.NotConfigured`) because that is the only
+    /// discriminator the relay offers on this path — a 400 carries no JSON
+    /// field to key off, unlike the two 409s. Kept here with the other
+    /// relay-specific knowledge rather than in HTTPClient.
+    static func notConfiguredMessage(body: String) -> String? {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.lowercased().hasPrefix("imap configuration is required") else {
+            return nil
+        }
+        return trimmed
     }
 
     // MARK: - Private

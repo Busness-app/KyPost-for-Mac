@@ -55,6 +55,56 @@ private final class MockSystemContactStore: SystemContactStoring {
         cards[identifier] = nil
     }
 
+    // MARK: - Groups
+
+    private(set) var groups: [String: CNMutableGroup] = [:]
+    /// group identifier -> card identifiers
+    private(set) var members: [String: Set<String>] = [:]
+    private(set) var groupAddCount = 0
+    var failNextGroupAdd = false
+
+    func listGroups() async throws -> [CNGroup] {
+        groups.values.compactMap { $0.copy() as? CNGroup }
+    }
+
+    func addGroup(_ group: CNMutableGroup) async throws {
+        groupAddCount += 1
+        if failNextGroupAdd {
+            failNextGroupAdd = false
+            throw StubError()
+        }
+        groups[group.identifier] = group
+    }
+
+    func renameGroup(identifier: String, to name: String) async throws {
+        groups[identifier]?.name = name
+    }
+
+    func memberIdentifiers(ofGroup identifier: String) async throws -> [String] {
+        Array(members[identifier] ?? [])
+    }
+
+    func addMember(contactIdentifier: String, toGroup groupIdentifier: String) async throws {
+        members[groupIdentifier, default: []].insert(contactIdentifier)
+    }
+
+    func removeMember(contactIdentifier: String, fromGroup groupIdentifier: String) async throws {
+        members[groupIdentifier]?.remove(contactIdentifier)
+    }
+
+    func removeGroup(identifier: String) {
+        groups[identifier] = nil
+        members[identifier] = nil
+    }
+
+    /// Seeds a group the user already had, without touching the counters.
+    func seedGroup(name: String) -> CNMutableGroup {
+        let group = CNMutableGroup()
+        group.name = name
+        groups[group.identifier] = group
+        return group
+    }
+
     /// Test seeding without touching the add/fail counters.
     func seed(_ contact: CNContact) {
         cards[contact.identifier] = contact.copy() as? CNContact
@@ -813,6 +863,43 @@ private func makeCard(
         #expect(env.mock.cards.count == 1)
     }
 
+    // Mirror of adoptionMatchesAnySystemCardEmail, from the app-contact side:
+    // the person is known to the app by two addresses and the user's card
+    // carries only the second one.
+    @Test func adoptionMatchesAnyAppContactEmail() async throws {
+        let env = try makeEnvironment()
+        try await env.mock.add(makeCard()) // Grace Hopper, grace@example.com
+        var contact = makeContact(name: "Grace Hopper", email: "grace@home.example.com")
+        contact.emails.append(
+            ContactLabeledValue(label: "work", value: "grace@example.com")
+        )
+        try await env.dao.upsert(contacts: [contact])
+
+        let summary = await env.exporter.reconcileAll()
+        #expect(summary.adopted == 1)
+        #expect(summary.created == 0)
+        #expect(env.mock.cards.count == 1)
+    }
+
+    // The same asymmetry on the import side, which is the worse half: an
+    // unadopted card becomes a second *app* contact, queued for the relay.
+    @Test func doesNotImportCardMatchingANonPrimaryAppContactEmail() async throws {
+        let env = try makeEnvironment()
+        _ = await env.exporter.reconcileAll() // capture the baseline
+
+        var contact = makeContact(name: "Grace Hopper", email: "grace@home.example.com")
+        contact.emails.append(
+            ContactLabeledValue(label: "work", value: "grace@example.com")
+        )
+        try await env.dao.upsert(contacts: [contact])
+        try await env.mock.add(makeCard()) // the user's own card, work address only
+
+        let summary = await env.exporter.reconcileAll()
+        #expect(summary.imported == 0)
+        let contacts = try await env.dao.listAll()
+        #expect(contacts.count == 1)
+    }
+
     @Test func adoptionPairsDuplicateEmailsOneToOne() async throws {
         let env = try makeEnvironment()
         try await env.mock.add(makeCard(given: "Grace", family: "Work"))
@@ -902,5 +989,107 @@ private func makeCard(
         #expect(env.mock.cards.isEmpty)
         #expect(env.linkStore.all().isEmpty)
         #expect(!env.exporter.hasExportedContacts())
+    }
+}
+
+// MARK: - CNGroup materialization
+
+@MainActor
+@Suite struct SystemContactGroupLinkerTests {
+    private func make() -> (MockSystemContactStore, SystemContactGroupLinker, SystemContactGroupLinkStore) {
+        let store = MockSystemContactStore()
+        let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        let links = SystemContactGroupLinkStore(defaults: defaults)
+        return (store, SystemContactGroupLinker(store: store, linkStore: links), links)
+    }
+
+    @Test func createsAGroupAndRemembersIt() async throws {
+        let (store, linker, links) = make()
+        let id = try #require(await linker.ensureGroup(id: "g1", name: "Family"))
+        #expect(store.groupAddCount == 1)
+        #expect(links.link(groupId: "g1")?.cnIdentifier == id)
+        // Idempotent: a second pass reuses the link rather than adding again.
+        #expect(await linker.ensureGroup(id: "g1", name: "Family") == id)
+        #expect(store.groupAddCount == 1)
+    }
+
+    /// Adoption, not duplication — the same rule the card path follows.
+    @Test func adoptsAGroupTheUserAlreadyHasByName() async throws {
+        let (store, linker, links) = make()
+        let existing = store.seedGroup(name: "Family")
+        let id = await linker.ensureGroup(id: "g1", name: "Family")
+        #expect(id == existing.identifier)
+        #expect(store.groupAddCount == 0)
+        #expect(links.link(groupId: "g1")?.userOwned == true)
+    }
+
+    /// A group we adopted is the user's. Renaming it because the backend
+    /// renamed *its* group would edit something we never authored.
+    @Test func neverRenamesAnAdoptedGroup() async throws {
+        let (store, linker, _) = make()
+        let existing = store.seedGroup(name: "Family")
+        _ = await linker.ensureGroup(id: "g1", name: "Family")
+        _ = await linker.ensureGroup(id: "g1", name: "Relatives")
+        #expect(store.groups[existing.identifier]?.name == "Family")
+    }
+
+    @Test func renamesAGroupItCreatedItself() async throws {
+        let (store, linker, _) = make()
+        let id = try #require(await linker.ensureGroup(id: "g1", name: "Old"))
+        _ = await linker.ensureGroup(id: "g1", name: "New")
+        #expect(store.groups[id]?.name == "New")
+        #expect(store.groupAddCount == 1)
+    }
+
+    /// A link whose group was deleted in Contacts must not keep claiming the
+    /// id, or the group can never be re-materialized.
+    @Test func recreatesAGroupDeletedInContacts() async throws {
+        let (store, linker, links) = make()
+        let first = try #require(await linker.ensureGroup(id: "g1", name: "Family"))
+        store.removeGroup(identifier: first)
+        let second = await linker.ensureGroup(id: "g1", name: "Family")
+        #expect(second != nil)
+        #expect(second != first)
+        #expect(links.link(groupId: "g1")?.cnIdentifier == second)
+    }
+
+    @Test func addsAndRemovesMembershipToMatchTheContact() async throws {
+        let (store, linker, _) = make()
+        let family = try #require(await linker.ensureGroup(id: "g1", name: "Family"))
+        let work = try #require(await linker.ensureGroup(id: "g2", name: "Work"))
+        let names = ["g1": "Family", "g2": "Work"]
+
+        await linker.syncMembership(cardIdentifier: "card1", groupIDs: ["g1"], groupNames: names)
+        #expect(store.members[family]?.contains("card1") == true)
+        #expect(store.members[work]?.contains("card1") != true)
+
+        // Moved on the server: the old membership is withdrawn.
+        await linker.syncMembership(cardIdentifier: "card1", groupIDs: ["g2"], groupNames: names)
+        #expect(store.members[family]?.contains("card1") != true)
+        #expect(store.members[work]?.contains("card1") == true)
+    }
+
+    /// Removals are scoped to groups this app links. A card the user also put
+    /// in their own group stays in it.
+    @Test func leavesTheUsersOwnUnlinkedGroupsAlone() async throws {
+        let (store, linker, _) = make()
+        let climbing = store.seedGroup(name: "Climbing")
+        try await store.addMember(contactIdentifier: "card1", toGroup: climbing.identifier)
+
+        _ = await linker.ensureGroup(id: "g1", name: "Family")
+        await linker.syncMembership(
+            cardIdentifier: "card1", groupIDs: [], groupNames: ["g1": "Family"]
+        )
+        #expect(store.members[climbing.identifier]?.contains("card1") == true)
+    }
+
+    @Test func aGroupIdWithNoKnownNameIsSkipped() async throws {
+        // The groups cache is simply behind; inventing a name would create a
+        // CNGroup the next pull then renames out from under the user.
+        let (store, linker, _) = make()
+        await linker.syncMembership(
+            cardIdentifier: "card1", groupIDs: ["unknown"], groupNames: [:]
+        )
+        #expect(store.groupAddCount == 0)
     }
 }

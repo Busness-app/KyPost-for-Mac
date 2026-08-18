@@ -56,6 +56,9 @@ struct ContactCustomFieldDTO: Codable, Equatable, Sendable {
 /// extended set at all. `mergedUIDs`/`mergedInto` are deliberately not
 /// modeled — decoding ignores unknown keys.
 struct ContactDTO: Codable, Equatable, Sendable {
+    /// At most one synced contact has this true. Read-only: the app never
+    /// sets it, so it is decoded but never sent on a push.
+    var isSelf: Bool?
     /// Empty string marks a create on push (Android contract); server-assigned
     /// on responses.
     var uid: String?

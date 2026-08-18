@@ -101,7 +101,7 @@ private func makeOutgoing(
             #expect(url.contains("since=0"))
         }
         let source = RelayMailSource(httpClient: client, serverUrl: server, auth: auth)
-        let emails = try await source.fetchEmails(folder: "INBOX", from: 0, to: 50)
+        let emails = try await source.fetchEmails(folder: "INBOX", from: 0, to: 50).emails
 
         #expect(emails.count == 2)
         let full = try #require(emails.first { $0.serverId == "e-1" })
@@ -134,7 +134,7 @@ private func makeOutgoing(
         }
         """
         let source = RelayMailSource(httpClient: stubClient(json: json), serverUrl: server, auth: auth)
-        let emails = try await source.fetchEmails(folder: "INBOX", from: 0, to: 50)
+        let emails = try await source.fetchEmails(folder: "INBOX", from: 0, to: 50).emails
         #expect(emails.map(\.serverId) == ["newest", "middle", "old"])
     }
 
@@ -929,5 +929,579 @@ private func makeOutgoing(
     @Test func aDroppedLinkDoesNotCountAsFormatting() {
         #expect(!RichTextHTML.hasFormatting(linked("javascript:alert(1)"), fontTraits: noTraits))
         #expect(RichTextHTML.hasFormatting(linked("https://example.com"), fontTraits: noTraits))
+    }
+}
+
+// MARK: - Body rendering (bodyMode)
+
+@Suite struct EmailBodyRenderingTests {
+    @Test func honoursADeclaredPlainModeOverTheBodyContent() {
+        // The point of carrying bodyMode: a plain-text message that happens to
+        // contain angle brackets must not be rendered as markup.
+        let body = "See <div> in the spec, and use <p> sparingly."
+        #expect(isPlainTextBody(body, mode: "plain"))
+        #expect(emailBodyToHTML(body, mode: "plain").contains("&lt;div&gt;"))
+        #expect(!emailBodyToHTML(body, mode: "plain").contains("<div>"))
+    }
+
+    @Test func honoursADeclaredHtmlModeWithoutSniffing() {
+        // A real HTML message that opens with text still converts verbatim.
+        let body = "Hello there.<p>Second paragraph.</p>"
+        #expect(emailBodyToHTML(body, mode: "html") == body)
+    }
+
+    @Test func sniffsOnlyWhenTheServerDidNotSayAnything() {
+        let markup = "<p>Hi</p>"
+        let text = "Just a sentence."
+        #expect(emailBodyToHTML(markup, mode: "") == markup)
+        #expect(emailBodyToHTML(text, mode: "").contains("kypost-plain-text"))
+        #expect(!isPlainTextBody(markup, mode: ""))
+        #expect(isPlainTextBody(text, mode: ""))
+    }
+
+    @Test func treatsAnUnrecognisedModeAsAbsent() {
+        // A relay that invents a third value must degrade to sniffing, not to
+        // one of the two branches by accident.
+        #expect(normalizedBodyMode("HTML") == "html")
+        #expect(normalizedBodyMode("  Plain ") == "plain")
+        #expect(normalizedBodyMode("richtext") == "")
+        #expect(normalizedBodyMode("") == "")
+    }
+
+    @Test func rendersMislabelledMarkdownNatively() {
+        // Relay and cache rows do label Markdown as HTML. Rendering it in the
+        // WebView shows the raw syntax behind a horizontal scrollbar.
+        let markdown = "# Heading\n\nSee [the docs](https://example.com/x) for more."
+        #expect(isPlainTextBody(markdown, mode: "html"))
+        // The conversion still honours the declared mode — only the choice of
+        // renderer reacts to the content.
+        #expect(emailBodyToHTML(markdown, mode: "html") == markdown)
+    }
+
+    @Test func keepsRealMarkupInTheWebViewEvenWhenLabelledHtml() {
+        #expect(!isPlainTextBody("<table><tr><td>x</td></tr></table>", mode: "html"))
+    }
+
+    @Test func escapesAmpersandsBeforeTheEscapesItIntroduces() {
+        #expect(escapeHTMLText("a & b < c") == "a &amp; b &lt; c")
+    }
+}
+
+// MARK: - Relay wire fields
+
+@Suite struct RelayBodyModeDecodingTests {
+    private func decode(_ json: String) throws -> RelayEmailDTO {
+        try JSONDecoder().decode(RelayEmailDTO.self, from: Data(json.utf8))
+    }
+
+    @Test func carriesBodyModeAndHasAttachmentsThrough() throws {
+        let dto = try decode("""
+        {"messageId": "m1", "bodyMode": "plain", "hasAttachments": true}
+        """)
+        let email = dto.toDomain(folder: "INBOX", tab: "")
+        #expect(email.bodyMode == "plain")
+        #expect(email.hasAttachments)
+    }
+
+    @Test func anOlderRelayOmittingThemDegradesToSniffing() throws {
+        // Absent is a distinct state from "html"/"plain": "" is what puts the
+        // reader back on content sniffing, and false is the safe direction for
+        // a marker.
+        let dto = try decode(#"{"messageId": "m1"}"#)
+        let email = dto.toDomain(folder: "INBOX", tab: "")
+        #expect(email.bodyMode == "")
+        #expect(!email.hasAttachments)
+    }
+}
+
+// MARK: - Relay error outcomes (parity brief C5)
+
+@Suite struct RelayErrorOutcomeTests {
+    @Test func aRateLimitCarriesItsRetryAfterSeconds() {
+        let outcome = MailOutcome.from(NetworkError.rateLimited(retryAfter: 900))
+        #expect(outcome == .rateLimited(retryAfter: 900))
+    }
+
+    @Test func aRateLimitWithoutAUsableHeaderStillBacksOff() {
+        // nil is "we were not told", not "retry now" — the caller must back
+        // off either way, so this stays a rateLimited outcome.
+        #expect(MailOutcome.from(NetworkError.rateLimited(retryAfter: nil))
+            == .rateLimited(retryAfter: nil))
+    }
+
+    @Test func retryAfterIsReadableRatherThanRaw() {
+        // "900 seconds" is not something a user can act on.
+        #expect(NetworkError.formatRetryAfter(30) == "30 seconds")
+        #expect(NetworkError.formatRetryAfter(90) == "a minute")
+        #expect(NetworkError.formatRetryAfter(900) == "15 minutes")
+    }
+
+    @Test func onlyDeltaSecondsCountAsARetryAfter() throws {
+        let url = try #require(URL(string: "https://relay.test"))
+        func header(_ value: String?) -> HTTPURLResponse? {
+            HTTPURLResponse(
+                url: url,
+                statusCode: 429,
+                httpVersion: nil,
+                headerFields: value.map { ["Retry-After": $0] }
+            )
+        }
+        #expect(NetworkError.retryAfterSeconds(from: try #require(header("120"))) == 120)
+        #expect(NetworkError.retryAfterSeconds(from: try #require(header(" 45 "))) == 45)
+        #expect(NetworkError.retryAfterSeconds(from: try #require(header(nil))) == nil)
+        // The HTTP-date form is legal but unhandled; it must read as absent
+        // rather than as zero, since "retry immediately" is the one answer a
+        // malformed header must not produce.
+        let dated = try #require(header("Wed, 21 Oct 2026 07:28:00 GMT"))
+        #expect(NetworkError.retryAfterSeconds(from: dated) == nil)
+        #expect(NetworkError.retryAfterSeconds(from: try #require(header("-5"))) == nil)
+    }
+
+    @Test func anUnconfiguredAccountIsNotAGenericFailure() {
+        // The relay answers plain text; the body is the only discriminator on
+        // this path, since a 400 carries no JSON field like the two 409s do.
+        let body = "imap configuration is required before mail can be fetched"
+        #expect(RelayMailSource.notConfiguredMessage(body: body) == body)
+        #expect(MailOutcome.from(NetworkError.badRequest(body: body)) == .notConfigured(body))
+    }
+
+    @Test func anOrdinaryBadRequestStaysAFailure() {
+        let outcome = MailOutcome.from(NetworkError.badRequest(body: "missing subject"))
+        #expect(outcome == .failure("missing subject"))
+        #expect(RelayMailSource.notConfiguredMessage(body: "missing subject") == nil)
+    }
+
+    @Test func anUpstreamFailureIsDistinctFromAFlatServerError() {
+        // 502 is retryable with backoff; the other 5xx are not, and telling
+        // the user to retry is only honest for the one that is.
+        guard case .upstreamFailure = MailOutcome.from(NetworkError.server(statusCode: 502)) else {
+            Issue.record("expected .upstreamFailure for 502")
+            return
+        }
+        guard case .failure = MailOutcome.from(NetworkError.server(statusCode: 500)) else {
+            Issue.record("expected .failure for 500")
+            return
+        }
+    }
+}
+
+// MARK: - Folder management
+
+@Suite struct FolderCrudTests {
+    private func source(_ client: HTTPClient) -> RelayMailSource {
+        RelayMailSource(
+            httpClient: client,
+            serverUrl: "https://relay.test",
+            auth: RelayAuth(deviceId: "d1", deviceSecret: "s1")
+        )
+    }
+
+    @Test func listingCarriesTheServersDeletableFlag() async throws {
+        // The server is the authority on what may be deleted. Re-deriving it
+        // from the name is how a renamed or localised special folder ends up
+        // with a Delete item that always fails.
+        let client = stubClient(json: """
+        {"parent": "", "folders": [
+            {"path": "INBOX", "deletable": false},
+            {"path": "INBOX/Receipts", "deletable": true},
+            {"path": "INBOX/Legacy"}
+        ]}
+        """)
+        let folders = try await source(client).listFolders(parent: nil)
+        #expect(folders == [
+            MailFolder(name: "INBOX", deletable: false),
+            MailFolder(name: "INBOX/Receipts", deletable: true),
+            // Absent reads as not deletable: the safe direction is refusing to
+            // offer a destructive action we were not told is available.
+            MailFolder(name: "INBOX/Legacy", deletable: false),
+        ])
+    }
+
+    @Test func createPostsParentAndSegment() async throws {
+        let seen = Box<URLRequest?>(nil)
+        let client = stubClient(json: #"{"ok": true}"#) { seen.value = $0 }
+        try await source(client).createFolder(parent: "INBOX", name: "Receipts")
+
+        let request = try #require(seen.value)
+        #expect(request.httpMethod == "POST")
+        #expect(request.url?.path() == "/api/inbox/folders")
+        let body = try #require(request.httpBody).map { $0 }
+        let json = String(decoding: Data(body), as: UTF8.self)
+        #expect(json.contains(#""parent":"INBOX""#))
+        #expect(json.contains(#""name":"Receipts""#))
+    }
+
+    @Test func renameUsesPutWithTheFullPathAndNewSegment() async throws {
+        let seen = Box<URLRequest?>(nil)
+        let client = stubClient(json: #"{"ok": true}"#) { seen.value = $0 }
+        try await source(client).renameFolder(folder: "INBOX/Old", name: "New")
+
+        let request = try #require(seen.value)
+        #expect(request.httpMethod == "PUT")
+        let json = String(decoding: try #require(request.httpBody), as: UTF8.self)
+        #expect(json.contains(#""folder":"INBOX\/Old""#) || json.contains(#""folder":"INBOX/Old""#))
+        #expect(json.contains(#""name":"New""#))
+    }
+
+    @Test func deleteSendsTheTargetAsAQueryParameterNotABody() async throws {
+        // The relay does not accept a DELETE payload here.
+        let seen = Box<URLRequest?>(nil)
+        let client = stubClient(json: #"{"ok": true}"#) { seen.value = $0 }
+        try await source(client).deleteFolder(folder: "INBOX/Receipts")
+
+        let request = try #require(seen.value)
+        #expect(request.httpMethod == "DELETE")
+        #expect(request.httpBody == nil)
+        #expect(request.url?.query()?.contains("folder=INBOX") == true)
+    }
+
+    @Test func aFolderNameWithASlashStillTravelsAsOneSegment() async throws {
+        // The relay joins parent and name; a segment containing the separator
+        // must not be able to smuggle a second level in.
+        let seen = Box<URLRequest?>(nil)
+        let client = stubClient(json: #"{"ok": true}"#) { seen.value = $0 }
+        try await source(client).createFolder(parent: "", name: "a/b")
+
+        let request = try #require(seen.value)
+        let json = String(decoding: try #require(request.httpBody), as: UTF8.self)
+        // Encoded as a JSON string value, so the server sees one field and can
+        // reject it — rather than this client silently building a path.
+        #expect(json.contains("a") && json.contains("b"))
+        #expect(request.url?.path() == "/api/inbox/folders")
+    }
+}
+
+// MARK: - Delta sync (Phase 2)
+
+@Suite struct MailDeltaReconcileTests {
+    private func dao() throws -> EmailDAO {
+        EmailDAO(modelContainer: try AppDatabase(inMemory: true).container)
+    }
+
+    private func email(
+        _ id: String,
+        body: String = "cached body",
+        bodyMode: String = "html",
+        subject: String = "Subject",
+        bodyOmitted: Bool = false,
+        pgpEncrypted: Bool = false
+    ) -> Email {
+        var email = Email(
+            serverId: id, folder: "INBOX", senderName: "A", senderEmail: "a@x",
+            subject: subject, body: body, keywords: [],
+            receivedAt: Date(timeIntervalSince1970: 1_000), read: false, starred: false
+        )
+        email.bodyMode = bodyMode
+        email.bodyOmitted = bodyOmitted
+        email.pgpEncrypted = pgpEncrypted
+        return email
+    }
+
+    /// The hazard RelayMailSource.swift documented before delta was switched
+    /// on: an "updated" row carries no body, and writing "" over the cached
+    /// one makes a server-decrypted message read as client-protected — so the
+    /// reader sends the user to webmail for mail they can already open.
+    @Test func anUpdatedRowKeepsTheBodyItAlreadyHas() async throws {
+        let dao = try dao()
+        try await dao.replaceFolderSnapshot(
+            folder: "INBOX",
+            emails: [email("m1", body: "<p>real</p>", pgpEncrypted: true)]
+        )
+
+        try await dao.applyDelta(
+            folder: "INBOX",
+            emails: [email("m1", body: "", bodyMode: "", subject: "New subject",
+                           bodyOmitted: true, pgpEncrypted: true)],
+            updatedIds: ["m1"],
+            removedIds: [],
+            pruneAgainstEmails: false
+        )
+
+        let stored = try #require(try await dao.getEmail(serverId: "m1"))
+        #expect(stored.body == "<p>real</p>")
+        #expect(stored.bodyMode == "html")   // a blank incoming mode never wins
+        #expect(stored.subject == "New subject")
+        #expect(pgpMessageState(
+            pgpEncrypted: stored.pgpEncrypted,
+            pgpDecryptError: stored.pgpDecryptError,
+            body: stored.body
+        ) == .decryptedByServer)
+    }
+
+    /// With no row to merge into, storing the metadata-only entry creates one
+    /// whose empty body is indistinguishable from a client-protected message.
+    /// We do not have this message; a metadata-only delta is not a delivery.
+    @Test func anUpdatedRowWeNeverHadIsSkippedRatherThanInvented() async throws {
+        let dao = try dao()
+        try await dao.applyDelta(
+            folder: "INBOX",
+            emails: [email("ghost", body: "", bodyOmitted: true)],
+            updatedIds: ["ghost"],
+            removedIds: [],
+            pruneAgainstEmails: false
+        )
+        #expect(try await dao.getEmail(serverId: "ghost") == nil)
+    }
+
+    @Test func newRowsAreInsertedAndRemovedIdsDeleted() async throws {
+        let dao = try dao()
+        try await dao.replaceFolderSnapshot(folder: "INBOX", emails: [email("old")])
+        try await dao.applyDelta(
+            folder: "INBOX",
+            emails: [email("fresh", body: "<p>new</p>")],
+            updatedIds: [],
+            removedIds: ["old"],
+            pruneAgainstEmails: false
+        )
+        #expect(try await dao.getEmail(serverId: "old") == nil)
+        #expect(try await dao.getEmail(serverId: "fresh")?.body == "<p>new</p>")
+    }
+
+    /// A partial delta describes only what changed. Everything it omits is
+    /// still legitimately in the mailbox, so pruning against it would delete
+    /// the whole folder bar the few rows that happened to change.
+    @Test func aPartialDeltaNeverPrunesTheFolder() async throws {
+        let dao = try dao()
+        try await dao.replaceFolderSnapshot(
+            folder: "INBOX", emails: [email("keep1"), email("keep2")]
+        )
+        try await dao.applyDelta(
+            folder: "INBOX",
+            emails: [email("keep1", subject: "edited")],
+            updatedIds: ["keep1"],
+            removedIds: [],
+            pruneAgainstEmails: false
+        )
+        #expect(try await dao.getFolder(folder: "INBOX", limit: 50).count == 2)
+    }
+
+    /// A full window can say what is *absent*, and pruning against it is the
+    /// only self-heal for a removal this device was never told about.
+    @Test func aFullWindowPrunesWhatItDoesNotMention() async throws {
+        let dao = try dao()
+        try await dao.replaceFolderSnapshot(
+            folder: "INBOX", emails: [email("stays"), email("deletedOnTheWeb")]
+        )
+        try await dao.applyDelta(
+            folder: "INBOX",
+            emails: [email("stays")],
+            updatedIds: [],
+            removedIds: [],
+            pruneAgainstEmails: true
+        )
+        #expect(try await dao.getEmail(serverId: "deletedOnTheWeb") == nil)
+        #expect(try await dao.getEmail(serverId: "stays") != nil)
+    }
+
+    @Test func pruningIsScopedToItsOwnFolder() async throws {
+        let dao = try dao()
+        var other = email("elsewhere")
+        other.folder = "Archive"
+        try await dao.replaceFolderSnapshot(folder: "INBOX", emails: [email("inboxRow")])
+        try await dao.replaceFolderSnapshot(folder: "Archive", emails: [other])
+        try await dao.applyDelta(
+            folder: "INBOX", emails: [], updatedIds: [], removedIds: [],
+            pruneAgainstEmails: true
+        )
+        #expect(try await dao.getEmail(serverId: "inboxRow") == nil)
+        #expect(try await dao.getEmail(serverId: "elsewhere") != nil)
+    }
+}
+
+@Suite struct MailCursorStoreTests {
+    private func store(
+        hostileLocation: Bool = false,
+        now: @escaping @Sendable () -> Date = Date.init
+    ) -> (MailCursorStore, UserDefaults) {
+        let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        let hlp = HostileLocationProtectionStore(defaults: defaults)
+        hlp.enabled = hostileLocation
+        return (MailCursorStore(defaults: defaults, hostileLocation: hlp, now: now), defaults)
+    }
+
+    @Test func roundTripsACursorPerFolder() {
+        let (store, _) = store()
+        store.saveCursor(pairingId: "sub1", folder: "INBOX", cursor: "c-1")
+        store.saveCursor(pairingId: "sub1", folder: "Archive", cursor: "c-2")
+        #expect(store.cursor(pairingId: "sub1", folder: "INBOX") == "c-1")
+        #expect(store.cursor(pairingId: "sub1", folder: "Archive") == "c-2")
+    }
+
+    /// Re-pairing must not put the previous relay's token on the wire to a
+    /// server that never issued it.
+    @Test func adifferentPairingDoesNotSeeTheOldCursor() {
+        let (store, _) = store()
+        store.saveCursor(pairingId: "sub1", folder: "INBOX", cursor: "c-1")
+        #expect(store.cursor(pairingId: "sub2", folder: "INBOX") == "")
+    }
+
+    /// Android's bug: recording a resync shared the cursor's scope key, so the
+    /// stamp re-authorised a stale cursor for the new pairing.
+    @Test func recordingAResyncDoesNotReauthoriseAStaleCursor() {
+        let (store, _) = store()
+        store.saveCursor(pairingId: "sub1", folder: "INBOX", cursor: "c-1")
+        store.recordFullResync(pairingId: "sub2", folder: "INBOX")
+        #expect(store.cursor(pairingId: "sub2", folder: "INBOX") == "")
+        #expect(store.cursor(pairingId: "sub1", folder: "INBOX") == "c-1")
+    }
+
+    @Test func aFolderNamedLikeAnotherFoldersKeyCannotCollide() {
+        // The folder name is an unvalidated server string. Hashing the key
+        // means no name can be crafted to land on another folder's slot.
+        let (store, _) = store()
+        store.saveCursor(pairingId: "s", folder: "INBOX", cursor: "inbox-cursor")
+        store.saveCursor(pairingId: "s", folder: "scope_INBOX", cursor: "other-cursor")
+        #expect(store.cursor(pairingId: "s", folder: "INBOX") == "inbox-cursor")
+        #expect(store.cursor(pairingId: "s", folder: "scope_INBOX") == "other-cursor")
+    }
+
+    @Test func theFolderTaxonomyNeverReachesTheDefaultsKeys() {
+        let (store, defaults) = store()
+        store.saveCursor(pairingId: "s", folder: "Archive/Legal/Asylum-Case", cursor: "c")
+        let keys = defaults.dictionaryRepresentation().keys.joined(separator: " ")
+        #expect(!keys.contains("Asylum"))
+        #expect(!keys.contains("Legal"))
+    }
+
+    @Test func aFullResyncIsForcedWhenNoneWasEverRecorded() {
+        let (store, _) = store()
+        #expect(store.shouldForceFullResync(pairingId: "s", folder: "INBOX"))
+        store.recordFullResync(pairingId: "s", folder: "INBOX")
+        #expect(!store.shouldForceFullResync(pairingId: "s", folder: "INBOX"))
+    }
+
+    @Test func aFullResyncIsForcedAgainADayLater() {
+        let clock = Box(Date(timeIntervalSince1970: 0))
+        let (store, _) = store(now: { clock.value })
+        store.recordFullResync(pairingId: "s", folder: "INBOX")
+        clock.value = Date(timeIntervalSince1970: 23 * 3_600)
+        #expect(!store.shouldForceFullResync(pairingId: "s", folder: "INBOX"))
+        clock.value = Date(timeIntervalSince1970: 24 * 3_600)
+        #expect(store.shouldForceFullResync(pairingId: "s", folder: "INBOX"))
+    }
+
+    /// Under Hostile Location Protection these keys would spell out which
+    /// folders exist and when each was last read.
+    @Test func hostileLocationProtectionKeepsEverythingOffDisk() {
+        let (store, defaults) = store(hostileLocation: true)
+        store.saveCursor(pairingId: "s", folder: "INBOX", cursor: "c-1")
+        store.recordFullResync(pairingId: "s", folder: "INBOX")
+        #expect(store.cursor(pairingId: "s", folder: "INBOX") == "c-1")
+        let keys = defaults.dictionaryRepresentation().keys.joined(separator: " ")
+        #expect(!keys.contains("mail.cursorValue"))
+        #expect(!keys.contains("mail.resyncStamp"))
+    }
+
+    @Test func aBlankCursorIsNeverStored() {
+        // A relay may answer with no cursor; that must not clear a good one.
+        let (store, _) = store()
+        store.saveCursor(pairingId: "s", folder: "INBOX", cursor: "c-1")
+        store.saveCursor(pairingId: "s", folder: "INBOX", cursor: "")
+        #expect(store.cursor(pairingId: "s", folder: "INBOX") == "c-1")
+    }
+}
+
+// MARK: - Phishing flag (Phase 3)
+
+@Suite struct PhishingFlagTests {
+    @Test func recognisesTheReservedKeyword() {
+        #expect(isFlaggedPhishing(["Primary", phishingKeyword]))
+        #expect(phishingKeyword == "$Phishing")
+    }
+
+    /// IMAP keywords are case-insensitive. A server may echo back `$phishing`
+    /// for a keyword the poller set as `$Phishing`, and a case-sensitive check
+    /// would drop the warning on precisely the mail it exists for.
+    @Test func matchesRegardlessOfCaseOrSurroundingSpace() {
+        #expect(isFlaggedPhishing(["$phishing"]))
+        #expect(isFlaggedPhishing(["$PHISHING"]))
+        #expect(isFlaggedPhishing(["$PhIsHiNg"]))
+        #expect(isFlaggedPhishing(["  $Phishing  "]))
+    }
+
+    @Test func doesNotMatchANeighbouringKeyword() {
+        // Exact match, not a prefix or a substring.
+        #expect(!isFlaggedPhishing(["$PhishingReport"]))
+        #expect(!isFlaggedPhishing(["NotPhishing"]))
+        #expect(!isFlaggedPhishing(["Primary", "Receipts"]))
+        #expect(!isFlaggedPhishing([String]()))
+    }
+
+    @Test func systemKeywordsAreTheDollarPrefixedNamespace() {
+        #expect(isSystemKeyword("$Phishing"))
+        #expect(isSystemKeyword("$Junk"))
+        #expect(isSystemKeyword(" $Forwarded"))
+        #expect(!isSystemKeyword("Work"))
+        #expect(!isSystemKeyword("Receipts"))
+    }
+}
+
+@Suite struct PhishingKeywordWireTests {
+    private func decode(_ json: String) throws -> RelayEmailDTO {
+        try JSONDecoder().decode(RelayEmailDTO.self, from: Data(json.utf8))
+    }
+
+    /// The regression this closes: `keywords` was not decoded at all, so the
+    /// server could set $Phishing and this client would never see it.
+    @Test func theWireKeywordsReachTheDomainModel() throws {
+        let dto = try decode("""
+        {"messageId": "m1", "label": "Work", "keywords": ["Work", "$Phishing"]}
+        """)
+        let email = dto.toDomain(folder: "INBOX", tab: "Primary")
+        #expect(email.keywords.contains("$Phishing"))
+        #expect(isFlaggedPhishing(email.keywords))
+    }
+
+    /// Union, not replacement: the label drives the tab strip and the wire
+    /// list carries protocol keywords. Dropping either loses something.
+    @Test func theTabDerivedLabelSurvivesAlongsideTheWireKeywords() throws {
+        let dto = try decode("""
+        {"messageId": "m1", "label": "Important", "keywords": ["$Phishing"]}
+        """)
+        let email = dto.toDomain(folder: "INBOX", tab: "Primary")
+        #expect(email.keywords == ["Important", "$Phishing"])
+    }
+
+    @Test func anOlderRelayWithoutTheFieldStillGetsItsTab() throws {
+        let dto = try decode(#"{"messageId": "m1", "label": "Work"}"#)
+        let email = dto.toDomain(folder: "INBOX", tab: "Primary")
+        #expect(email.keywords == ["Work"])
+        #expect(!isFlaggedPhishing(email.keywords))
+    }
+}
+
+@Suite struct MessageBodyNavigationTests {
+    private func policy(_ urlString: String, tapped: Bool = true)
+        -> EmailBodyWebView.BodyNavigation {
+        EmailBodyWebView.navigationPolicy(url: URL(string: urlString), isLinkActivation: tapped)
+    }
+
+    /// Handing a tap to the system routes this app's own scheme back into this
+    /// app, so a kypost://native-pair link in a message would raise the
+    /// pairing confirmation on top of the sender's pretext.
+    @Test func theMessageBodyCannotReachTheAppsOwnScheme() {
+        #expect(policy("kypost://native-pair?sub=a&srv=https://evil.test&pt=x") == .block)
+        #expect(policy("kypost://native-pair", tapped: false) == .block)
+    }
+
+    /// An allowlist, not a denylist: a mail body has no business opening any
+    /// other scheme either, and a denylist needs updating whenever one appears.
+    @Test func onlyHttpAndHttpsLeaveTheMessage() {
+        #expect(policy("https://example.com") == .openInBrowser(URL(string: "https://example.com")!))
+        #expect(policy("http://example.com") == .openInBrowser(URL(string: "http://example.com")!))
+        #expect(policy("file:///etc/passwd") == .block)
+        #expect(policy("tel:+15550100") == .block)
+        #expect(policy("javascript:alert(1)") == .block)
+    }
+
+    @Test func theMessageDocumentItselfStillLoads() {
+        #expect(policy("about:blank", tapped: false) == .allow)
+    }
+
+    /// A <meta http-equiv="refresh"> is plain HTML and a main-frame
+    /// navigation — neither script nor subresource — so it must still be
+    /// dropped even for an allowed scheme.
+    @Test func anUngesturedNavigationIsStillDropped() {
+        #expect(policy("https://example.com", tapped: false) == .block)
     }
 }

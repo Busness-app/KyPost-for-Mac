@@ -10,6 +10,31 @@
 #if os(macOS)
 import SwiftUI
 
+/// Which folder sheet is showing. Identifiable so `sheet(item:)` presents it,
+/// and one value for both actions so they cannot both be up at once.
+enum FolderPrompt: Identifiable, Hashable {
+    case create(parent: String)
+    case rename(folder: String)
+
+    var id: String {
+        switch self {
+        case .create(let parent): "create:\(parent)"
+        case .rename(let folder): "rename:\(folder)"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .create(let parent):
+            parent.isEmpty
+                ? "New folder"
+                : "New folder in \(StandardFolder.displayName(parent))"
+        case .rename(let folder):
+            "Rename \(StandardFolder.displayName(folder))"
+        }
+    }
+}
+
 enum MacSection: Hashable {
     case inbox(keyword: String?)
     /// A server mailbox other than Inbox (Drafts, Junk, Sent, Trash, Archive/…).
@@ -29,6 +54,14 @@ struct MacRootView: View {
     @State private var selectedEmails: Set<Email> = []
     @State private var selectedContact: Contact?
     @State private var showScanKey = false
+    /// Which folder sheet is up, if any. One piece of state for both actions
+    /// so they cannot be presented at once.
+    @State private var folderPrompt: FolderPrompt?
+    @State private var folderName = ""
+    /// The folder a Delete confirmation is asking about. Deleting a mail
+    /// folder takes its messages with it, so it gets a confirmation rather
+    /// than firing straight off a context-menu click.
+    @State private var folderPendingDelete: String?
     /// When off, the email preview pane is hidden and reading happens in
     /// pop-out windows (double-click). Contacts always keep their detail pane.
     @AppStorage("macShowPreviewPane") private var showPreviewPane = true
@@ -67,6 +100,26 @@ struct MacRootView: View {
         }
         .sheet(item: $router.mfaRoute) { route in
             MfaApprovalView(challenge: route.challenge).environment(\.theme, theme)
+        }
+        .sheet(item: $folderPrompt) { _ in
+            folderPromptSheet.environment(\.theme, theme)
+        }
+        .confirmationDialog(
+            folderPendingDelete.map { "Delete \(StandardFolder.displayName($0))?" } ?? "",
+            isPresented: Binding(
+                get: { folderPendingDelete != nil },
+                set: { if !$0 { folderPendingDelete = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete Folder", role: .destructive) {
+                guard let folder = folderPendingDelete else { return }
+                folderPendingDelete = nil
+                Task { await inboxViewModel.deleteFolder(folder) }
+            }
+            Button("Cancel", role: .cancel) { folderPendingDelete = nil }
+        } message: {
+            Text("This deletes the folder and the messages in it on the server. It can't be undone from here.")
         }
         .lockAwareRouting(router)
         .task {
@@ -128,9 +181,22 @@ struct MacRootView: View {
                 Label("Inbox", systemImage: "tray")
                     .moveDropTarget(StandardFolder.inbox, viewModel: inboxViewModel)
                     .tag(MacSection.inbox(keyword: nil))
+                    .contextMenu {
+                        // Inbox itself is never deletable or renamable, so it
+                        // only offers the one action. There is deliberately no
+                        // "new top-level folder": this sidebar renders the
+                        // children of INBOX and Archive only, so a folder
+                        // created beside them would be invisible here.
+                        Button("New Subfolder…") {
+                            folderPrompt = .create(parent: StandardFolder.inbox)
+                        }
+                    }
                 // Everything between Inbox and Archive is indented one level.
                 ForEach(inboxViewModel.inboxSubfolders, id: \.name) { sub in
-                    folderRow(path: sub.name, icon: "folder", indented: true)
+                    folderRow(
+                        path: sub.name, icon: "folder", indented: true,
+                        deletable: sub.deletable
+                    )
                 }
                 ForEach(inboxViewModel.tabs, id: \.name) { tab in
                     Label(tab.name, systemImage: "tag")
@@ -143,7 +209,10 @@ struct MacRootView: View {
                 }
                 folderRow(path: StandardFolder.archive, icon: "archivebox", indented: false)
                 ForEach(inboxViewModel.archiveSubfolders, id: \.name) { sub in
-                    folderRow(path: sub.name, icon: "folder", indented: true)
+                    folderRow(
+                        path: sub.name, icon: "folder", indented: true,
+                        deletable: sub.deletable
+                    )
                 }
             }
             Section("People") {
@@ -157,11 +226,63 @@ struct MacRootView: View {
     }
 
     /// A selectable sidebar folder that also accepts dropped emails.
-    private func folderRow(path: String, icon: String, indented: Bool) -> some View {
+    private func folderRow(
+        path: String,
+        icon: String,
+        indented: Bool,
+        deletable: Bool = false
+    ) -> some View {
         Label(StandardFolder.displayName(path), systemImage: icon)
             .padding(.leading, indented ? 12 : 0)
             .moveDropTarget(path, viewModel: inboxViewModel)
             .tag(MacSection.folder(name: path))
+            .contextMenu {
+                Button("New Subfolder…") { folderPrompt = .create(parent: path) }
+                // Only offered where the server said it is allowed; the
+                // built-in mailboxes come back not deletable, and guessing
+                // from the name breaks on a renamed or localised one.
+                if deletable {
+                    Button("Rename…") { folderPrompt = .rename(folder: path) }
+                    Button("Delete…", role: .destructive) {
+                        folderPendingDelete = path
+                    }
+                }
+            }
+    }
+
+    /// The folder name sheet, for both create and rename.
+    private var folderPromptSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(folderPrompt?.title ?? "")
+                .font(AppFont.ui(15, weight: .semibold))
+            TextField("Folder name", text: $folderName)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { submitFolderPrompt() }
+            HStack {
+                Spacer()
+                Button("Cancel") { folderPrompt = nil; folderName = "" }
+                Button("Save") { submitFolderPrompt() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(folderName.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 320)
+    }
+
+    private func submitFolderPrompt() {
+        let name = folderName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, let prompt = folderPrompt else { return }
+        folderPrompt = nil
+        folderName = ""
+        Task {
+            switch prompt {
+            case .create(let parent):
+                await inboxViewModel.createFolder(parent: parent, name: name)
+            case .rename(let folder):
+                await inboxViewModel.renameFolder(folder, to: name)
+            }
+        }
     }
 
     // MARK: - Content column
@@ -468,7 +589,11 @@ struct MacRootView: View {
 
     private func openPendingMessageIfNeeded() {
         guard let messageId = router.pendingMessageId else { return }
-        if let email = inboxViewModel.email(withServerId: messageId) {
+        Task {
+            // Resync before opening: the cached row may carry a stale bodyMode
+            // or stale PGP state, and the detail screen renders from it.
+            await inboxViewModel.refreshForPushTap()
+            guard let email = inboxViewModel.email(withServerId: messageId) else { return }
             section = .inbox(keyword: nil)
             selectedEmails = [email]
             router.pendingMessageId = nil

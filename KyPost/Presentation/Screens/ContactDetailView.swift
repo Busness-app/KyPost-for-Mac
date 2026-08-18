@@ -27,6 +27,11 @@ struct ContactDetailView: View {
 
     @State private var draft: Contact
     @State private var isEditing: Bool
+    /// Empty until the group list is read, and empty for a contact in no
+    /// groups — the card is hidden either way, so there is no flash of an
+    /// empty section while it loads.
+    @State private var groupNames: [String] = []
+    @State private var deleteConfirmationShown = false
 
     init(contact: Contact?, viewModel: ContactsViewModel) {
         self.contact = contact
@@ -50,6 +55,9 @@ struct ContactDetailView: View {
         .background(theme.bg)
         .navigationTitle(navigationTitle)
         .toolbar { toolbarContent }
+        .task(id: draft.groupIDs) {
+            groupNames = await viewModel.groupNames(for: draft)
+        }
     }
 
     private var navigationTitle: String {
@@ -103,6 +111,9 @@ struct ContactDetailView: View {
                 if !draft.birthday.isEmpty || !draft.events.isEmpty || !draft.relations.isEmpty {
                     personalCard
                 }
+                if !groupNames.isEmpty {
+                    groupsCard
+                }
                 if !draft.notes.isEmpty {
                     notesCard
                 }
@@ -116,13 +127,28 @@ struct ContactDetailView: View {
                     metadataCard
                 }
                 if let contact {
-                    Button("Delete Contact") {
-                        Task {
-                            await viewModel.delete(contact)
-                            dismiss()
+                    Button("Delete Contact") { deleteConfirmationShown = true }
+                        .buttonStyle(DangerButtonStyle())
+                        .confirmationDialog(
+                            "Delete \(contact.name.isEmpty ? "this contact" : contact.name)?",
+                            isPresented: $deleteConfirmationShown,
+                            titleVisibility: .visible
+                        ) {
+                            Button("Delete Contact", role: .destructive) {
+                                Task {
+                                    await viewModel.delete(contact)
+                                    dismiss()
+                                }
+                            }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            // Names the reach honestly: a synced delete is not
+                            // local, and an exported card is a third place the
+                            // contact exists.
+                            Text(contact.uid == nil
+                                ? "This contact has never reached the server, so this removes it from this device."
+                                : "This removes the contact from the server and from every device you've paired.")
                         }
-                    }
-                    .buttonStyle(DangerButtonStyle())
                 }
             }
             .padding()
@@ -218,6 +244,17 @@ struct ContactDetailView: View {
                     label: relation.label ?? "Related",
                     value: relation.name
                 )
+            }
+        }
+    }
+
+    /// Group names, resolved from `Contact.groupIDs` against the pulled group
+    /// list. Loaded in `.task` rather than computed: the lookup crosses an
+    /// actor, and SwiftUI re-evaluates `body` far too often for that.
+    private var groupsCard: some View {
+        card {
+            ForEach(groupNames, id: \.self) { name in
+                detailRow(icon: "person.3", label: "Group", value: name)
             }
         }
     }

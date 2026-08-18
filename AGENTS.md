@@ -96,6 +96,199 @@ Default section order:
   Note `parallelizable` belongs on each entry in `testTargets`, not in
   `defaultOptions`, where it is silently ignored.
 
+## Local Contracts
+
+### Device enrollment (`Domain/Security/DeviceEnvelope|EnrollmentVault|EnrollmentCeremony`)
+
+- **Gated on Hostile Location Protection being off.** Enabling HLP destroys the
+  envelope; turning HLP back off does not restore it, and must not — the user
+  re-runs the ceremony deliberately. Checked at the start of the ceremony *and*
+  again before storing, because the user can flip it mid-window.
+- **A device with no passcode cannot enrol.** The envelope's protection *is*
+  the lock screen. Report it, do not degrade.
+- The device key allows the **device credential**, not biometry alone. Biometry-
+  only invalidates on every enrollment change, costing an ordinary user a full
+  re-ceremony — and enrolling a biometric already requires the passcode, so the
+  attacker it would exclude already holds what the key accepts.
+- Adopt an existing device key only if it still matches the spec. Presence
+  alone means a key from an earlier build with weaker parameters is reused
+  forever with no signal, silently breaking the migration the design plans for.
+- The envelope AAD is **length-prefixed**, and the fingerprint is normalised
+  and validated where the AAD is built — not by doc comment. Space-grouped hex
+  reaching an AAD that strips whitespace produces an authentication failure the
+  design reports as a substituted-key alarm.
+- A failed open is **hostile or stale, never a retry**. A 404 on the envelope
+  covers both "never sealed" and "expired" — one case, so a caller cannot split
+  them.
+- The enrollment code is derived from **this device's own key material**, never
+  from anything the server returned, or the comparison compares the server
+  against itself. 14 Crockford characters: the search is offline, so length is
+  a work factor, not a per-attempt probability.
+- The ceremony takes no platform types. That is what makes its whole exit table
+  a plain unit test; if a port of it needs a host app to test, the port went
+  wrong.
+
+### PGP signature trust (`Domain/Models/PgpSignatureState.swift`)
+
+- **There is no client-side `From` parser, and there must not be one.** Android
+  deleted theirs after a differential harness over 111 adversarial headers found
+  27 divergences from the server's parser — worst, the RFC 5322 comment
+  `Bob (Eve <eve@evil>) <bob@x>`, where the server binds `bob@x` and the client
+  bound `eve@evil`, letting any contact forge a verified badge for anyone.
+  Three fix rounds each closed one construct and opened another. The server
+  ships `signerKeys` already narrowed to the sender it resolved; consume that
+  narrowing, never reproduce it.
+- This app has two address parsers and **neither may reach a verdict**:
+  `RelayMailSource.splitSender` fills display fields, and `EmailAddress.parse`
+  builds outgoing recipients. Audited 2026-08-18; keep them apart.
+- Six states, not verified/unverified. The line that matters is **identity**
+  (`verifiedConfirmed` — confirmed out of band) versus **continuity**
+  (`verifiedSeenBefore` — same key as last time). Most keys arrive by Autocrypt
+  harvest, so a flat "verified" overclaims for nearly all of them. The wording
+  is part of the contract.
+- Ordering is load-bearing: a `conflict` outranks both a good key and an
+  invalid signature for the same sender, because reporting the survivor as
+  verified hides precisely the event worth reporting.
+- `signerUnknown` is **not an accusation** and does not mark a row: an ordinary
+  correspondent not yet in the address book, a rotated key, and a forgery are
+  locally indistinguishable.
+- Key-id extraction is injected. An unparseable bound key must only ever shrink
+  the candidate set, never grant a pass, and subkey ids must match — a signing
+  subkey's id differs from the primary's, so matching only the primary rejects
+  every normally signed message.
+
+### Phishing flag and message-body navigation
+
+- `$Phishing` is the reserved RFC 8621 keyword the server sets on mail
+  impersonating KyPost. Matched case-insensitively and trimmed, because IMAP
+  keywords are case-insensitive and a server may echo back `$phishing` for a
+  keyword set as `$Phishing`. Exact match — `$PhishingReport` is a different
+  keyword. The message is flagged **in place**: nothing moves or hides mail.
+- The relay's `keywords` array must stay decoded and **unioned** with the
+  tab-derived label, never replacing it. The label drives the tab strip; the
+  wire list carries protocol keywords. Dropping either loses something.
+- `$`-prefixed keywords are IMAP protocol flags, not user labels: they are
+  filtered out of the tab strip, the row chips, and the Keywords settings
+  screen. The phishing warning must not be hideable. (Divergence from Android,
+  whose `KeywordTabs.buildTabs` does not filter them.)
+- **The message body reaches only http/https.** An allowlist, not a denylist.
+  Handing a link tap to `openURL` hands it to the system, and the system routes
+  this app's own scheme back into this app — so a `kypost://native-pair` link
+  in a message would raise the pairing confirmation on top of the sender's
+  pretext. A mail body has no business opening `file:`, `tel:` or any other
+  scheme either, and a denylist needs updating every time one appears.
+- Un-gestured navigations stay blocked regardless of scheme: a
+  `<meta http-equiv="refresh">` is plain HTML and a main-frame navigation, so
+  neither the JavaScript switch nor `loadsSubresources` touches it.
+
+### Mail delta sync (`Data/Mail`, `Data/Storage/MailCursorStore.swift`)
+
+- **`isFullWindow` is derived from what we asked for, never from the wire's
+  `delta` flag.** A relay predating the matching server fix labels a `since=0`
+  response `delta: true` all the same, and only a full window can say what is
+  *absent*.
+- **Only a full window may prune.** A partial delta describes what changed;
+  everything it omits is still legitimately in the mailbox. Pruning against one
+  deletes the folder.
+- **An "updated" row carries no body.** Merge into the existing row and keep
+  the cached body; a blank incoming `bodyMode` never overwrites a known one. If
+  there is no existing row, **skip it** — storing it creates a row whose empty
+  body is indistinguishable from a client-protected message, and the reader
+  then claims end-to-end encryption for mail the server decrypted. A
+  metadata-only delta is not a delivery.
+- **Advance the cursor only after the rows are committed.** A crash between
+  the two costs a refetch; the other order loses messages permanently.
+- Cursors are opaque server strings — never assume numeric or ordered. Scoped
+  per pairing *and* folder, with the resync stamp on its **own** scope key:
+  sharing one lets writing the stamp re-authorise a stale cursor for a new
+  pairing.
+- Folder names are unvalidated server strings, so cursor keys hash them. That
+  stops a crafted name colliding with another folder's key, and keeps the
+  user's folder taxonomy out of a plaintext defaults file. Under Hostile
+  Location Protection the store is memory-only for the same reason.
+- **A push tap forces a full resync before opening its target.** The cached row
+  is fine for the list; rendering the detail screen from it can show a stale
+  `bodyMode` or stale PGP state.
+
+### Relay error mapping (`Data/Mail/MailSource.swift`)
+
+- `NetworkError.from` sees a status code and a body, never headers. Anything
+  header-derived — currently `Retry-After` — is parsed at the call site holding
+  the `HTTPURLResponse` and passed in. Android hit the same wall and resolved
+  it the same way; do not try to read headers inside the mapper.
+- A `Retry-After` that is not delta-seconds reads as **absent, never zero**.
+  "Retry immediately" is the one answer a malformed header must not produce.
+- 400 carries its body as `.badRequest(body:)`, because the relay answers
+  plain text there and the body is the only discriminator — unlike the two
+  409s, which are told apart by JSON field. Deciding what that text *means*
+  belongs in `RelayMailSource`, not `HTTPClient`.
+- An unconfigured account (400 "imap configuration is required…") is its own
+  outcome. Never build UI for the server's web-only mail configuration
+  endpoints: an unconfigured relay is an empty state pointing at the web app,
+  not a form.
+- 502 is `.upstreamFailure` and retryable with backoff; other 5xx are not.
+  Telling the user to retry is only honest for the one that is.
+
+### MFA number matching (`Domain/Models/MfaNumberMatch.swift`)
+
+- **Every value comes from the server.** Never invent decoys. This client used
+  to fill a short set from an LCG seeded on the challenge id, which made the
+  wrong answers derivable by anyone holding the id and therefore the right one
+  derivable by elimination — the entire guarantee of number matching, given
+  away. A challenge that does not carry the correct value and exactly
+  `choiceCount - 1` decoys of the same width is one this client cannot offer an
+  approval for: `options` returns nil and the screen leaves only Deny. There is
+  no plain-Approve fallback, and adding one re-opens the MFA-fatigue tap that
+  number matching exists to close.
+- **Digit width is whatever the server sent**, validated against
+  `MfaChallenge.matchDigitsLengthRange`, never an exact literal. The width was
+  pinned to 2 in three places across two repositories with no negotiation, so
+  widening the server's value space would have silently disabled approval on
+  every deployed client.
+- **Order is shuffled once per challenge and held.** Do not re-derive it on a
+  redraw, and do not sort by a hash of `(challengeId, value)`: that hash
+  expands to `H(challengeId) * 31^n + f(value)`, and with equal-width
+  candidates the challenge-id term cancels out of every comparison, leaving a
+  plain numeric sort that put the answer in the same slot on every challenge.
+
+### Contact groups
+
+- `GET /api/groups` is **pull-only and cursorless**. Every pull is the whole
+  truth, so a group absent from the response is deleted locally. This device
+  never creates a backend group (Client_Contact_Update.md Part 2 point 3), so
+  there is no outbox and nothing to reconcile.
+- `CNGroup` materialization is **one direction: backend → device**. A group the
+  user made in Contacts is never turned into a backend group — there is no
+  endpoint for it.
+- Same adoption discipline as cards: an existing link wins, then a group the
+  user already has *by name* is adopted rather than duplicated, then a new one
+  is created. **An adopted group is never renamed and never deleted** — we did
+  not author it.
+- Membership removals are scoped to groups this app links. A card the user also
+  put in their own group stays in it.
+- An unknown group id resolves to no name and is skipped, never rendered as a
+  raw UUID and never given an invented name — it only means the cache is
+  behind.
+
+### Contact identity (`Data/Contacts/`)
+
+- `SystemContactMapper.matchKeys(for:)` has two overloads — one for `Contact`,
+  one for `CNContact` — and **they must stay symmetric**. Each side offers one
+  key per email, else the name+phone fallback. When the app side offered only
+  `emails.first`, a person whose card carried only their *second* address
+  matched on neither side: the export wrote a duplicate card, and the import
+  read the original card as a stranger and wrote a duplicate contact — queued
+  for the relay, so the duplicate reached the server and every other device.
+  A new field that participates in identity goes into both overloads or
+  neither.
+- `ContactDAO.repairImportedDuplicates` groups by connected components over
+  shared keys, not by one key per row. Grouping on a single key cannot see the
+  duplicates above, because a non-primary-email match is exactly the case where
+  the two rows' primary keys differ.
+- `Contact.primaryEmail` / `primaryPhone` are `emails.first` / `phones.first`.
+  Anything that treats email order as meaningful is suspect; prefer the
+  `matchKeys` set.
+
 ## User Preferences
 
 When the user requests a durable behavior change, record it here or in the relevant child AGENTS.md

@@ -112,10 +112,43 @@ final class SingletonGraph {
 
     // MARK: - Repositories & Use Cases
 
+    lazy var enrollmentVault = EnrollmentVault(keychain: keychain)
+
+    /// Builds a ceremony against the current pairing, or nil when unpaired.
+    /// Rebuilt per attempt so a re-pair between attempts cannot reuse stale
+    /// credentials.
+    func makeEnrollmentCeremony(
+        onState: @escaping @Sendable (EnrollmentState) -> Void
+    ) -> EnrollmentCeremony? {
+        guard let pairing = try? securePairingStore.loadPairing(),
+              let deviceId = pairing.lastDeviceId, !deviceId.isEmpty
+        else { return nil }
+        let auth = RelayAuth(pairing: pairing)
+        let vault = enrollmentVault
+        let hostileStore = hostileLocationProtectionStore
+        return EnrollmentCeremony(
+            transport: EnrollmentClient(
+                httpClient: httpClient,
+                bootstrapClient: pgpSendClient,
+                serverUrl: pairing.srv,
+                auth: auth
+            ),
+            sealer: VaultSealer(vault: vault, deviceId: deviceId),
+            deviceId: deviceId,
+            hostileLocationEnabled: { hostileStore.enabled },
+            hasDeviceCredential: { vault.hasDeviceCredential },
+            onState: onState
+        )
+    }
+    lazy var mailCursorStore = MailCursorStore(
+        defaults: userDefaults,
+        hostileLocation: hostileLocationProtectionStore
+    )
     lazy var mailRepository = MailRepository(
         securePairingStore: securePairingStore,
         emailDAO: emailDAO,
-        httpClient: httpClient
+        httpClient: httpClient,
+        cursorStore: mailCursorStore
     )
     lazy var keywordRepository = KeywordRepository(settingsStore: keywordSettingsStore)
     lazy var sendEmailUseCase = SendEmailUseCase(repository: mailRepository)
@@ -124,14 +157,23 @@ final class SingletonGraph {
         securePairingStore: securePairingStore
     )
     let contactPhotoCache: ContactPhotoCache
-    lazy var systemContactsExporter = SystemContactsExporter(
-        store: LiveSystemContactStore(),
-        linkStore: systemContactsLinkStore,
-        baselineStore: systemContactsBaselineStore,
-        settings: contactsSettingsStore,
-        contactDAO: contactDAO,
-        photoCache: contactPhotoCache
-    )
+    lazy var systemContactGroupLinkStore = SystemContactGroupLinkStore(defaults: userDefaults)
+    lazy var systemContactsExporter: SystemContactsExporter = {
+        let store = LiveSystemContactStore()
+        return SystemContactsExporter(
+            store: store,
+            linkStore: systemContactsLinkStore,
+            baselineStore: systemContactsBaselineStore,
+            settings: contactsSettingsStore,
+            contactDAO: contactDAO,
+            photoCache: contactPhotoCache,
+            groupLinker: SystemContactGroupLinker(
+                store: store,
+                linkStore: systemContactGroupLinkStore
+            ),
+            groupDAO: groupDAO
+        )
+    }()
     lazy var systemContactsChangeMonitor = SystemContactsChangeMonitor(
         exporter: systemContactsExporter,
         repository: contactSyncRepository
@@ -144,8 +186,12 @@ final class SingletonGraph {
         securePairingStore: securePairingStore,
         systemContactsExporter: systemContactsExporter,
         photoCache: contactPhotoCache,
-        verifiedKeyStore: verifiedPgpKeyStore
+        verifiedKeyStore: verifiedPgpKeyStore,
+        groupsClient: groupsSyncClient,
+        groupDAO: groupDAO
     )
+    lazy var groupsSyncClient = GroupsSyncClient(httpClient: httpClient)
+    lazy var groupDAO = GroupDAO(modelContainer: database.container)
     lazy var pushRepository = PushRepository(
         dao: pushNotificationDAO,
         cursorStore: notificationCursorStore,
@@ -204,7 +250,7 @@ final class SingletonGraph {
         mailRepository: mailRepository,
         keywordRepository: keywordRepository
     )
-    lazy var contactsViewModel = ContactsViewModel(repository: contactSyncRepository)
+    lazy var contactsViewModel = ContactsViewModel(repository: contactSyncRepository, settingsStore: contactsSettingsStore)
 
     // MARK: - Security
 

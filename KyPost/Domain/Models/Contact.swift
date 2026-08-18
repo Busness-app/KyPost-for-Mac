@@ -90,8 +90,15 @@ nonisolated struct Contact: Identifiable, Hashable, Sendable {
     /// Content-hashed photo filename on the server; bytes fetched separately
     /// and cached by ContactPhotoCache.
     var photoRef: String?
-    /// Backend group UUIDs; app-only in v1 (no CNGroup materialization).
+    /// Backend group UUIDs, resolved to names via GroupDAO and materialized
+    /// as CNGroups by SystemContactGroupLinker.
     var groupIDs: [String] = []
+    /// The one contact the user flagged as "this is me", in the web app.
+    ///
+    /// **Read-only here.** Setting it stays a web-only action, matching the
+    /// server spec's scope, so nothing in this app writes it and the push
+    /// payload never carries it.
+    var isSelf = false
     /// Armored ASCII PGP public key; app-only, never exported to Contacts.app.
     var pgpKey: String?
     /// A key received via sync that differs from the currently-stored

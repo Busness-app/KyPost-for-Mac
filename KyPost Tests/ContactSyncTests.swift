@@ -227,6 +227,93 @@ private func makeDTO(
     }
 }
 
+@Suite struct ContactDAORepairImportedDuplicatesTests {
+    private func contact(
+        uid: String?,
+        name: String,
+        emails: [String],
+        needsSync: Bool,
+        createdAt: TimeInterval
+    ) -> Contact {
+        var contact = Contact(
+            localId: UUID(), uid: uid, name: name,
+            createdAt: Date(timeIntervalSince1970: createdAt),
+            updatedAt: Date(timeIntervalSince1970: createdAt),
+            needsSync: needsSync
+        )
+        contact.emails = emails.map { ContactLabeledValue(label: nil, value: $0) }
+        return contact
+    }
+
+    /// The rows the match-key asymmetry left behind: the synced original
+    /// leads with one address, the imported duplicate leads with the other,
+    /// so grouping on primary email alone never put them side by side.
+    @Test func mergesRowsSharingANonPrimaryEmail() async throws {
+        let db = try AppDatabase(inMemory: true)
+        let dao = ContactDAO(modelContainer: db.container)
+        try await dao.upsert(contacts: [
+            contact(
+                uid: "srv-1", name: "Grace Hopper",
+                emails: ["grace@home.example", "grace@work.example"],
+                needsSync: false, createdAt: 1_000
+            ),
+            contact(
+                uid: nil, name: "Grace Hopper",
+                emails: ["grace@work.example"],
+                needsSync: true, createdAt: 2_000
+            ),
+        ])
+
+        let removed = try await dao.repairImportedDuplicates()
+        #expect(removed == 1)
+        let remaining = try await dao.listAll()
+        #expect(remaining.count == 1)
+        #expect(remaining.first?.uid == "srv-1")
+    }
+
+    /// Two people who genuinely share nothing must not be merged just
+    /// because the pass now looks at more than one key.
+    @Test func leavesDistinctPeopleAlone() async throws {
+        let db = try AppDatabase(inMemory: true)
+        let dao = ContactDAO(modelContainer: db.container)
+        try await dao.upsert(contacts: [
+            contact(
+                uid: "srv-1", name: "Grace Hopper",
+                emails: ["grace@example.com"], needsSync: false, createdAt: 1_000
+            ),
+            contact(
+                uid: nil, name: "Ada Lovelace",
+                emails: ["ada@example.com"], needsSync: true, createdAt: 2_000
+            ),
+        ])
+
+        let removed = try await dao.repairImportedDuplicates()
+        #expect(removed == 0)
+        #expect(try await dao.listAll().count == 2)
+    }
+
+    /// Only uid-less pending rows are ever removed — a row the server knows
+    /// about is never deleted by a local cleanup pass.
+    @Test func neverRemovesASyncedRow() async throws {
+        let db = try AppDatabase(inMemory: true)
+        let dao = ContactDAO(modelContainer: db.container)
+        try await dao.upsert(contacts: [
+            contact(
+                uid: "srv-1", name: "Grace Hopper",
+                emails: ["grace@home.example"], needsSync: false, createdAt: 1_000
+            ),
+            contact(
+                uid: "srv-2", name: "Grace Hopper",
+                emails: ["grace@home.example"], needsSync: false, createdAt: 2_000
+            ),
+        ])
+
+        let removed = try await dao.repairImportedDuplicates()
+        #expect(removed == 0)
+        #expect(try await dao.listAll().count == 2)
+    }
+}
+
 // MARK: - Repository
 
 @Suite struct ContactSyncRepositoryTests {
@@ -1032,5 +1119,207 @@ private final class ResponseQueue: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return bodies.count > 1 ? bodies.removeFirst() : bodies[0]
+    }
+}
+
+// MARK: - Contact groups (Phase 5)
+
+@Suite struct GroupSyncTests {
+    private func dao() throws -> GroupDAO {
+        GroupDAO(modelContainer: try AppDatabase(inMemory: true).container)
+    }
+
+    @Test func decodesTheWrappedListShape() async throws {
+        // GET /api/groups responds {"groups": [...]}, not a bare array.
+        let client = GroupsSyncClient(httpClient: stubClient(json: """
+        {"groups": [
+            {"id": "g1", "name": "Family", "rev": 3},
+            {"id": "g2", "name": "Work"}
+        ]}
+        """))
+        let groups = try await client.pull(
+            serverUrl: "https://relay.test",
+            auth: RelayAuth(deviceId: "d", deviceSecret: "s")
+        )
+        #expect(groups == [
+            ContactGroup(id: "g1", name: "Family", rev: 3),
+            ContactGroup(id: "g2", name: "Work", rev: 0),
+        ])
+    }
+
+    @Test func dropsAGroupWithNoId() async throws {
+        // It cannot be matched to Contact.groupIDs or stored under a unique
+        // key, so inventing one would only create a row nothing can reference.
+        let client = GroupsSyncClient(httpClient: stubClient(json: """
+        {"groups": [{"name": "Nameless"}, {"id": "", "name": "Blank"}, {"id": "ok", "name": "Fine"}]}
+        """))
+        let groups = try await client.pull(
+            serverUrl: "https://relay.test",
+            auth: RelayAuth(deviceId: "d", deviceSecret: "s")
+        )
+        #expect(groups.map(\.id) == ["ok"])
+    }
+
+    /// There is no delta cursor, so every pull is the whole truth: a group
+    /// absent from the response no longer exists.
+    @Test func aFullRefreshRemovesGroupsTheServerNoLongerSends() async throws {
+        let dao = try dao()
+        try await dao.replaceAll([
+            ContactGroup(id: "g1", name: "Family"),
+            ContactGroup(id: "gone", name: "Deleted On The Web"),
+        ])
+        try await dao.replaceAll([ContactGroup(id: "g1", name: "Family")])
+        #expect(try await dao.listAll().map(\.id) == ["g1"])
+    }
+
+    @Test func aFullRefreshUpdatesARenamedGroupInPlace() async throws {
+        let dao = try dao()
+        try await dao.replaceAll([ContactGroup(id: "g1", name: "Old", rev: 1)])
+        try await dao.replaceAll([ContactGroup(id: "g1", name: "New", rev: 2)])
+        let stored = try await dao.listAll()
+        #expect(stored.count == 1)
+        #expect(stored.first?.name == "New")
+        #expect(stored.first?.rev == 2)
+    }
+
+    @Test func resolvesIdsToNamesAndDropsUnknownOnes() async throws {
+        // A bare UUID on a contact card is noise, and an unknown id only means
+        // the groups cache is behind.
+        let dao = try dao()
+        try await dao.replaceAll([
+            ContactGroup(id: "g1", name: "Family"),
+            ContactGroup(id: "g2", name: "Work"),
+        ])
+        #expect(try await dao.names(forIDs: ["g2", "g1"]) == ["Family", "Work"])
+        #expect(try await dao.names(forIDs: ["g1", "not-pulled-yet"]) == ["Family"])
+        #expect(try await dao.names(forIDs: []).isEmpty)
+    }
+}
+
+// MARK: - Self flag and PGP identity badge (Phase 5b/5c)
+
+@Suite struct PgpIdentityBadgeTests {
+    private func contact(isSelf: Bool = false, pgpKey: String? = nil) -> Contact {
+        var contact = Contact(
+            localId: UUID(), uid: "u1", name: "Ada",
+            createdAt: Date(), updatedAt: Date()
+        )
+        contact.isSelf = isSelf
+        contact.pgpKey = pgpKey
+        return contact
+    }
+
+    /// Nil is not false. A failed or not-yet-made check must leave the caller
+    /// showing what it already showed, never assert "no key".
+    @Test func anUnknownCustodyAnswersUnknown() {
+        #expect(pgpIdentityPresent(custody: nil) == nil)
+        #expect(pgpIdentityPresent(custody: .noIdentity) == false)
+        #expect(pgpIdentityPresent(custody: .serverHeld) == true)
+        #expect(pgpIdentityPresent(custody: .clientHeld) == true)
+    }
+
+    /// The account's own identity is never in the contacts database.
+    /// `Contact.pgpKey` on the self-contact is empty for essentially every
+    /// user, so reading it here is why the badge never appeared for the one
+    /// contact guaranteed to have a key.
+    @Test func theSelfContactsBadgeComesFromTheAccountNotItsPgpKeyColumn() {
+        #expect(contactHasLinkedPgpKey(
+            contact: contact(isSelf: true), accountIdentityPresent: true
+        ) == true)
+        #expect(contactHasLinkedPgpKey(
+            contact: contact(isSelf: true), accountIdentityPresent: false
+        ) == false)
+        #expect(contactHasLinkedPgpKey(
+            contact: contact(isSelf: true), accountIdentityPresent: nil
+        ) == nil)
+    }
+
+    /// A user who scanned their own key onto their self-contact should not
+    /// see the badge vanish because the server check failed.
+    @Test func anAttachedKeyOnTheSelfContactStillCounts() {
+        #expect(contactHasLinkedPgpKey(
+            contact: contact(isSelf: true, pgpKey: "-----BEGIN PGP PUBLIC KEY BLOCK-----"),
+            accountIdentityPresent: nil
+        ) == true)
+    }
+
+    @Test func anOrdinaryContactIsJudgedOnItsOwnKeyAlone() {
+        #expect(contactHasLinkedPgpKey(
+            contact: contact(pgpKey: "-----BEGIN PGP PUBLIC KEY BLOCK-----"),
+            accountIdentityPresent: false
+        ) == true)
+        #expect(contactHasLinkedPgpKey(
+            contact: contact(), accountIdentityPresent: true
+        ) == false)
+        // An empty string is not a key.
+        #expect(contactHasLinkedPgpKey(
+            contact: contact(pgpKey: ""), accountIdentityPresent: nil
+        ) == false)
+    }
+}
+
+@Suite struct ContactSelfFlagWireTests {
+    @Test func isSelfArrivesOnSyncButIsNeverPushedBack() throws {
+        let json = #"{"uid": "u1", "fn": "Me", "isSelf": true}"#
+        let dto = try JSONDecoder().decode(ContactDTO.self, from: Data(json.utf8))
+        #expect(dto.isSelf == true)
+
+        // Setting the flag is a web-only action, so a contact this app pushes
+        // must not carry a claim to it either way.
+        var contact = Contact(localId: UUID(), uid: "u1", name: "Me",
+                              createdAt: Date(), updatedAt: Date())
+        contact.isSelf = true
+        let encoded = String(
+            decoding: try JSONEncoder().encode(ContactSyncRepository.wireDTOForTesting(contact)),
+            as: UTF8.self
+        )
+        #expect(!encoded.contains("isSelf"))
+    }
+
+    @Test func anOlderServerWithoutTheFieldReadsAsNotSelf() throws {
+        let dto = try JSONDecoder().decode(
+            ContactDTO.self, from: Data(#"{"uid": "u1", "fn": "Someone"}"#.utf8)
+        )
+        #expect(dto.isSelf == nil)
+    }
+}
+
+// MARK: - 5d: is the pending-change queue a real gap?
+
+@Suite struct ContactEditDuringPushTests {
+    /// Android queues a snapshot per edit; this app carries a `needsSync` flag
+    /// and clears it after a push. The question that decides whether the queue
+    /// is needed here is what happens to an edit made *while* a push is in
+    /// flight: the flag is cleared against a snapshot taken before the network
+    /// call, so an edit that landed in between would be marked synced without
+    /// ever having been sent.
+    @Test func anEditDuringAnInFlightPushIsNotMarkedSynced() async throws {
+        let db = try AppDatabase(inMemory: true)
+        let dao = ContactDAO(modelContainer: db.container)
+        let localId = UUID()
+
+        // Queued, and captured into the push's snapshot.
+        var contact = Contact(
+            localId: localId, uid: "srv-1", name: "Before",
+            createdAt: Date(timeIntervalSince1970: 1_000),
+            updatedAt: Date(timeIntervalSince1970: 1_000),
+            needsSync: true
+        )
+        try await dao.upsert(contacts: [contact])
+        let snapshot = try await dao.listPendingSync()
+        #expect(snapshot.count == 1)
+
+        // The user edits again while the push is on the wire.
+        contact.name = "After"
+        contact.updatedAt = Date(timeIntervalSince1970: 2_000)
+        contact.needsSync = true
+        try await dao.upsert(contacts: [contact])
+
+        // The push returns and confirms what it sent.
+        try await dao.clearNeedsSync(pushed: snapshot)
+
+        let stored = try #require(try await dao.getContact(uid: "srv-1"))
+        #expect(stored.name == "After")
+        #expect(stored.needsSync, "the newer edit must stay queued for the next sync")
     }
 }

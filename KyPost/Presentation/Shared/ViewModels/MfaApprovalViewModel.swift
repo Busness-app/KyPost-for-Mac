@@ -46,8 +46,9 @@ final class MfaApprovalViewModel {
     ) {
         self.challengeId = challengeId
         self.correctDigits = matchDigits
+        // Shuffled exactly once, here, and held in a `let`: re-deriving it on
+        // a redraw would reorder the tiles under the user's finger.
         self.matchOptions = MfaNumberMatch.options(
-            challengeId: challengeId,
             correct: matchDigits,
             serverDecoys: decoyDigits
         )

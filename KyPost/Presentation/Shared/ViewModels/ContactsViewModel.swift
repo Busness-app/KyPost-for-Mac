@@ -13,6 +13,30 @@ import Observation
 final class ContactsViewModel {
     private let repository: ContactSyncRepository
 
+    /// Whether the paired account has a PGP identity on the server, or nil
+    /// while unknown. Nil must not render as "no key" — see
+    /// `pgpIdentityPresent`.
+    private(set) var accountIdentityPresent: Bool?
+
+    /// True until the user has been told what contact sync does. Explained
+    /// before the first sync, not after — the point is to say what is about to
+    /// leave the device while that is still a choice.
+    var shouldExplainSync: Bool { !settingsStore.syncExplained }
+
+    func markSyncExplained() { settingsStore.syncExplained = true }
+
+    /// Reads the cached bootstrap custody. Cheap and idempotent: the service
+    /// fetches once per session.
+    func loadAccountIdentity(from service: PgpSendService) async {
+        await service.loadIfNeeded()
+        accountIdentityPresent = pgpIdentityPresent(custody: service.custody)
+    }
+
+    /// Group names for one contact, resolved against the pulled group list.
+    func groupNames(for contact: Contact) async -> [String] {
+        await repository.groupNames(for: contact)
+    }
+
     private(set) var contacts: [Contact] = []
     /// Compose's autocomplete and the address book search this instead of the
     /// store; see ContactSearch. Rebuilt in `load()` — the one place
@@ -21,7 +45,10 @@ final class ContactsViewModel {
     private(set) var isSyncing = false
     private(set) var statusMessage: String?
 
-    init(repository: ContactSyncRepository) {
+    private let settingsStore: ContactsSettingsStore
+
+    init(repository: ContactSyncRepository, settingsStore: ContactsSettingsStore) {
+        self.settingsStore = settingsStore
         self.repository = repository
     }
 

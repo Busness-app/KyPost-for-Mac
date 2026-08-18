@@ -537,6 +537,14 @@ final class ComposeViewModel {
             errorMessage = "Not authorized — re-pair the device or check credentials."
         case .notPaired:
             errorMessage = "Pair this device before sending."
+        case .rateLimited(let retryAfter):
+            errorMessage = retryAfter.map {
+                "Too many attempts — try again in \(NetworkError.formatRetryAfter($0))."
+            } ?? "Too many attempts — try again later."
+        case .notConfigured:
+            errorMessage = "Set up your mail account in the web app first."
+        case .upstreamFailure(let message):
+            errorMessage = message
         case .failure(let message):
             errorMessage = message
         }
@@ -573,8 +581,11 @@ final class ComposeViewModel {
             errorMessage = "Not authorized — re-pair the device or check credentials."
         case .notPaired:
             errorMessage = "Pair this device before sending."
-        case .invalid(let message), .failure(let message):
+        case .invalid(let message), .failure(let message),
+             .notConfigured(let message), .upstreamFailure(let message):
             errorMessage = "Couldn't save this as a draft: \(message)"
+        case .rateLimited:
+            errorMessage = "Couldn't save this as a draft — too many attempts. Try again shortly."
         case .clientSideNeeded, .keylessRecipients:
             // A draft carries no PGP flags, so neither refusal is reachable.
             errorMessage = "Couldn't save this as a draft."
