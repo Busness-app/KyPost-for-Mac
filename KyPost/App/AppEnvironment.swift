@@ -110,6 +110,15 @@ final class AppEnvironment {
             // Sender and subject of everything already delivered sit in
             // Notification Center, which is an on-disk artifact like any other.
             UNUserNotificationCenter.current().removeAllDeliveredNotifications()
+            // The enrollment envelope is the account's OpenPGP private key.
+            // Hostile Location Protection is the mode in which this device
+            // holds nothing, so it is the one thing that cannot survive the
+            // switch — and turning the mode off does not bring it back: the
+            // user re-runs the ceremony deliberately, which is the point.
+            if enabled {
+                graph.enrollmentVault.destroy()
+                graph.mailCursorStore.clear()
+            }
             // The compose scene value is archived for state restoration, and a
             // reply's body is the full quoted plaintext of the received
             // message. `.id(generation)` recreates the view inside the window,
@@ -142,6 +151,11 @@ final class AppEnvironment {
         graph.credentialGateService.removeAll()
         try? graph.securePairingStore.clear()
         try? graph.desktopSessionStore.clear()
+        // This path promises the device comes back "as if reinstalled". An
+        // envelope that survived it would be the account's private key left on
+        // a device whose pairing and lock were both just erased.
+        graph.enrollmentVault.destroy()
+        graph.mailCursorStore.clear()
         try? graph.appLockStore.setCredentialGateEnabled(false)
         try graph.appLockStore.setLockEnabled(false)
         try? AppDatabase.deleteStoreFiles()

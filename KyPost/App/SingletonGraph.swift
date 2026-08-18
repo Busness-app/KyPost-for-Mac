@@ -112,6 +112,7 @@ final class SingletonGraph {
 
     // MARK: - Repositories & Use Cases
 
+    lazy var enrollmentVault = EnrollmentVault(keychain: keychain)
     lazy var mailCursorStore = MailCursorStore(
         defaults: userDefaults,
         hostileLocation: hostileLocationProtectionStore

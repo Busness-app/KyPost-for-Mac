@@ -222,3 +222,192 @@ import Testing
         #expect(formattedEnrollmentCode("ABCDEFGHJKMNPQ") == "ABCDEFG-HJKMNPQ")
     }
 }
+
+// MARK: - Ceremony exit table
+
+private final class FakeTransport: EnrollmentTransport, @unchecked Sendable {
+    var fingerprint: String? = "ABCD1234"
+    var publishResult: EnrollmentPublishResult = .ok
+    /// Consumed in order; the last value repeats once exhausted.
+    var envelopeResults: [EnrollmentEnvelopeResult] = [.notSealed]
+    private(set) var publishCount = 0
+    private(set) var reported: Bool?
+    private var envelopeIndex = 0
+
+    func identityFingerprint() async -> String? { fingerprint }
+
+    func publish(publicKey: Data) async -> EnrollmentPublishResult {
+        publishCount += 1
+        return publishResult
+    }
+
+    func fetchEnvelope() async -> EnrollmentEnvelopeResult {
+        defer { envelopeIndex = min(envelopeIndex + 1, envelopeResults.count - 1) }
+        return envelopeResults[envelopeIndex]
+    }
+
+    func reportEnrolled(_ enrolled: Bool) async { reported = enrolled }
+}
+
+private final class FakeSealer: EnrollmentSealer, @unchecked Sendable {
+    var publicKey = Data([0x04] + Array(repeating: UInt8(9), count: 64))
+    var publicKeyError: Error?
+    var storeError: Error?
+    private(set) var stored: (json: String, fingerprint: String)?
+
+    func deviceRawPublicKey() throws -> Data {
+        if let publicKeyError { throw publicKeyError }
+        return publicKey
+    }
+
+    func openAndStore(envelopeJSON: String, identityFingerprint: String) async throws {
+        if let storeError { throw storeError }
+        stored = (envelopeJSON, identityFingerprint)
+    }
+}
+
+@Suite struct EnrollmentCeremonyTests {
+    private func ceremony(
+        transport: FakeTransport = FakeTransport(),
+        sealer: FakeSealer = FakeSealer(),
+        hostileLocation: Bool = false,
+        hasCredential: Bool = true,
+        clock: Box<Date> = Box(Date(timeIntervalSince1970: 0)),
+        transcript: Box<[EnrollmentState]> = Box([])
+    ) -> EnrollmentCeremony {
+        EnrollmentCeremony(
+            transport: transport,
+            sealer: sealer,
+            deviceId: "dev-1",
+            hostileLocationEnabled: { hostileLocation },
+            hasDeviceCredential: { hasCredential },
+            now: { clock.value },
+            // Advancing the clock in place of sleeping keeps the poll window
+            // deterministic and the test instant.
+            sleep: { seconds in clock.value = clock.value.addingTimeInterval(seconds) },
+            onState: { state in transcript.mutate { $0.append(state) } }
+        )
+    }
+
+    /// The gate, and it is checked before anything is published: enrollment is
+    /// available only when Hostile Location Protection is off.
+    @Test func hostileLocationProtectionBlocksEnrollmentOutright() async {
+        let transport = FakeTransport()
+        let outcome = await ceremony(transport: transport, hostileLocation: true).run()
+        #expect(outcome == .hostileLocationEnabled)
+        #expect(transport.publishCount == 0, "nothing may be published from a device in that mode")
+    }
+
+    /// The envelope's protection *is* the lock screen, so a device without one
+    /// cannot hold a meaningful envelope. The honest outcome, not degradation.
+    @Test func aDeviceWithNoCredentialCannotEnrol() async {
+        let outcome = await ceremony(hasCredential: false).run()
+        #expect(outcome == .noDeviceCredential)
+    }
+
+    @Test func anAccountWithNoPgpIdentityStopsBeforePublishing() async {
+        let transport = FakeTransport()
+        transport.fingerprint = nil
+        let outcome = await ceremony(transport: transport).run()
+        #expect(outcome == .noIdentity)
+        #expect(transport.publishCount == 0)
+    }
+
+    @Test func anUnauthorizedPublishReportsPairingRatherThanAGenericFailure() async {
+        let transport = FakeTransport()
+        transport.publishResult = .unauthorized
+        #expect(await ceremony(transport: transport).run() == .notPaired)
+    }
+
+    @Test func aRejectedPublishCarriesItsReason() async {
+        let transport = FakeTransport()
+        transport.publishResult = .rejected("device already enrolled")
+        #expect(await ceremony(transport: transport).run()
+            == .publishRejected("device already enrolled"))
+    }
+
+    @Test func showsACodeWhileWaitingAndTimesOutAfterTheWindow() async {
+        let transcript = Box<[EnrollmentState]>([])
+        let outcome = await ceremony(transcript: transcript).run()
+        #expect(outcome == .timedOut)
+        let codes = transcript.value.compactMap { state -> String? in
+            if case .showingCode(let code, _) = state { return code }
+            return nil
+        }
+        #expect(!codes.isEmpty)
+        #expect(codes.allSatisfy { $0.count == enrollmentCodeLength })
+    }
+
+    /// The code rotates with its bucket, so a window spanning one must show
+    /// more than one — a stale code is one the browser rejects.
+    @Test func theCodeRotatesAsBucketsPass() async {
+        let transcript = Box<[EnrollmentState]>([])
+        _ = await ceremony(transcript: transcript).run()
+        let codes = Set(transcript.value.compactMap { state -> String? in
+            if case .showingCode(let code, _) = state { return code }
+            return nil
+        })
+        #expect(codes.count > 1)
+    }
+
+    @Test func aSealedEnvelopeCompletesTheCeremony() async {
+        let transport = FakeTransport()
+        transport.envelopeResults = [.notSealed, .sealed("{\"v\":\"2\"}")]
+        let sealer = FakeSealer()
+        let outcome = await ceremony(transport: transport, sealer: sealer).run()
+        #expect(outcome == .enrolled)
+        #expect(sealer.stored?.fingerprint == "ABCD1234")
+        #expect(transport.reported == true)
+    }
+
+    /// Hostile or stale, never a retry.
+    @Test func aRejectedEnvelopeIsItsOwnTerminalState() async {
+        let transport = FakeTransport()
+        transport.envelopeResults = [.sealed("{}")]
+        let sealer = FakeSealer()
+        sealer.storeError = EnrollmentSealerError.envelopeRejected
+        let outcome = await ceremony(transport: transport, sealer: sealer).run()
+        #expect(outcome == .envelopeRejected)
+        #expect(transport.reported == nil, "a failed open must not report enrolment")
+    }
+
+    /// Not an error: the user dismissed a prompt they raised, and the envelope
+    /// is still there, so the screen goes back to offering the action.
+    @Test func aCancelledAuthenticationIsNotAFailure() async {
+        let transport = FakeTransport()
+        transport.envelopeResults = [.sealed("{}")]
+        let sealer = FakeSealer()
+        sealer.storeError = EnrollmentVaultError.cancelled
+        #expect(await ceremony(transport: transport, sealer: sealer).run() == .cancelled)
+    }
+
+    /// The user can turn the protection on while the window is open; storing
+    /// after that would leave the account's key on a device meant to hold none.
+    @Test func protectionTurnedOnMidCeremonyStopsTheStore() async {
+        let clock = Box(Date(timeIntervalSince1970: 0))
+        let transcript = Box<[EnrollmentState]>([])
+        let hostile = Box(false)
+        let transport = FakeTransport()
+        transport.envelopeResults = [.sealed("{}")]
+        let sealer = FakeSealer()
+
+        let ceremony = EnrollmentCeremony(
+            transport: transport,
+            sealer: sealer,
+            deviceId: "dev-1",
+            hostileLocationEnabled: { hostile.value },
+            hasDeviceCredential: { true },
+            now: { clock.value },
+            sleep: { _ in },
+            onState: { state in
+                transcript.mutate { $0.append(state) }
+                // Flipped the instant the code goes up, i.e. before the sealed
+                // envelope is stored.
+                if case .showingCode = state { hostile.value = true }
+            }
+        )
+        let outcome = await ceremony.run()
+        #expect(outcome == .hostileLocationEnabled)
+        #expect(sealer.stored == nil)
+    }
+}

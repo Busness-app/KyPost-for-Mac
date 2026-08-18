@@ -98,6 +98,36 @@ Default section order:
 
 ## Local Contracts
 
+### Device enrollment (`Domain/Security/DeviceEnvelope|EnrollmentVault|EnrollmentCeremony`)
+
+- **Gated on Hostile Location Protection being off.** Enabling HLP destroys the
+  envelope; turning HLP back off does not restore it, and must not — the user
+  re-runs the ceremony deliberately. Checked at the start of the ceremony *and*
+  again before storing, because the user can flip it mid-window.
+- **A device with no passcode cannot enrol.** The envelope's protection *is*
+  the lock screen. Report it, do not degrade.
+- The device key allows the **device credential**, not biometry alone. Biometry-
+  only invalidates on every enrollment change, costing an ordinary user a full
+  re-ceremony — and enrolling a biometric already requires the passcode, so the
+  attacker it would exclude already holds what the key accepts.
+- Adopt an existing device key only if it still matches the spec. Presence
+  alone means a key from an earlier build with weaker parameters is reused
+  forever with no signal, silently breaking the migration the design plans for.
+- The envelope AAD is **length-prefixed**, and the fingerprint is normalised
+  and validated where the AAD is built — not by doc comment. Space-grouped hex
+  reaching an AAD that strips whitespace produces an authentication failure the
+  design reports as a substituted-key alarm.
+- A failed open is **hostile or stale, never a retry**. A 404 on the envelope
+  covers both "never sealed" and "expired" — one case, so a caller cannot split
+  them.
+- The enrollment code is derived from **this device's own key material**, never
+  from anything the server returned, or the comparison compares the server
+  against itself. 14 Crockford characters: the search is offline, so length is
+  a work factor, not a per-attempt probability.
+- The ceremony takes no platform types. That is what makes its whole exit table
+  a plain unit test; if a port of it needs a host app to test, the port went
+  wrong.
+
 ### PGP signature trust (`Domain/Models/PgpSignatureState.swift`)
 
 - **There is no client-side `From` parser, and there must not be one.** Android
