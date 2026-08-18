@@ -114,7 +114,10 @@ Cheap, unblocks the rest, no runtime change.
      `reg` was cross-origin with `srv`, which the parser now refuses by
      design. The refusal already had its own test. **Done.**
 
-7. **Add CI.** There is no `.github/` here at all. Android has `ci.yml`,
+7. ~~**Add CI**~~ — done. `.github/workflows/ci.yml` runs the unit-test
+   target on every PR and push to main. UI tests are excluded deliberately:
+   they drive a real app instance and are flaky headless, and they are not
+   what protects this code. Android has `ci.yml`,
    `codeql.yml` and `release.yml`. Minimum: `xcodebuild test` on the shared
    test plan for every PR. Note `KyPost.xctestplan` must keep
    `parallelizable: false` on **both** test targets — see `AGENTS.md` for why
@@ -444,7 +447,28 @@ because one call site forgot it and sent the device credential unpinned.
 
 ---
 
-## Phase 8 — The OpenPGP crypto core — **next; needs your go-ahead on XCFramework sourcing**
+## Phase 8 — The OpenPGP crypto core — **in progress**
+
+**Sourcing is decided and built: GitHub Actions produces the XCFramework.**
+GopenPGP publishes no release assets — it ships as a Go library, and Proton
+builds its own iOS framework in-house via gomobile. So `.github/workflows/
+gopenpgp-xcframework.yml` is that step made public: it builds from a pinned
+tag on GitHub's runners, prints the SPM checksum, and publishes the zip as a
+release asset of this repository. The workflow file is the whole recipe, so
+anyone can rebuild and compare hashes.
+
+`gopenpgp-upstream-watch.yml` opens a **pull request** when upstream moves,
+rather than rebuilding automatically. "Rebuild when it changes upstream" is the
+goal, but a crypto implementation that swaps itself under a mail client with no
+human in the loop is a supply-chain foothold: anyone who can publish a gopenpgp
+tag would be publishing into this app. Merging the PR edits
+`Dependencies/gopenpgp.env`, which *is* the build trigger — so the rebuild is
+automatic once a person has said yes.
+
+Remaining: run the build once, then pin its URL and checksum as a
+`binaryTarget` and implement `PgpDecrypting`/`PgpEncrypting` against it. The
+first run may need iteration — gomobile's bindable surface for v3 is asserted
+from the package layout, not verified.
 
 **This is where the dependency lands, and where two README claims die.**
 

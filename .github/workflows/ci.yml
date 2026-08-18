@@ -1,0 +1,33 @@
+name: CI
+
+# Phase 0 of the Android-parity plan: this repository had no CI at all, and
+# `main` shipped in a state that did not compile.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.app || true
+
+      - name: Test
+        run: |
+          set -euo pipefail
+          # Unit tests only. The UI test target drives a real app instance and
+          # is flaky on a headless runner; it is not what protects this code.
+          xcodebuild test \
+            -scheme KyPost \
+            -destination 'platform=macOS' \
+            -only-testing:"KyPost Tests" \
+            | xcpretty || exit ${PIPESTATUS[0]}
