@@ -813,6 +813,43 @@ private func makeCard(
         #expect(env.mock.cards.count == 1)
     }
 
+    // Mirror of adoptionMatchesAnySystemCardEmail, from the app-contact side:
+    // the person is known to the app by two addresses and the user's card
+    // carries only the second one.
+    @Test func adoptionMatchesAnyAppContactEmail() async throws {
+        let env = try makeEnvironment()
+        try await env.mock.add(makeCard()) // Grace Hopper, grace@example.com
+        var contact = makeContact(name: "Grace Hopper", email: "grace@home.example.com")
+        contact.emails.append(
+            ContactLabeledValue(label: "work", value: "grace@example.com")
+        )
+        try await env.dao.upsert(contacts: [contact])
+
+        let summary = await env.exporter.reconcileAll()
+        #expect(summary.adopted == 1)
+        #expect(summary.created == 0)
+        #expect(env.mock.cards.count == 1)
+    }
+
+    // The same asymmetry on the import side, which is the worse half: an
+    // unadopted card becomes a second *app* contact, queued for the relay.
+    @Test func doesNotImportCardMatchingANonPrimaryAppContactEmail() async throws {
+        let env = try makeEnvironment()
+        _ = await env.exporter.reconcileAll() // capture the baseline
+
+        var contact = makeContact(name: "Grace Hopper", email: "grace@home.example.com")
+        contact.emails.append(
+            ContactLabeledValue(label: "work", value: "grace@example.com")
+        )
+        try await env.dao.upsert(contacts: [contact])
+        try await env.mock.add(makeCard()) // the user's own card, work address only
+
+        let summary = await env.exporter.reconcileAll()
+        #expect(summary.imported == 0)
+        let contacts = try await env.dao.listAll()
+        #expect(contacts.count == 1)
+    }
+
     @Test func adoptionPairsDuplicateEmailsOneToOne() async throws {
         let env = try makeEnvironment()
         try await env.mock.add(makeCard(given: "Grace", family: "Work"))

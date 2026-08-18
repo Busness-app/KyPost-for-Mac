@@ -132,6 +132,27 @@ enum SystemContactMapper {
         matchKey(name: contact.name, email: contact.primaryEmail, phone: contact.primaryPhone)
     }
 
+    /// Every identity an app contact can match under: one key per email
+    /// address, else the name+phone fallback.
+    ///
+    /// The card side has always offered every email; this side used to offer
+    /// only `primaryEmail`, and that asymmetry duplicated people. A contact
+    /// holding two addresses whose card carries only the second one matched
+    /// nothing: adoption skipped it and exported a second card, and the
+    /// import pass then read that same card as a person the app had never
+    /// heard of and created a second *contact* — one queued for the relay, so
+    /// the duplicate propagated to the server and every other device.
+    /// Both sides must offer every identity they have, or a pair can each
+    /// hold a key the other never presents.
+    nonisolated static func matchKeys(for contact: Contact) -> [String] {
+        let emailKeys = contact.emails.compactMap {
+            matchKey(name: contact.name, email: $0.value, phone: "")
+        }
+        if !emailKeys.isEmpty { return emailKeys }
+        return matchKey(name: contact.name, email: "", phone: contact.primaryPhone)
+            .map { [$0] } ?? []
+    }
+
     /// Every identity a card can match under: one key per email address,
     /// else the name+phone fallback.
     static func matchKeys(for cn: CNContact) -> [String] {

@@ -227,6 +227,93 @@ private func makeDTO(
     }
 }
 
+@Suite struct ContactDAORepairImportedDuplicatesTests {
+    private func contact(
+        uid: String?,
+        name: String,
+        emails: [String],
+        needsSync: Bool,
+        createdAt: TimeInterval
+    ) -> Contact {
+        var contact = Contact(
+            localId: UUID(), uid: uid, name: name,
+            createdAt: Date(timeIntervalSince1970: createdAt),
+            updatedAt: Date(timeIntervalSince1970: createdAt),
+            needsSync: needsSync
+        )
+        contact.emails = emails.map { ContactLabeledValue(label: nil, value: $0) }
+        return contact
+    }
+
+    /// The rows the match-key asymmetry left behind: the synced original
+    /// leads with one address, the imported duplicate leads with the other,
+    /// so grouping on primary email alone never put them side by side.
+    @Test func mergesRowsSharingANonPrimaryEmail() async throws {
+        let db = try AppDatabase(inMemory: true)
+        let dao = ContactDAO(modelContainer: db.container)
+        try await dao.upsert(contacts: [
+            contact(
+                uid: "srv-1", name: "Grace Hopper",
+                emails: ["grace@home.example", "grace@work.example"],
+                needsSync: false, createdAt: 1_000
+            ),
+            contact(
+                uid: nil, name: "Grace Hopper",
+                emails: ["grace@work.example"],
+                needsSync: true, createdAt: 2_000
+            ),
+        ])
+
+        let removed = try await dao.repairImportedDuplicates()
+        #expect(removed == 1)
+        let remaining = try await dao.listAll()
+        #expect(remaining.count == 1)
+        #expect(remaining.first?.uid == "srv-1")
+    }
+
+    /// Two people who genuinely share nothing must not be merged just
+    /// because the pass now looks at more than one key.
+    @Test func leavesDistinctPeopleAlone() async throws {
+        let db = try AppDatabase(inMemory: true)
+        let dao = ContactDAO(modelContainer: db.container)
+        try await dao.upsert(contacts: [
+            contact(
+                uid: "srv-1", name: "Grace Hopper",
+                emails: ["grace@example.com"], needsSync: false, createdAt: 1_000
+            ),
+            contact(
+                uid: nil, name: "Ada Lovelace",
+                emails: ["ada@example.com"], needsSync: true, createdAt: 2_000
+            ),
+        ])
+
+        let removed = try await dao.repairImportedDuplicates()
+        #expect(removed == 0)
+        #expect(try await dao.listAll().count == 2)
+    }
+
+    /// Only uid-less pending rows are ever removed — a row the server knows
+    /// about is never deleted by a local cleanup pass.
+    @Test func neverRemovesASyncedRow() async throws {
+        let db = try AppDatabase(inMemory: true)
+        let dao = ContactDAO(modelContainer: db.container)
+        try await dao.upsert(contacts: [
+            contact(
+                uid: "srv-1", name: "Grace Hopper",
+                emails: ["grace@home.example"], needsSync: false, createdAt: 1_000
+            ),
+            contact(
+                uid: "srv-2", name: "Grace Hopper",
+                emails: ["grace@home.example"], needsSync: false, createdAt: 2_000
+            ),
+        ])
+
+        let removed = try await dao.repairImportedDuplicates()
+        #expect(removed == 0)
+        #expect(try await dao.listAll().count == 2)
+    }
+}
+
 // MARK: - Repository
 
 @Suite struct ContactSyncRepositoryTests {

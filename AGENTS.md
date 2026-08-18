@@ -96,6 +96,27 @@ Default section order:
   Note `parallelizable` belongs on each entry in `testTargets`, not in
   `defaultOptions`, where it is silently ignored.
 
+## Local Contracts
+
+### Contact identity (`Data/Contacts/`)
+
+- `SystemContactMapper.matchKeys(for:)` has two overloads — one for `Contact`,
+  one for `CNContact` — and **they must stay symmetric**. Each side offers one
+  key per email, else the name+phone fallback. When the app side offered only
+  `emails.first`, a person whose card carried only their *second* address
+  matched on neither side: the export wrote a duplicate card, and the import
+  read the original card as a stranger and wrote a duplicate contact — queued
+  for the relay, so the duplicate reached the server and every other device.
+  A new field that participates in identity goes into both overloads or
+  neither.
+- `ContactDAO.repairImportedDuplicates` groups by connected components over
+  shared keys, not by one key per row. Grouping on a single key cannot see the
+  duplicates above, because a non-primary-email match is exactly the case where
+  the two rows' primary keys differ.
+- `Contact.primaryEmail` / `primaryPhone` are `emails.first` / `phones.first`.
+  Anything that treats email order as meaningful is suspect; prefer the
+  `matchKeys` set.
+
 ## User Preferences
 
 When the user requests a durable behavior change, record it here or in the relevant child AGENTS.md

@@ -402,8 +402,15 @@ final class SystemContactsExporter {
 
         let contacts = (try? await contactDAO.listAll()) ?? []
         for contact in contacts where !linkedLocalIds.contains(contact.localId) {
-            guard let key = SystemContactMapper.matchKey(for: contact),
-                  let card = candidates[key]?.first(where: { !consumed.contains($0.identifier) })
+            // Every identity this contact has, not just its primary email:
+            // the card is indexed under all of its own, and matching only on
+            // the primary meant a card carrying the contact's *second*
+            // address was never adopted, so both sides duplicated it.
+            guard let card = SystemContactMapper.matchKeys(for: contact).lazy
+                .compactMap({ key in
+                    candidates[key]?.first { !consumed.contains($0.identifier) }
+                })
+                .first
             else { continue }
             consumed.insert(card.identifier)
             let stale = staleLinks[contact.localId]
@@ -437,12 +444,13 @@ final class SystemContactsExporter {
     /// Single-contact flavor of the adoption pass, for the incremental save
     /// hook: the first unlinked card matching this contact's identity.
     private func adoptableCard(for contact: Contact) async -> CNContact? {
-        guard let key = SystemContactMapper.matchKey(for: contact) else { return nil }
+        let keys = Set(SystemContactMapper.matchKeys(for: contact))
+        guard !keys.isEmpty else { return nil }
         let linkedIdentifiers = Set(linkStore.all().map(\.cnIdentifier))
         let cards = (try? await store.listAll()) ?? []
         return cards.first {
             !linkedIdentifiers.contains($0.identifier)
-                && SystemContactMapper.matchKeys(for: $0).contains(key)
+                && SystemContactMapper.matchKeys(for: $0).contains(where: keys.contains)
         }
     }
 
@@ -463,7 +471,7 @@ final class SystemContactsExporter {
         // cards are baselined so they stay ignored even if their app contact
         // is deleted later.
         let contacts = (try? await contactDAO.listAll()) ?? []
-        var knownKeys = Set(contacts.compactMap { SystemContactMapper.matchKey(for: $0) })
+        var knownKeys = Set(contacts.flatMap { SystemContactMapper.matchKeys(for: $0) })
         for card in cards
         where !linked.contains(card.identifier) && !baseline.contains(card.identifier) {
             let keys = SystemContactMapper.matchKeys(for: card)
