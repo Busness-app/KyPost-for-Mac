@@ -4,8 +4,16 @@ name: Build GopenPGP XCFramework
 # artifact in a mail client's crypto path has a build log anyone can read
 # rather than having been produced on someone's laptop.
 #
-# GopenPGP publishes no release assets of its own; Proton builds its iOS
-# framework in-house the same way. This workflow is that step, made public.
+# GopenPGP publishes no release assets of its own; Proton builds its Apple
+# framework in-house. This workflow is that step, made public.
+#
+# **It runs upstream's own `build.sh`** rather than reimplementing the gomobile
+# invocation. The first attempt here did reimplement it and got three things
+# wrong that the build script encodes: gomobile has to be installed *into the
+# gopenpgp module* (otherwise `x/mobile` is not in its dependency graph and the
+# bind refuses), the framework binds six packages rather than just `crypto`,
+# and it needs `-tags mobile,ios`. Calling their script means their packaging
+# decisions cannot drift away from ours.
 
 on:
   workflow_dispatch:
@@ -25,86 +33,111 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout this repository
+        uses: actions/checkout@v4
+        with:
+          path: kypost
 
       - name: Resolve pinned version
         id: pin
         run: |
           set -euo pipefail
-          source Dependencies/gopenpgp.env
+          source kypost/Dependencies/gopenpgp.env
           VERSION="${{ inputs.version }}"
           VERSION="${VERSION:-$GOPENPGP_VERSION}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "package=$GOPENPGP_BIND_PACKAGE" >> "$GITHUB_OUTPUT"
-          echo "Building $GOPENPGP_BIND_PACKAGE at $VERSION"
+          echo "Building ProtonMail/gopenpgp at $VERSION"
+
+      - name: Checkout gopenpgp
+        uses: actions/checkout@v4
+        with:
+          repository: ProtonMail/gopenpgp
+          ref: ${{ steps.pin.outputs.version }}
+          path: gopenpgp
+
+      # Matching upstream's own iOS workflow, which pins Xcode explicitly —
+      # gomobile's bind step is sensitive to the toolchain it finds.
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "16.0.0"
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
-          check-latest: false
+          go-version: "^1.22"
+          cache: false
 
-      - name: Install gomobile
+      - name: Build with upstream's script
+        working-directory: gopenpgp
         run: |
           set -euo pipefail
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          go install golang.org/x/mobile/cmd/gobind@latest
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-
-      - name: Build XCFramework
-        run: |
-          set -euo pipefail
-          WORK="$RUNNER_TEMP/bind"
-          mkdir -p "$WORK" && cd "$WORK"
-          go mod init kypost.local/gopenpgpbind
-          go get "${{ steps.pin.outputs.package }}@${{ steps.pin.outputs.version }}"
-          gomobile init
-          # macos first: this app is macOS/iOS universal, and a framework
-          # missing a slice fails at link time on whichever platform was
-          # omitted rather than at build time here.
-          gomobile bind \
-            -target=macos,ios,iossimulator \
-            -iosversion=15.0 \
-            -o "$GITHUB_WORKSPACE/Gopenpgp.xcframework" \
-            -v "${{ steps.pin.outputs.package }}"
+          chmod +x build.sh
+          # `apple` builds ios,iossimulator,macos into dist/apple. This app is
+          # macOS/iOS universal, and a framework missing a slice fails at link
+          # time on whichever platform was omitted rather than here.
+          ./build.sh apple
+          find dist -maxdepth 3
 
       - name: Package and checksum
         id: package
         run: |
           set -euo pipefail
+          cd gopenpgp/dist/apple
+          # Zipped from inside dist/apple so the archive root is the
+          # .xcframework itself, which is what an SPM binaryTarget expects.
+          zip -qry "$GITHUB_WORKSPACE/gopenpgp.xcframework.zip" gopenpgp.xcframework
           cd "$GITHUB_WORKSPACE"
-          zip -qry Gopenpgp.xcframework.zip Gopenpgp.xcframework
-          # Swift Package Manager's binaryTarget checksum is a plain SHA-256 of
-          # the zip, so this is verifiable without any Swift tooling.
-          SHA=$(shasum -a 256 Gopenpgp.xcframework.zip | cut -d' ' -f1)
+          # An SPM binaryTarget checksum is a plain SHA-256 of the zip, so this
+          # is verifiable without any Swift tooling.
+          SHA=$(shasum -a 256 gopenpgp.xcframework.zip | cut -d' ' -f1)
           echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
-          echo "### GopenPGP ${{ steps.pin.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "checksum: $SHA" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### GopenPGP ${{ steps.pin.outputs.version }}"
+            echo
+            echo "Pin these two in \`Package.swift\`:"
+            echo '```'
+            echo "url:      <the release asset URL below>"
+            echo "checksum: $SHA"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish
+        working-directory: kypost
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.pin.outputs.version }}
+          SHA256: ${{ steps.package.outputs.sha256 }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          TAG="gopenpgp-${{ steps.pin.outputs.version }}"
-          NOTES="Built by \`${{ github.workflow }}\` run ${{ github.run_id }} from
-          \`${{ steps.pin.outputs.package }}@${{ steps.pin.outputs.version }}\`.
+          TAG="gopenpgp-$VERSION"
+          ASSET="$GITHUB_WORKSPACE/gopenpgp.xcframework.zip"
+          # Quoted delimiter: the body is written verbatim, so backticks and
+          # $ in it are not shell-interpreted. The values come in as env vars
+          # rather than inline expressions for the same reason.
+          cat > "$RUNNER_TEMP/notes.md" <<'NOTE'
+          Built from ProtonMail/gopenpgp using that repository's own
+          `build.sh apple`.
 
           SPM binaryTarget checksum (SHA-256 of the zip):
+          NOTE
+          {
+            echo
+            echo "    $SHA256"
+            echo
+            echo "Version: \`$VERSION\`  ·  Workflow run: $RUN_ID"
+            echo
+            echo "Rebuild and compare hashes to verify — this workflow plus"
+            echo "upstream's build.sh are the whole recipe."
+          } >> "$RUNNER_TEMP/notes.md"
 
-              ${{ steps.package.outputs.sha256 }}
-
-          Rebuild and compare hashes to verify: the workflow file is the whole
-          recipe."
-          # Idempotent: a re-run of the same version replaces the asset rather
+          # Idempotent: re-running the same version replaces the asset rather
           # than failing, so a workflow fix does not need a version bump.
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" Gopenpgp.xcframework.zip --clobber
+            gh release upload "$TAG" "$ASSET" --clobber
           else
-            gh release create "$TAG" Gopenpgp.xcframework.zip \
-              --title "GopenPGP ${{ steps.pin.outputs.version }} (XCFramework)" \
-              --notes "$NOTES"
+            gh release create "$TAG" "$ASSET" \
+              --title "GopenPGP $VERSION (XCFramework)" \
+              --notes-file "$RUNNER_TEMP/notes.md"
           fi
