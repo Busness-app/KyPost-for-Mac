@@ -18,6 +18,14 @@ jobs:
     # macos-15 images top out at Xcode 26.3 / SDK 26.3. A deployment target
     # newer than the SDK cannot build, which is what the first run hit.
     runs-on: macos-26
+
+    # Whether the tests can run at all comes down to whether this repository
+    # has an Apple signing identity. See the "Test" step for why.
+    env:
+      SIGNING_CERTIFICATE: ${{ secrets.MACOS_SIGNING_CERTIFICATE }}
+      SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SIGNING_CERTIFICATE_PASSWORD }}
+      PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE }}
+
     steps:
       - uses: actions/checkout@v5
 
@@ -54,45 +62,79 @@ jobs:
             exit 1
           fi
 
+      - name: Install signing identity
+        # Only when the secrets are configured; see "Compile only" below.
+        if: env.SIGNING_CERTIFICATE != '' && env.PROVISIONING_PROFILE != ''
+        run: |
+          set -euo pipefail
+          KEYCHAIN=$RUNNER_TEMP/signing.keychain-db
+          PASSWORD=$(uuidgen)
+
+          security create-keychain -p "$PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$PASSWORD" "$KEYCHAIN"
+
+          echo "$SIGNING_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$SIGNING_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+          # Without this codesign blocks on a GUI prompt no one can answer, and
+          # the job hangs until it times out rather than failing.
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+
+          PROFILES=~/Library/MobileDevice/Provisioning\ Profiles
+          mkdir -p "$PROFILES"
+          echo "$PROVISIONING_PROFILE" | base64 --decode \
+            > "$PROFILES/ci.provisionprofile"
+
       - name: Test
-        # No pretty-printer in the pipeline. `| xcpretty` swallowed the real
-        # exit status behind a tool that is not guaranteed on the image, and a
-        # formatter is not worth a build step that can fail for its own reasons.
-        #
+        if: env.SIGNING_CERTIFICATE != '' && env.PROVISIONING_PROFILE != ''
         # Unit tests only: the UI target drives a real app instance, is flaky
         # headless, and is not what protects this code.
         #
-        # The output is teed and, on failure, replayed as `::error::`
-        # annotations. This is not decoration: job logs are readable only with
-        # admin rights on the repository, so to anyone else a red run says
-        # nothing but "exit 65". Annotations are readable by anyone who can see
-        # the run, so the reason for a failure travels with it.
-        shell: bash
+        # No pretty-printer in the pipeline. `| xcpretty` swallowed the real
+        # exit status behind a tool that is not guaranteed on the image, and a
+        # formatter is not worth a build step that can fail for its own reasons.
         run: |
-          # `-e` is on by default in this shell, so the failing xcodebuild has
-          # to be caught by `||` or the step dies before it can report anything.
-          set -uo pipefail
-          STATUS=0
-          xcodebuild test \
+          .github/scripts/run-xcodebuild.sh test \
             -scheme KyPost \
             -destination 'platform=macOS' \
-            -only-testing:"KyPost Tests" \
-            2>&1 | tee /tmp/xcodebuild.log || STATUS=$?
-          if [ "$STATUS" -ne 0 ]; then
-            annotate() {
-              # GitHub reads a literal newline as the end of the command, so
-              # multi-line context has to be encoded.
-              # awk, not sed: BSD sed on the macOS runner rejects the usual
-              # newline-slurping one-liner.
-              printf '::error::%s\n' \
-                "$(printf '%s' "$1" | awk 'BEGIN{ORS=""} NR>1{print "%0A"} {print}')"
-            }
-            # Compile/link/signing errors first: these explain everything after.
-            grep -E '(^|[[:space:]])error:|^error:' /tmp/xcodebuild.log \
-              | sort -u | head -10 | while IFS= read -r line; do annotate "$line"; done
-            # Then failing tests, which are the other reason to be here.
-            grep -E '✘|Testing failed:|^[[:space:]]+[A-Za-z_]+Tests\.' /tmp/xcodebuild.log \
-              | sort -u | head -10 | while IFS= read -r line; do annotate "$line"; done
-            annotate "xcodebuild exited $STATUS. Last 40 lines:%0A$(tail -40 /tmp/xcodebuild.log)"
-          fi
-          exit "$STATUS"
+            -only-testing:"KyPost Tests"
+
+      - name: Compile only (no signing identity configured)
+        if: env.SIGNING_CERTIFICATE == '' || env.PROVISIONING_PROFILE == ''
+        # The tests cannot run on a stock runner, and this is not a workflow
+        # bug that more flags will fix. They run inside the host app, the host
+        # app's entitlements include `keychain-access-groups`, and
+        # KeychainStorage uses the data-protection keychain — which returns
+        # errSecMissingEntitlement (-34018) to a process that does not carry
+        # that entitlement. Measured, not assumed: building with
+        # CODE_SIGNING_ALLOWED=NO produces 140 tests failing on -34018.
+        #
+        # Nor can the entitlement be ad-hoc signed. Xcode refuses outright:
+        # "has entitlements that require signing with a development
+        # certificate". Both `keychain-access-groups` and `aps-environment`
+        # need a real certificate and profile.
+        #
+        # So without secrets this compiles instead — which still catches the
+        # failure mode that caused this workflow to be written, `main` not
+        # building. It must not be mistaken for a passing test suite, hence
+        # the notice.
+        run: |
+          set -euo pipefail
+          echo "::notice::No Apple signing identity configured, so the test suite did NOT run — this check compiled the code only. Set the MACOS_SIGNING_CERTIFICATE, MACOS_SIGNING_CERTIFICATE_PASSWORD and MACOS_PROVISIONING_PROFILE secrets to run the tests."
+          .github/scripts/run-xcodebuild.sh build-for-testing \
+            -scheme KyPost \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Remove the signing keychain
+        # `always()`: a keychain holding the signing identity should not
+        # outlive the job even when the job failed.
+        if: always() && env.SIGNING_CERTIFICATE != '' && env.PROVISIONING_PROFILE != ''
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+          rm -f ~/Library/MobileDevice/Provisioning\ Profiles/ci.provisionprofile
