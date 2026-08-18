@@ -20,8 +20,14 @@ nonisolated enum PgpMessageState: Equatable, Sendable {
     case none
 
     /// Encrypted, and the server deliberately did not decrypt it because the
-    /// account's key is end-to-end protected. There is no body and this app
-    /// holds no private key, so the only route to the content is webmail.
+    /// account's key is end-to-end protected. There is no body from the server.
+    ///
+    /// This no longer means "cannot be read here". Since device enrollment, it
+    /// means **not readable here unless this device is enrolled and unlocked**
+    /// — the reader can fetch the payload and decrypt it locally. Webmail
+    /// remains the fallback for every device that is not enrolled, which is
+    /// most of them, so nothing that mentions webmail becomes wrong; it just
+    /// stops being the only route.
     case clientProtected
 
     /// Encrypted, and the server tried to decrypt and failed. There is a real
@@ -78,9 +84,22 @@ nonisolated func pgpRowSymbol(
 }
 
 /// Spelled-out row label for VoiceOver, or nil when the row carries no marker.
-nonisolated func pgpRowAccessibilityLabel(state: PgpMessageState, subject: String) -> String? {
+///
+/// `deviceIsEnrolled` changes what the lock on a client-protected row *means*.
+/// Announcing "can't be read in this app" on a device that can in fact open it
+/// is a false statement to the one user who cannot see the screen to check —
+/// so the sentence follows the device's actual capability rather than the
+/// message's state alone.
+nonisolated func pgpRowAccessibilityLabel(
+    state: PgpMessageState,
+    subject: String,
+    deviceIsEnrolled: Bool
+) -> String? {
     switch state {
-    case .clientProtected: "Encrypted, can't be read in this app: \(subject)"
+    case .clientProtected:
+        deviceIsEnrolled
+            ? "Encrypted, unlock to read: \(subject)"
+            : "Encrypted, can't be read in this app: \(subject)"
     case .decryptFailed: "Encrypted, couldn't be decrypted: \(subject)"
     case .none, .decryptedByServer: nil
     }
@@ -91,9 +110,13 @@ nonisolated func pgpRowAccessibilityLabel(state: PgpMessageState, subject: Strin
 /// True only for `.decryptedByServer`. For a client-protected message the
 /// server never saw the plaintext, so its `pgpSigned`/`pgpVerified` values are
 /// not a verdict about content anyone verified — showing "signature not
-/// verified" would assert something we have no basis for. The web client can
-/// fall back to a local decrypt for this (frontend ReadPage.tsx); this app
-/// cannot, and never will.
+/// verified" would assert something we have no basis for.
+///
+/// This stays false for `.clientProtected` even now that the app can decrypt
+/// locally, and the distinction is the point: after an on-device decrypt the
+/// verdict comes from `ReadOutcome.decrypted`, computed over plaintext this
+/// device actually verified. These server flags never become that, so they
+/// must not be rendered as though they had.
 nonisolated func showsSignaturePill(state: PgpMessageState, signed: Bool) -> Bool {
     state == .decryptedByServer && signed
 }

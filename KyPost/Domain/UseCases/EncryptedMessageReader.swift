@@ -1,0 +1,184 @@
+//
+//  EncryptedMessageReader.swift
+//  KyPost
+//
+//  Reads one client-protected message: unseal if needed, fetch, decrypt, bind
+//  the signature, parse. Swift port of kypost-android's
+//  pgp/EncryptedMessageReader.kt.
+//
+//  **No platform imports**, following EnrollmentCeremony — which is what lets
+//  the whole exit table be an ordinary unit test with fakes rather than
+//  something that needs a device, a key and a biometric prompt.
+//
+//  **The decrypted body is never persisted.** Not to SwiftData, not to the
+//  cached body field. It is returned to the caller and lives for the life of
+//  the view showing it.
+//
+
+import Foundation
+
+/// The ciphertext source, behind a protocol so this takes no dependency on
+/// URLSession, pairing credentials, or any app singleton.
+protocol PgpPayloadSource: Sendable {
+    func fetch(mailbox: String, messageId: String) async throws -> PgpPayloadResult
+}
+
+/// How unsealing the vault ended.
+nonisolated enum VaultOpenOutcome: Equatable, Sendable {
+    case opened(privateKey: Data)
+    case cancelled
+    case notEnrolled
+    case noSecureLockScreen
+    case failed(String)
+}
+
+/// Unseals the device's stored key, prompting for presence.
+protocol VaultOpening: Sendable {
+    func open() async -> VaultOpenOutcome
+}
+
+nonisolated struct EncryptedMessageReader: Sendable {
+    private let opener: any VaultOpening
+    private let payloads: any PgpPayloadSource
+    private let crypto: any PgpDecrypting
+    private let session: EnrollmentSession
+    private let mime: @Sendable (Data) -> DecryptedBody?
+
+    init(
+        opener: any VaultOpening,
+        payloads: any PgpPayloadSource,
+        crypto: any PgpDecrypting,
+        session: EnrollmentSession = .shared,
+        mime: @escaping @Sendable (Data) -> DecryptedBody? = { PgpMimeReader.read($0) }
+    ) {
+        self.opener = opener
+        self.payloads = payloads
+        self.crypto = crypto
+        self.session = session
+        self.mime = mime
+    }
+
+    /// - Parameters:
+    ///   - sender: the sender exactly as displayed. **Display context only**,
+    ///     and deliberately unread here. The binding is the server's job: it
+    ///     narrows `payload.signerKeys` to the resolved sender before this
+    ///     runs. Do not wire this up to filter `signerKeys` — that
+    ///     reintroduces the client-side `From` parser that diverged from the
+    ///     server's on 27 of 111 adversarial headers. It stays a parameter
+    ///     because callers have it and a future caller may want it for
+    ///     something that is *not* the verdict, such as comparing it against
+    ///     `resolvedSender` for display.
+    ///   - unlockIfNeeded: false on the automatic attempt when a screen opens,
+    ///     true when the user pressed Decrypt. This is what keeps the presence
+    ///     prompt tied to a deliberate action.
+    func read(
+        mailbox: String,
+        messageId: String,
+        sender: String,
+        unlockIfNeeded: Bool
+    ) async -> ReadOutcome {
+        if !session.isHeld {
+            guard unlockIfNeeded else { return .needsUnlock }
+            switch await opener.open() {
+            case .opened(let privateKey):
+                session.put(armoredKey: String(decoding: privateKey, as: UTF8.self))
+            case .cancelled: return .cancelled
+            case .notEnrolled: return .notEnrolled
+            case .noSecureLockScreen: return .noSecureLockScreen
+            case .failed(let message): return .unsealFailed(message)
+            }
+        }
+
+        let payload: PgpPayload
+        do {
+            switch try await payloads.fetch(mailbox: mailbox, messageId: messageId) {
+            case .success(let fetched): payload = fetched
+            case .tooLarge: return .tooLarge
+            case .notClientProtected: return .notClientProtected
+            case .noPayload: return .noEncryptedContent
+            case .failed(let message): return .fetchFailed(message)
+            }
+        } catch {
+            return .fetchFailed(error.localizedDescription)
+        }
+
+        // Conflicted entries carry no key material and must never be offered
+        // to a signature check. They stay in `payload.signerKeys` so
+        // `signatureState` can still report `.keyChanged` from them.
+        //
+        // This filter cannot change today's outcome: `signatureState` returns
+        // `.keyChanged` for any signed message the moment any entry conflicts,
+        // before it looks at what was offered. It stays as defence against one
+        // plausible future edit — reordering `signatureState` so conflict no
+        // longer short-circuits first. Do not remove it as dead code without
+        // re-checking that precedence.
+        let offeredKeys = payload.signerKeys.filter { !$0.conflict }.map(\.publicKey)
+
+        guard !payload.encryptedPayload.isEmpty else {
+            // A signed-but-not-encrypted message: readable body, detached
+            // signature, nothing to decrypt.
+            //
+            // NOT REACHABLE TODAY, and deliberately not implemented. The
+            // server keeps the two payloads mutually exclusive, and this
+            // function only runs for messages it flagged encrypted.
+            //
+            // Reviving it is a design decision, not a cleanup. `payload.body`
+            // is the server's extracted *display* body, not the canonical
+            // octets that were signed, and a body that reads identically to a
+            // human but differs by a byte fails verification outright — which
+            // `signatureState` maps to `.invalid`, the strongest accusation
+            // this app makes. Wiring it up as-is would falsely accuse real
+            // correspondents over a routine canonicalisation mismatch.
+            return .decryptFailed("this message carries no encrypted content")
+        }
+
+        let decrypted: DecryptedMessage
+        do {
+            decrypted = try session.withKey { key in
+                guard let key else { throw PgpCryptoError.unavailable }
+                return try crypto.decrypt(
+                    armoredCiphertext: payload.encryptedPayload,
+                    privateKey: key,
+                    signerKeys: offeredKeys
+                )
+            }
+        } catch PgpCryptoError.unavailable {
+            // The session was cleared between the check above and here — the
+            // app can lock mid-read. Re-read rather than trusting the branch.
+            return .needsUnlock
+        } catch PgpCryptoError.tooLarge {
+            return .tooLarge
+        } catch {
+            // Deliberately does **not** clear the session: one message failing
+            // says nothing about the held key, and clearing would re-prompt
+            // for every later message.
+            return .decryptFailed(Self.message(for: error))
+        }
+
+        guard let body = mime(decrypted.body) else {
+            return .decryptFailed("this message could not be read once decrypted")
+        }
+
+        return .decrypted(
+            body: body,
+            signature: signatureState(
+                signature: decrypted.signature,
+                signerKeys: payload.signerKeys,
+                fingerprint: crypto.fingerprint(ofArmoredPublicKey:)
+            ),
+            resolvedSender: payload.resolvedSender
+        )
+    }
+
+    /// Sentences for the exit table, not a forwarded library string.
+    private static func message(for error: Error) -> String {
+        switch error {
+        case PgpCryptoError.unusableKey:
+            "the key on this device could not be read"
+        case PgpCryptoError.cannotDecrypt:
+            "this message is not encrypted to a key on this device"
+        default:
+            "this message could not be decrypted"
+        }
+    }
+}

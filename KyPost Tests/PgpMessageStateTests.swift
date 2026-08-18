@@ -59,12 +59,35 @@ import Testing
     }
 
     @Test func accessibilityLabelsSpellOutTheState() {
-        #expect(pgpRowAccessibilityLabel(state: .clientProtected, subject: "Invoice")
+        #expect(pgpRowAccessibilityLabel(state: .clientProtected, subject: "Invoice", deviceIsEnrolled: false)
             == "Encrypted, can't be read in this app: Invoice")
-        #expect(pgpRowAccessibilityLabel(state: .decryptFailed, subject: "Invoice")
+        #expect(pgpRowAccessibilityLabel(state: .decryptFailed, subject: "Invoice", deviceIsEnrolled: false)
             == "Encrypted, couldn't be decrypted: Invoice")
-        #expect(pgpRowAccessibilityLabel(state: .none, subject: "Invoice") == nil)
-        #expect(pgpRowAccessibilityLabel(state: .decryptedByServer, subject: "Invoice") == nil)
+        #expect(pgpRowAccessibilityLabel(state: .none, subject: "Invoice", deviceIsEnrolled: false) == nil)
+        #expect(pgpRowAccessibilityLabel(state: .decryptedByServer, subject: "Invoice", deviceIsEnrolled: false) == nil)
+    }
+
+    /// The lock on a client-protected row means different things on an
+    /// enrolled device and an unenrolled one, and the user who cannot see the
+    /// screen is the one who most needs the sentence to be true.
+    @Test func anEnrolledDeviceIsToldItCanUnlockRatherThanThatItCannotRead() {
+        #expect(
+            pgpRowAccessibilityLabel(
+                state: .clientProtected, subject: "Invoice", deviceIsEnrolled: true
+            ) == "Encrypted, unlock to read: Invoice"
+        )
+        #expect(
+            pgpRowAccessibilityLabel(
+                state: .clientProtected, subject: "Invoice", deviceIsEnrolled: false
+            ) == "Encrypted, can't be read in this app: Invoice"
+        )
+        // Enrollment changes nothing about a message the server failed to
+        // decrypt: no local key helps with that.
+        #expect(
+            pgpRowAccessibilityLabel(
+                state: .decryptFailed, subject: "Invoice", deviceIsEnrolled: true
+            ) == "Encrypted, couldn't be decrypted: Invoice"
+        )
     }
 }
 

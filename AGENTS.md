@@ -125,6 +125,32 @@ a crypto path acceptable.
   reader, compose, and the signature binding must never learn which library is
   underneath.
 
+### Reading client-protected mail (`Domain/UseCases/EncryptedMessageReader.swift`)
+
+- **The decrypted body is never persisted.** Not to SwiftData, not to the
+  cached body field. It is returned to the caller and lives for the life of the
+  view showing it.
+- **The exit table is eleven distinct cases, not one error string.** Each gets
+  its own sentence and sometimes its own button. Two that are easy to get
+  wrong: `cancelled` is not an error — the user dismissed a sheet they raised,
+  so the screen simply goes back to offering Decrypt; and `noEncryptedContent`
+  is *terminal*, so the UI must not offer Retry. `readOutcomeAllowsRetry` is
+  the single place that decides this.
+- **`signerKeys` arrive already narrowed to the resolved sender.** Do not
+  re-narrow them, and never parse a `From` header to do it. Android shipped
+  exactly that and a differential harness caught it disagreeing with the
+  server's parser on 27 of 111 adversarial headers.
+- **Render `resolvedSender`, never the raw `From`,** wherever a verdict is
+  shown. The two are separable by an attacker, and a correct verdict displayed
+  next to the wrong address is still a lie.
+- A decrypt failure must **not** clear `EnrollmentSession`. One message failing
+  says nothing about the held key, and clearing re-prompts for every later
+  message.
+- `EnrollmentSession` holds the key as bytes it can zero, and every session
+  boundary must clear it: app lock, backgrounding, memory pressure, security
+  wipe, unpair. Android's equivalent was missed by the wipe path, which then
+  reported "Complete" with the private key still in the process heap.
+
 ### Signature attribution is entity-level (`Domain/Security/GopenPGPCrypto.swift`)
 
 A signature is attributed to a bound key by **entity fingerprint**, never by
