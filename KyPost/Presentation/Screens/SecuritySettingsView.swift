@@ -77,8 +77,9 @@ struct SecuritySettingsContent: View {
                     .font(AppFont.ui(13))
                     .foregroundStyle(SemanticColors.danger)
             }
+            pushMetadataWarning
         } footer: {
-            Text("Blocks background mail checks and MFA approvals until you open and unlock KyPost. On iPhone this covers all background delivery; on a Mac it applies while the screen is locked. Requires Require Unlock to Open.\n\nNote: new-mail notifications carry the sender and subject through Apple's push service and your KyPost relay.")
+            Text("Blocks background mail checks and MFA approvals until you open and unlock KyPost. On iPhone this covers all background delivery; on a Mac it applies while the screen is locked. Requires Require Unlock to Open.")
         }
         .confirmationDialog(
             "Delay notifications until unlocked?",
@@ -152,6 +153,33 @@ struct SecuritySettingsContent: View {
     /// downgrade than "Remove Exported Contacts", which already prompts. It
     /// used to prompt for nothing at all whenever the in-memory copy was warm,
     /// which is precisely the state an unlocked, unattended Mac is in.
+
+    /// Sits inside the section rather than in its footer, and reads as a
+    /// warning rather than a note.
+    ///
+    /// The previous wording was a footnote saying notifications "carry the
+    /// sender and subject" — true, but placed directly under a toggle whose
+    /// name promises to protect notifications, which invites exactly the wrong
+    /// conclusion. The toggle gates *this device's* credential and delivery;
+    /// it does nothing about what already travelled through Apple and the
+    /// relay to get here. Say that, and name the one setting that does fix it.
+    private var pushMetadataWarning: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(SemanticColors.warning)
+            Text("Push always sends the sender and subject through Apple's push service and your KyPost relay — even with this on. For zero metadata leakage, switch this device to Pull mode on your server's Notifications page.")
+                .font(AppFont.ui(12))
+                .foregroundStyle(theme.inkStrong)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: Shape.field)
+                .fill(SemanticColors.warning.opacity(0.12))
+        )
+        .accessibilityElement(children: .combine)
+    }
     private var credentialGateBinding: Binding<Bool> {
         Binding(
             get: { gateService.isEnabled },

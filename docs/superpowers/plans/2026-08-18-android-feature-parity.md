@@ -207,7 +207,7 @@ Port the helper, badge the row and the reader header, add the test.
 
 ---
 
-## Phase 4 — Push metadata disclosure — **next**
+## Phase 4 — Push metadata disclosure — **done 2026-08-18**
 
 Parity brief C6's substantive half. Android warns users that push notifications
 relay metadata (sender, subject) through a third party. This app has the same
@@ -216,7 +216,7 @@ Settings → Security. Skip Android's dp-scaling layout work; it has no analogue
 
 ---
 
-## Phase 5 — Contacts depth (parity brief C, reopened)
+## Phase 5 — Contacts depth — **next** (parity brief C, reopened)
 
 ### 5a. Groups
 
