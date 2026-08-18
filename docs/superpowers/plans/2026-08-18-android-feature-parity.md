@@ -194,7 +194,7 @@ and the `forceFullResync` path. Three things must not be lost in translation:
 
 ---
 
-## Phase 3 — Phishing flag — **next**
+## Phase 3 — Phishing flag — **done 2026-08-18**
 
 Tiny and high-value. The server sets the RFC 8621 reserved keyword `$Phishing`
 on inbound mail impersonating KyPost itself. Android's `mail/PhishingFlag.kt`
@@ -207,7 +207,7 @@ Port the helper, badge the row and the reader header, add the test.
 
 ---
 
-## Phase 4 — Push metadata disclosure
+## Phase 4 — Push metadata disclosure — **next**
 
 Parity brief C6's substantive half. Android warns users that push notifications
 relay metadata (sender, subject) through a third party. This app has the same

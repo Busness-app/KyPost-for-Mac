@@ -1400,3 +1400,108 @@ private func makeOutgoing(
         #expect(store.cursor(pairingId: "s", folder: "INBOX") == "c-1")
     }
 }
+
+// MARK: - Phishing flag (Phase 3)
+
+@Suite struct PhishingFlagTests {
+    @Test func recognisesTheReservedKeyword() {
+        #expect(isFlaggedPhishing(["Primary", phishingKeyword]))
+        #expect(phishingKeyword == "$Phishing")
+    }
+
+    /// IMAP keywords are case-insensitive. A server may echo back `$phishing`
+    /// for a keyword the poller set as `$Phishing`, and a case-sensitive check
+    /// would drop the warning on precisely the mail it exists for.
+    @Test func matchesRegardlessOfCaseOrSurroundingSpace() {
+        #expect(isFlaggedPhishing(["$phishing"]))
+        #expect(isFlaggedPhishing(["$PHISHING"]))
+        #expect(isFlaggedPhishing(["$PhIsHiNg"]))
+        #expect(isFlaggedPhishing(["  $Phishing  "]))
+    }
+
+    @Test func doesNotMatchANeighbouringKeyword() {
+        // Exact match, not a prefix or a substring.
+        #expect(!isFlaggedPhishing(["$PhishingReport"]))
+        #expect(!isFlaggedPhishing(["NotPhishing"]))
+        #expect(!isFlaggedPhishing(["Primary", "Receipts"]))
+        #expect(!isFlaggedPhishing([String]()))
+    }
+
+    @Test func systemKeywordsAreTheDollarPrefixedNamespace() {
+        #expect(isSystemKeyword("$Phishing"))
+        #expect(isSystemKeyword("$Junk"))
+        #expect(isSystemKeyword(" $Forwarded"))
+        #expect(!isSystemKeyword("Work"))
+        #expect(!isSystemKeyword("Receipts"))
+    }
+}
+
+@Suite struct PhishingKeywordWireTests {
+    private func decode(_ json: String) throws -> RelayEmailDTO {
+        try JSONDecoder().decode(RelayEmailDTO.self, from: Data(json.utf8))
+    }
+
+    /// The regression this closes: `keywords` was not decoded at all, so the
+    /// server could set $Phishing and this client would never see it.
+    @Test func theWireKeywordsReachTheDomainModel() throws {
+        let dto = try decode("""
+        {"messageId": "m1", "label": "Work", "keywords": ["Work", "$Phishing"]}
+        """)
+        let email = dto.toDomain(folder: "INBOX", tab: "Primary")
+        #expect(email.keywords.contains("$Phishing"))
+        #expect(isFlaggedPhishing(email.keywords))
+    }
+
+    /// Union, not replacement: the label drives the tab strip and the wire
+    /// list carries protocol keywords. Dropping either loses something.
+    @Test func theTabDerivedLabelSurvivesAlongsideTheWireKeywords() throws {
+        let dto = try decode("""
+        {"messageId": "m1", "label": "Important", "keywords": ["$Phishing"]}
+        """)
+        let email = dto.toDomain(folder: "INBOX", tab: "Primary")
+        #expect(email.keywords == ["Important", "$Phishing"])
+    }
+
+    @Test func anOlderRelayWithoutTheFieldStillGetsItsTab() throws {
+        let dto = try decode(#"{"messageId": "m1", "label": "Work"}"#)
+        let email = dto.toDomain(folder: "INBOX", tab: "Primary")
+        #expect(email.keywords == ["Work"])
+        #expect(!isFlaggedPhishing(email.keywords))
+    }
+}
+
+@Suite struct MessageBodyNavigationTests {
+    private func policy(_ urlString: String, tapped: Bool = true)
+        -> EmailBodyWebView.BodyNavigation {
+        EmailBodyWebView.navigationPolicy(url: URL(string: urlString), isLinkActivation: tapped)
+    }
+
+    /// Handing a tap to the system routes this app's own scheme back into this
+    /// app, so a kypost://native-pair link in a message would raise the
+    /// pairing confirmation on top of the sender's pretext.
+    @Test func theMessageBodyCannotReachTheAppsOwnScheme() {
+        #expect(policy("kypost://native-pair?sub=a&srv=https://evil.test&pt=x") == .block)
+        #expect(policy("kypost://native-pair", tapped: false) == .block)
+    }
+
+    /// An allowlist, not a denylist: a mail body has no business opening any
+    /// other scheme either, and a denylist needs updating whenever one appears.
+    @Test func onlyHttpAndHttpsLeaveTheMessage() {
+        #expect(policy("https://example.com") == .openInBrowser(URL(string: "https://example.com")!))
+        #expect(policy("http://example.com") == .openInBrowser(URL(string: "http://example.com")!))
+        #expect(policy("file:///etc/passwd") == .block)
+        #expect(policy("tel:+15550100") == .block)
+        #expect(policy("javascript:alert(1)") == .block)
+    }
+
+    @Test func theMessageDocumentItselfStillLoads() {
+        #expect(policy("about:blank", tapped: false) == .allow)
+    }
+
+    /// A <meta http-equiv="refresh"> is plain HTML and a main-frame
+    /// navigation — neither script nor subresource — so it must still be
+    /// dropped even for an allowed scheme.
+    @Test func anUngesturedNavigationIsStillDropped() {
+        #expect(policy("https://example.com", tapped: false) == .block)
+    }
+}

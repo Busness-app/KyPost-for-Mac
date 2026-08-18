@@ -98,6 +98,30 @@ Default section order:
 
 ## Local Contracts
 
+### Phishing flag and message-body navigation
+
+- `$Phishing` is the reserved RFC 8621 keyword the server sets on mail
+  impersonating KyPost. Matched case-insensitively and trimmed, because IMAP
+  keywords are case-insensitive and a server may echo back `$phishing` for a
+  keyword set as `$Phishing`. Exact match — `$PhishingReport` is a different
+  keyword. The message is flagged **in place**: nothing moves or hides mail.
+- The relay's `keywords` array must stay decoded and **unioned** with the
+  tab-derived label, never replacing it. The label drives the tab strip; the
+  wire list carries protocol keywords. Dropping either loses something.
+- `$`-prefixed keywords are IMAP protocol flags, not user labels: they are
+  filtered out of the tab strip, the row chips, and the Keywords settings
+  screen. The phishing warning must not be hideable. (Divergence from Android,
+  whose `KeywordTabs.buildTabs` does not filter them.)
+- **The message body reaches only http/https.** An allowlist, not a denylist.
+  Handing a link tap to `openURL` hands it to the system, and the system routes
+  this app's own scheme back into this app — so a `kypost://native-pair` link
+  in a message would raise the pairing confirmation on top of the sender's
+  pretext. A mail body has no business opening `file:`, `tel:` or any other
+  scheme either, and a denylist needs updating every time one appears.
+- Un-gestured navigations stay blocked regardless of scheme: a
+  `<meta http-equiv="refresh">` is plain HTML and a main-frame navigation, so
+  neither the JavaScript switch nor `loadsSubresources` touches it.
+
 ### Mail delta sync (`Data/Mail`, `Data/Storage/MailCursorStore.swift`)
 
 - **`isFullWindow` is derived from what we asked for, never from the wire's

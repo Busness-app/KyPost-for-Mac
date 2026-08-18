@@ -38,12 +38,15 @@ final class KeywordRepository {
 
     /// Tabs to show in the inbox tab bar (hidden keywords filtered out).
     func visibleTabs(from emails: [Email]) -> [KeywordTab] {
-        Self.computeTabs(from: emails).filter { settingsStore.isVisible($0.name) }
+        Self.computeTabs(from: emails)
+            .filter { !isSystemKeyword($0.name) && settingsStore.isVisible($0.name) }
     }
 
     /// All keywords with their visibility, for KeywordSettingsView.
     func allSettings(from emails: [Email]) -> [KeywordSetting] {
-        Self.computeTabs(from: emails).map {
+        // System keywords are not offered here either: there is nothing
+        // useful to toggle, and the phishing warning must not be hideable.
+        Self.computeTabs(from: emails).filter { !isSystemKeyword($0.name) }.map {
             KeywordSetting(name: $0.name, visible: settingsStore.isVisible($0.name))
         }
     }

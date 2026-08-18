@@ -64,6 +64,12 @@ struct RelayEmailDTO: Decodable, Equatable, Sendable {
     /// fetch on open.
     var hasAttachments: Bool?
     var label: String?
+    /// The message's real IMAP keywords. `omitempty` server-side, so absent
+    /// means none. Previously not decoded at all, which meant `Email.keywords`
+    /// was synthesised from `label`/tab alone and a keyword the server
+    /// actually set — the `$Phishing` anti-phishing flag — never reached this
+    /// client.
+    var keywords: [String]?
     /// "unread" unless the server says otherwise.
     var status: String?
     /// ISO-8601 timestamp.
@@ -82,6 +88,10 @@ struct RelayEmailDTO: Decodable, Equatable, Sendable {
     func toDomain(folder: String, tab: String) -> Email {
         let (name, address) = Self.splitSender(sender ?? "")
         let keyword = (label?.isEmpty == false ? label : tab) ?? tab
+        // Union of the wire keywords and the tab-derived label, not a
+        // replacement: the label drives the tab strip, and the wire list
+        // carries protocol keywords like $Phishing. Dropping either loses
+        // something the UI needs.
         return Email(
             serverId: messageId,
             folder: folder,
@@ -97,7 +107,7 @@ struct RelayEmailDTO: Decodable, Equatable, Sendable {
             body: body ?? "",
             sentTo: sentTo ?? "",
             cc: cc ?? "",
-            keywords: keyword.isEmpty ? [] : [keyword],
+            keywords: Set(((keywords ?? []) + [keyword]).filter { !$0.isEmpty }),
             receivedAt: Self.parseUtc(atUtc) ?? Date(),
             read: (status ?? "unread").lowercased() != "unread",
             starred: false,

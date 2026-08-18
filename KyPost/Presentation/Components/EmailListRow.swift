@@ -15,10 +15,21 @@ struct EmailListRow: View {
     /// The PGP marker's spelled-out label when there is one, plus the
     /// paperclip's — VoiceOver announces neither glyph reliably on its own.
     private var rowAccessibilityLabel: String {
-        let base = pgpRowAccessibilityLabel(state: rowPgpState, subject: email.subject)
+        var base = pgpRowAccessibilityLabel(state: rowPgpState, subject: email.subject)
             ?? email.subject
+        if isPhishing {
+            base = "Suspected impersonation of KyPost: \(base)"
+        }
         return email.hasAttachments ? "\(base), has attachments" : base
     }
+
+    /// User-facing labels only — IMAP system keywords like `$Phishing` drive
+    /// the warning, not a chip.
+    private var labelChips: [String] {
+        email.keywords.filter { !isSystemKeyword($0) }.sorted()
+    }
+
+    private var isPhishing: Bool { isFlaggedPhishing(email.keywords) }
 
     private var rowPgpState: PgpMessageState {
         pgpMessageState(
@@ -44,6 +55,13 @@ struct EmailListRow: View {
                         .foregroundStyle(theme.ink.opacity(0.7))
                 }
                 HStack(spacing: 5) {
+                    if isPhishing {
+                        // Outranks the PGP marker: a message impersonating
+                        // KyPost is the more urgent thing to say about it.
+                        Image(systemName: "exclamationmark.shield.fill")
+                            .font(AppFont.ui(12))
+                            .foregroundStyle(SemanticColors.danger)
+                    }
                     if let symbol = pgpRowSymbol(rowPgpState) {
                         Image(systemName: symbol)
                             .font(AppFont.ui(12))
@@ -61,9 +79,9 @@ struct EmailListRow: View {
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel(rowAccessibilityLabel)
-                if !email.keywords.isEmpty {
+                if !labelChips.isEmpty {
                     HStack(spacing: 5) {
-                        ForEach(email.keywords.sorted(), id: \.self) { keyword in
+                        ForEach(labelChips, id: \.self) { keyword in
                             Text(keyword)
                                 .font(AppFont.ui(11, weight: .medium))
                                 .foregroundStyle(theme.ink)
