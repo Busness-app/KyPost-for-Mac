@@ -246,8 +246,47 @@ final class HTTPClient: Sendable {
         headers: [String: String] = [:],
         jsonBody: some Encodable
     ) async throws -> Response {
+        try await send(type, method: "POST", url: url, query: query, headers: headers, jsonBody: jsonBody)
+    }
+
+    func put<Response: Decodable>(
+        _ type: Response.Type,
+        url: URL,
+        query: [URLQueryItem] = [],
+        headers: [String: String] = [:],
+        jsonBody: some Encodable
+    ) async throws -> Response {
+        try await send(type, method: "PUT", url: url, query: query, headers: headers, jsonBody: jsonBody)
+    }
+
+    /// DELETE with no request body — the relay identifies the target with a
+    /// query parameter, not a payload.
+    func delete<Response: Decodable>(
+        _ type: Response.Type,
+        url: URL,
+        query: [URLQueryItem] = [],
+        headers: [String: String] = [:]
+    ) async throws -> Response {
         var request = URLRequest(url: try url.appending(queryOrThrow: query))
-        request.httpMethod = "POST"
+        request.httpMethod = "DELETE"
+        for (field, value) in headers {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
+        return try await decode(execute(request))
+    }
+
+    // MARK: - Private
+
+    private func send<Response: Decodable>(
+        _ type: Response.Type,
+        method: String,
+        url: URL,
+        query: [URLQueryItem],
+        headers: [String: String],
+        jsonBody: some Encodable
+    ) async throws -> Response {
+        var request = URLRequest(url: try url.appending(queryOrThrow: query))
+        request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         for (field, value) in headers {
             request.setValue(value, forHTTPHeaderField: field)
@@ -259,8 +298,6 @@ final class HTTPClient: Sendable {
         }
         return try await decode(execute(request))
     }
-
-    // MARK: - Private
 
     /// `streamingUpTo` routes through the capped streaming transport; nil uses
     /// the buffering one (JSON endpoints, whose bodies the relay's own handlers

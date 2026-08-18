@@ -159,6 +159,19 @@ struct RelayFolderDTO: Decodable, Equatable, Sendable {
     var deletable: Bool?
 }
 
+/// POST /api/inbox/folders. `parent` is "" for a top-level folder.
+struct RelayFolderCreateRequest: Encodable, Sendable {
+    var parent: String
+    var name: String
+}
+
+/// PUT /api/inbox/folders. `folder` is the full existing path, `name` the new
+/// single segment.
+struct RelayFolderRenameRequest: Encodable, Sendable {
+    var folder: String
+    var name: String
+}
+
 struct RelayFolderListResponse: Decodable, Sendable {
     var parent: String?
     var folders: [RelayFolderDTO]?
@@ -295,7 +308,38 @@ final class RelayMailSource: MailSource {
             query: query,
             headers: auth.headerFields
         )
-        return (response.folders ?? []).map { MailFolder(name: $0.path) }
+        return (response.folders ?? []).map {
+            MailFolder(name: $0.path, deletable: $0.deletable ?? false)
+        }
+    }
+
+    func createFolder(parent: String, name: String) async throws {
+        _ = try await httpClient.post(
+            RelayActionResponse.self,
+            url: try endpoint("api/inbox/folders"),
+            headers: auth.headerFields,
+            jsonBody: RelayFolderCreateRequest(parent: parent, name: name)
+        )
+    }
+
+    func renameFolder(folder: String, name: String) async throws {
+        _ = try await httpClient.put(
+            RelayActionResponse.self,
+            url: try endpoint("api/inbox/folders"),
+            headers: auth.headerFields,
+            jsonBody: RelayFolderRenameRequest(folder: folder, name: name)
+        )
+    }
+
+    func deleteFolder(folder: String) async throws {
+        // The target rides in the query string, not a body — DELETE with a
+        // payload is what the relay does not accept here.
+        _ = try await httpClient.delete(
+            RelayActionResponse.self,
+            url: try endpoint("api/inbox/folders"),
+            query: [URLQueryItem(name: "folder", value: folder)],
+            headers: auth.headerFields
+        )
     }
 
     func fetchEmails(folder: String, from: Int, to: Int) async throws -> [Email] {

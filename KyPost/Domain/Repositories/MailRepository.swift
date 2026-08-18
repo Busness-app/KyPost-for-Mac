@@ -41,6 +41,32 @@ final class MailRepository {
 
     /// Fetches a folder from the server and replaces the cached snapshot.
     @discardableResult
+    /// Folder management. Each returns a MailOutcome rather than throwing, so
+    /// a 429 or an unconfigured account reads the same here as on the send
+    /// path instead of surfacing a raw error.
+    func createFolder(parent: String, name: String) async -> MailOutcome {
+        await folderMutation { try await $0.createFolder(parent: parent, name: name) }
+    }
+
+    func renameFolder(_ folder: String, to name: String) async -> MailOutcome {
+        await folderMutation { try await $0.renameFolder(folder: folder, name: name) }
+    }
+
+    func deleteFolder(_ folder: String) async -> MailOutcome {
+        await folderMutation { try await $0.deleteFolder(folder: folder) }
+    }
+
+    private func folderMutation(
+        _ body: (any MailSource) async throws -> Void
+    ) async -> MailOutcome {
+        do {
+            try await body(try makeSource())
+            return .success
+        } catch {
+            return MailOutcome.from(error)
+        }
+    }
+
     func refreshFolder(_ folder: String, from: Int = 0, to: Int = 50) async throws -> [Email] {
         let emails = try await makeSource().fetchEmails(folder: folder, from: from, to: to)
         try await emailDAO.replaceFolderSnapshot(folder: folder, emails: emails)

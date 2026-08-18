@@ -67,6 +67,53 @@ final class InboxViewModel {
         }
     }
 
+    // MARK: - Folder management
+
+    /// Creates a child of `parent` ("" for top level) and refreshes the tree.
+    func createFolder(parent: String, name: String) async {
+        await folderMutation { await self.mailRepository.createFolder(parent: parent, name: name) }
+    }
+
+    func renameFolder(_ folder: String, to name: String) async {
+        await folderMutation { await self.mailRepository.renameFolder(folder, to: name) }
+    }
+
+    /// Deletes a folder. The caller must only offer this for a folder the
+    /// listing marked `deletable`; the relay is the authority either way and
+    /// refuses the rest.
+    func deleteFolder(_ folder: String) async {
+        let wasSelected = self.folder == folder
+        await folderMutation { await self.mailRepository.deleteFolder(folder) }
+        // Leaving the selection on a folder that no longer exists shows an
+        // empty list with no explanation and no way back.
+        if wasSelected, errorMessage == nil {
+            await selectFolder(StandardFolder.inbox)
+        }
+    }
+
+    private func folderMutation(_ body: () async -> MailOutcome) async {
+        switch await body() {
+        case .success, .sentWithWarning:
+            errorMessage = nil
+            await loadSubfolders()
+        case .rateLimited(let retryAfter):
+            errorMessage = retryAfter.map {
+                "Too many attempts — try again in \(NetworkError.formatRetryAfter($0))."
+            } ?? "Too many attempts — try again later."
+        case .notConfigured:
+            errorMessage = "Set up your mail account in the web app first."
+        case .unauthorized:
+            errorMessage = "Not authorized — re-pair the device or check credentials."
+        case .notPaired:
+            errorMessage = "Pair this device first."
+        case .invalid(let message), .failure(let message), .upstreamFailure(let message):
+            errorMessage = message
+        case .clientSideNeeded, .keylessRecipients:
+            // Neither is reachable on a folder call; both are send refusals.
+            errorMessage = "The server refused that folder change."
+        }
+    }
+
     /// Moves emails to another folder (drag & drop), then re-syncs the list.
     func move(serverIds: [String], to targetFolder: String) async {
         guard !serverIds.isEmpty, targetFolder != folder else { return }

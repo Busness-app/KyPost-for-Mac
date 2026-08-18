@@ -49,6 +49,11 @@ struct Email: Identifiable, Hashable, Sendable {
 /// A folder/mailbox on the relay.
 struct MailFolder: Hashable, Sendable {
     var name: String
+    /// Whether the relay will let this folder be deleted. The built-in
+    /// mailboxes are not deletable, and the server is the authority — do not
+    /// re-derive it from the name, which is how a localised or renamed
+    /// special folder ends up with a Delete item that always fails.
+    var deletable: Bool = false
 }
 
 /// Built-in relay mailboxes. Binding contract: values are the exact

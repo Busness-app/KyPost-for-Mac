@@ -12,6 +12,14 @@ import Foundation
 protocol MailSource: Sendable {
     /// Lists folders; `parent` scopes to that folder's children (nil = top level).
     func listFolders(parent: String?) async throws -> [MailFolder]
+    /// Creates a child folder. `parent` is "" for a top-level folder; `name`
+    /// is one path segment, never a full path — the relay joins them.
+    func createFolder(parent: String, name: String) async throws
+    /// Renames `folder` (a full path) to `name` (one segment).
+    func renameFolder(folder: String, name: String) async throws
+    /// Deletes `folder` (a full path). Only ever offered for a folder the
+    /// listing marked `deletable`.
+    func deleteFolder(folder: String) async throws
     func fetchEmails(folder: String, from: Int, to: Int) async throws -> [Email]
     func search(folder: String, query: String) async throws -> [String]
     func setKeywords(folder: String, messageId: String, keywords: [String]) async throws

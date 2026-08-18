@@ -142,7 +142,7 @@ known-plain body natively rather than through WebKit — Android does this so
 reading never requires horizontal scrolling. `hasAttachments` drives the row
 marker. Schema migration required (`AppSchemaVersions.swift`).
 
-### 1b. Folder CRUD — **next**
+### 1b. Folder CRUD — **done 2026-08-18**
 
 Android's `MailSource` has `createFolder` / `renameFolder` / `deleteFolder`,
 and `FolderInfo` carries `deletable`. Ours lists folders and nothing else. Add
@@ -167,7 +167,7 @@ a different sentence to the user:
 
 ---
 
-## Phase 2 — Mail delta sync
+## Phase 2 — Mail delta sync — **next**
 
 The largest non-PGP item. Every refresh here fetches a full folder snapshot;
 Android has a cursor, a delta merge and a documented self-heal.

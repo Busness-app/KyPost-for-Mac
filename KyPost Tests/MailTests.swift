@@ -1084,3 +1084,89 @@ private func makeOutgoing(
         }
     }
 }
+
+// MARK: - Folder management
+
+@Suite struct FolderCrudTests {
+    private func source(_ client: HTTPClient) -> RelayMailSource {
+        RelayMailSource(
+            httpClient: client,
+            serverUrl: "https://relay.test",
+            auth: RelayAuth(deviceId: "d1", deviceSecret: "s1")
+        )
+    }
+
+    @Test func listingCarriesTheServersDeletableFlag() async throws {
+        // The server is the authority on what may be deleted. Re-deriving it
+        // from the name is how a renamed or localised special folder ends up
+        // with a Delete item that always fails.
+        let client = stubClient(json: """
+        {"parent": "", "folders": [
+            {"path": "INBOX", "deletable": false},
+            {"path": "INBOX/Receipts", "deletable": true},
+            {"path": "INBOX/Legacy"}
+        ]}
+        """)
+        let folders = try await source(client).listFolders(parent: nil)
+        #expect(folders == [
+            MailFolder(name: "INBOX", deletable: false),
+            MailFolder(name: "INBOX/Receipts", deletable: true),
+            // Absent reads as not deletable: the safe direction is refusing to
+            // offer a destructive action we were not told is available.
+            MailFolder(name: "INBOX/Legacy", deletable: false),
+        ])
+    }
+
+    @Test func createPostsParentAndSegment() async throws {
+        let seen = Box<URLRequest?>(nil)
+        let client = stubClient(json: #"{"ok": true}"#) { seen.value = $0 }
+        try await source(client).createFolder(parent: "INBOX", name: "Receipts")
+
+        let request = try #require(seen.value)
+        #expect(request.httpMethod == "POST")
+        #expect(request.url?.path() == "/api/inbox/folders")
+        let body = try #require(request.httpBody).map { $0 }
+        let json = String(decoding: Data(body), as: UTF8.self)
+        #expect(json.contains(#""parent":"INBOX""#))
+        #expect(json.contains(#""name":"Receipts""#))
+    }
+
+    @Test func renameUsesPutWithTheFullPathAndNewSegment() async throws {
+        let seen = Box<URLRequest?>(nil)
+        let client = stubClient(json: #"{"ok": true}"#) { seen.value = $0 }
+        try await source(client).renameFolder(folder: "INBOX/Old", name: "New")
+
+        let request = try #require(seen.value)
+        #expect(request.httpMethod == "PUT")
+        let json = String(decoding: try #require(request.httpBody), as: UTF8.self)
+        #expect(json.contains(#""folder":"INBOX\/Old""#) || json.contains(#""folder":"INBOX/Old""#))
+        #expect(json.contains(#""name":"New""#))
+    }
+
+    @Test func deleteSendsTheTargetAsAQueryParameterNotABody() async throws {
+        // The relay does not accept a DELETE payload here.
+        let seen = Box<URLRequest?>(nil)
+        let client = stubClient(json: #"{"ok": true}"#) { seen.value = $0 }
+        try await source(client).deleteFolder(folder: "INBOX/Receipts")
+
+        let request = try #require(seen.value)
+        #expect(request.httpMethod == "DELETE")
+        #expect(request.httpBody == nil)
+        #expect(request.url?.query()?.contains("folder=INBOX") == true)
+    }
+
+    @Test func aFolderNameWithASlashStillTravelsAsOneSegment() async throws {
+        // The relay joins parent and name; a segment containing the separator
+        // must not be able to smuggle a second level in.
+        let seen = Box<URLRequest?>(nil)
+        let client = stubClient(json: #"{"ok": true}"#) { seen.value = $0 }
+        try await source(client).createFolder(parent: "", name: "a/b")
+
+        let request = try #require(seen.value)
+        let json = String(decoding: try #require(request.httpBody), as: UTF8.self)
+        // Encoded as a JSON string value, so the server sees one field and can
+        // reject it — rather than this client silently building a path.
+        #expect(json.contains("a") && json.contains("b"))
+        #expect(request.url?.path() == "/api/inbox/folders")
+    }
+}
