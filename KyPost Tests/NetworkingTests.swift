@@ -30,10 +30,14 @@ private let validPairingLink = URL(
         #expect(params.reg == nil)
     }
 
+    /// `reg` must be same-origin with `srv` — it is where the device secret is
+    /// minted, while the confirmation dialog names `srv`. A cross-origin `reg`
+    /// is refused; see `refusesRegOnAForeignHost`. This case is the accepted
+    /// one: a custom *path* on the paired origin.
     @Test func parsesOptionalRegParameter() throws {
-        let url = URL(string: validPairingLink.absoluteString + "&reg=https://reg.example.com/custom")!
+        let url = URL(string: validPairingLink.absoluteString + "&reg=https://relay.example.com/custom")!
         let params = try PairingLinkParser.parse(url)
-        #expect(params.reg == "https://reg.example.com/custom")
+        #expect(params.reg == "https://relay.example.com/custom")
     }
 
     /// A stale cached QR image from before the per-device-secret migration

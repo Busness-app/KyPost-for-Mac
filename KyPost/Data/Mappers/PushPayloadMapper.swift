@@ -66,17 +66,19 @@ enum PushPayloadMapper {
     /// Only well-formed digit runs survive: these drive tap targets on a
     /// security screen, so neither the server nor anyone who can reach the push
     /// channel gets to put arbitrary text on a button. A malformed value is
-    /// treated as absent, which drops the screen back to plain approve/deny.
+    /// treated as absent, which leaves the screen with no way to approve.
+    ///
+    /// Width is validated as a range, not against a literal 2 — see
+    /// `MfaChallenge.matchDigitsLengthRange`. Whether the widths in one
+    /// challenge agree with each other is `MfaNumberMatch.options`' decision,
+    /// not this one's.
     private static func matchDigits(from value: Any?) -> String {
         guard let raw = value as? String else { return "" }
         let trimmed = raw.trimmingCharacters(in: .whitespaces)
-        // ASCII-only: `isNumber` alone also accepts other Unicode numerals, and
-        // a tile reading "٤٧" would never match what the browser displays.
-        guard trimmed.count == MfaChallenge.matchDigitsLength,
-              trimmed.allSatisfy({ $0.isASCII && $0.isNumber }) else {
-            return ""
-        }
-        return trimmed
+        // `isValidMatchDigits` is ASCII-only: `isNumber` alone also accepts
+        // other Unicode numerals, and a tile reading "٤٧" would never match
+        // what the browser displays.
+        return MfaChallenge.isValidMatchDigits(trimmed) ? trimmed : ""
     }
 
     /// Comma-joined by the backend, same as Keywords — APNs data values are strings.

@@ -98,6 +98,28 @@ Default section order:
 
 ## Local Contracts
 
+### MFA number matching (`Domain/Models/MfaNumberMatch.swift`)
+
+- **Every value comes from the server.** Never invent decoys. This client used
+  to fill a short set from an LCG seeded on the challenge id, which made the
+  wrong answers derivable by anyone holding the id and therefore the right one
+  derivable by elimination — the entire guarantee of number matching, given
+  away. A challenge that does not carry the correct value and exactly
+  `choiceCount - 1` decoys of the same width is one this client cannot offer an
+  approval for: `options` returns nil and the screen leaves only Deny. There is
+  no plain-Approve fallback, and adding one re-opens the MFA-fatigue tap that
+  number matching exists to close.
+- **Digit width is whatever the server sent**, validated against
+  `MfaChallenge.matchDigitsLengthRange`, never an exact literal. The width was
+  pinned to 2 in three places across two repositories with no negotiation, so
+  widening the server's value space would have silently disabled approval on
+  every deployed client.
+- **Order is shuffled once per challenge and held.** Do not re-derive it on a
+  redraw, and do not sort by a hash of `(challengeId, value)`: that hash
+  expands to `H(challengeId) * 31^n + f(value)`, and with equal-width
+  candidates the challenge-id term cancels out of every comparison, leaving a
+  plain numeric sort that put the answer in the same slot on every challenge.
+
 ### Contact identity (`Data/Contacts/`)
 
 - `SystemContactMapper.matchKeys(for:)` has two overloads — one for `Contact`,

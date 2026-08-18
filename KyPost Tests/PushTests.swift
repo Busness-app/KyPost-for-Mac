@@ -101,8 +101,11 @@ private func makePairing(lastDeviceId: String? = "dev-1", deviceSecret: String =
 
     @Test func dropsMalformedMatchDigits() throws {
         // These drive tap targets on a security screen, so anything that is not
-        // a two-digit run is treated as absent rather than rendered.
-        for bad in ["4", "471", "4x", "", " "] {
+        // a digit run is treated as absent rather than rendered. Width is
+        // checked as a range, not against a literal 2 — the mapper validates
+        // shape, and whether a set of these adds up to an approvable challenge
+        // is MfaNumberMatch.options' decision.
+        for bad in ["4x", "", " ", "1234567", "٤٧", "-1"] {
             let payload = PushPayloadMapper.map(
                 userInfo: ["type": "mfa_challenge", "challengeId": "c-1", "matchDigits": bad]
             )
@@ -120,14 +123,36 @@ private func makePairing(lastDeviceId: String? = "dev-1", deviceSecret: String =
                 "type": "mfa_challenge",
                 "challengeId": "c-1",
                 "matchDigits": "47",
-                "decoyDigits": "08,bad,08,,913,91",
+                "decoyDigits": "08,bad,08,,91,1234567",
             ]
         )
         guard case .mfaChallenge(let challenge) = payload else {
             Issue.record("Expected an MFA challenge")
             return
         }
+        // Non-digits, blanks, duplicates and over-width values are dropped.
+        // A well-formed value of a *different* width than the answer is not
+        // dropped here — that mismatch is a whole-challenge judgement, and
+        // MfaNumberMatch.options refuses the set rather than quietly rendering
+        // a tile that is visibly the odd one out.
         #expect(challenge.decoyDigits == ["08", "91"])
+    }
+
+    @Test func keepsWellFormedDigitsOfAnyServerWidth() throws {
+        let payload = PushPayloadMapper.map(
+            userInfo: [
+                "type": "mfa_challenge",
+                "challengeId": "c-1",
+                "matchDigits": "0471",
+                "decoyDigits": "0812,0913",
+            ]
+        )
+        guard case .mfaChallenge(let challenge) = payload else {
+            Issue.record("Expected an MFA challenge")
+            return
+        }
+        #expect(challenge.matchDigits == "0471")
+        #expect(challenge.decoyDigits == ["0812", "0913"])
     }
 
     @Test func rejectsUnrecognizedPayloads() {
@@ -146,53 +171,84 @@ private func makePairing(lastDeviceId: String? = "dev-1", deviceSecret: String =
         // No number from the server means number matching is unavailable, and
         // the screen then offers Deny only — never a plain Approve button, which
         // is the tap an MFA-fatigue attack is trying to collect.
-        #expect(MfaNumberMatch.options(challengeId: "c-1", correct: "", serverDecoys: []) == nil)
-        #expect(MfaNumberMatch.options(challengeId: "c-1", correct: "4", serverDecoys: []) == nil)
-        #expect(MfaNumberMatch.options(challengeId: "c-1", correct: "4x", serverDecoys: []) == nil)
+        #expect(MfaNumberMatch.options(correct: "", serverDecoys: ["08", "91"]) == nil)
+        #expect(MfaNumberMatch.options(correct: "4x", serverDecoys: ["08", "91"]) == nil)
+        #expect(MfaNumberMatch.options(correct: "1234567", serverDecoys: ["08", "91"]) == nil)
+        // Non-ASCII numerals would render a tile that can never match what the
+        // browser shows.
+        #expect(MfaNumberMatch.options(correct: "٤٧", serverDecoys: ["08", "91"]) == nil)
     }
 
     @Test func includesTheCorrectValueAmongThreeDistinctOptions() throws {
         let options = try #require(
-            MfaNumberMatch.options(challengeId: "c-1", correct: "47", serverDecoys: ["08", "91"])
+            MfaNumberMatch.options(correct: "47", serverDecoys: ["08", "91"])
         )
         #expect(options.count == MfaNumberMatch.choiceCount)
         #expect(options.contains("47"))
         #expect(Set(options).count == MfaNumberMatch.choiceCount)
     }
 
-    @Test func fillsMissingDecoysDeterministically() throws {
-        // A redraw must not reshuffle the buttons under the user's finger, so
-        // the filler is derived from the challenge id rather than randomly.
-        let first = try #require(
-            MfaNumberMatch.options(challengeId: "c-1", correct: "47", serverDecoys: [])
-        )
-        let second = try #require(
-            MfaNumberMatch.options(challengeId: "c-1", correct: "47", serverDecoys: [])
-        )
-        #expect(first == second)
-        #expect(first.count == MfaNumberMatch.choiceCount)
-        #expect(first.contains("47"))
-        #expect(Set(first).count == MfaNumberMatch.choiceCount)
+    @Test func refusesToInventDecoysWhenTheServerSendsTooFew() {
+        // The client used to fill the gap from an LCG seeded on the challenge
+        // id, which made the wrong answers derivable by anyone holding the id
+        // — and so the right one derivable by elimination. An incomplete
+        // challenge is now simply not approvable from here.
+        #expect(MfaNumberMatch.options(correct: "47", serverDecoys: []) == nil)
+        #expect(MfaNumberMatch.options(correct: "47", serverDecoys: ["08"]) == nil)
+        // A decoy colliding with the answer leaves the set incomplete rather
+        // than producing two correct-looking tiles.
+        #expect(MfaNumberMatch.options(correct: "47", serverDecoys: ["47", "47"]) == nil)
+        #expect(MfaNumberMatch.options(correct: "47", serverDecoys: ["08", "08"]) == nil)
     }
 
-    @Test func neverOffersTheCorrectValueTwice() throws {
-        // A server decoy colliding with the answer must not produce a duplicate
-        // tile — two correct-looking buttons would make the choice meaningless.
-        let options = try #require(
-            MfaNumberMatch.options(challengeId: "c-1", correct: "47", serverDecoys: ["47", "47"])
-        )
-        #expect(options.filter { $0 == "47" }.count == 1)
-        #expect(Set(options).count == MfaNumberMatch.choiceCount)
+    @Test func refusesMoreDecoysThanTheChoiceShapeAllows() {
+        // More than CHOICE_COUNT - 1 means the server and this client disagree
+        // about the shape of the choice; silently dropping the extras would
+        // hide that.
+        #expect(MfaNumberMatch.options(correct: "47", serverDecoys: ["08", "91", "13"]) == nil)
+    }
+
+    @Test func rejectsDecoysOfADifferentWidthThanTheAnswer() {
+        // A tile that is visibly a different shape from the others gives the
+        // answer away without the user ever looking at the browser.
+        #expect(MfaNumberMatch.options(correct: "47", serverDecoys: ["8", "91"]) == nil)
+        #expect(MfaNumberMatch.options(correct: "47", serverDecoys: ["123", "91"]) == nil)
+    }
+
+    @Test func acceptsWhateverDigitWidthTheServerUsed() throws {
+        // Width is not pinned to 2: widening the server's value space must not
+        // silently disable approval on an already-deployed client.
+        for correct in ["4", "047", "004700"] {
+            let decoys = ["1", "2"].map { String(repeating: $0, count: correct.count) }
+            let options = try #require(
+                MfaNumberMatch.options(correct: correct, serverDecoys: decoys)
+            )
+            #expect(options.count == MfaNumberMatch.choiceCount)
+            #expect(options.contains(correct))
+        }
     }
 
     @Test func orderDoesNotPinTheAnswerToOnePosition() {
-        // Sorting by a hash of (challengeId, value) rather than leaving the
-        // answer appended last, so it is not always the rightmost tile.
-        let positions = (0..<40).compactMap { index -> Int? in
-            MfaNumberMatch.options(challengeId: "challenge-\(index)", correct: "47", serverDecoys: ["08", "91"])?
+        // The previous ordering sorted on a hash of (challengeId, value). That
+        // expands to H(challengeId) * 31^n + f(value), and since every tile has
+        // the same width the challenge-id term is an identical offset on all
+        // three and cancels out of every comparison — leaving a plain numeric
+        // sort, so the answer sat in the same slot on every challenge.
+        let positions = (0..<200).compactMap { _ in
+            MfaNumberMatch.options(correct: "47", serverDecoys: ["08", "91"])?
                 .firstIndex(of: "47")
         }
-        #expect(Set(positions).count > 1)
+        #expect(positions.count == 200)
+        #expect(Set(positions).count == MfaNumberMatch.choiceCount)
+    }
+
+    @Test func shuffleIsInjectableSoACallerCanPinTheOrder() throws {
+        // Callers must shuffle once and keep the result for the life of the
+        // challenge; the seam exists so that is testable.
+        let options = try #require(
+            MfaNumberMatch.options(correct: "47", serverDecoys: ["08", "91"]) { $0.sorted() }
+        )
+        #expect(options == ["08", "47", "91"])
     }
 }
 

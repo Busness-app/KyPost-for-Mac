@@ -94,17 +94,25 @@ Cheap, unblocks the rest, no runtime change.
    `DesktopPairingService.isValidCode` being called from a nonisolated context.
    Both are fixed in the same working tree as 5e; they are one-liners.
 
-   **Three tests fail on `origin/main` independently of that.** Two are worth
-   real attention and neither is in scope for the phases below:
-   - `MfaNumberMatchTests.orderDoesNotPinTheAnswerToOnePosition` — the correct
-     digit lands in the same position every time. That defeats the point of
-     number matching, in code that shipped in `59c8ab2`. **Treat as a security
-     bug and fix first.**
-   - `PinnedSessionDelegateTests.anUnsupportedKeyShapeProducesNoHash` — a key
-     shape the test expects to be unhashable now hashes. Decide whether the
-     pinning code or the test is wrong before assuming the test is stale.
-   - `NetworkingTests.parsesOptionalRegParameter` — throws
-     `.registrationHostMismatch`.
+   **Three tests also failed on `origin/main`. All three are now resolved:**
+   - `MfaNumberMatchTests.orderDoesNotPinTheAnswerToOnePosition` — a real
+     security bug, and the pinned position was the smaller half of it. The
+     Swift port was still on a design Android has since removed wholesale:
+     client-invented LCG decoys seeded on the challenge id (so the wrong
+     answers, and by elimination the right one, were derivable by anyone
+     holding the id), a hardcoded 2-digit width, and a deterministic "shuffle"
+     that did not vary by challenge. Ported Android's current
+     `push/MfaNumberMatch.kt`: server-supplied values only, width from the
+     server, real shuffle held for the life of the challenge. **Done.**
+   - `PinnedSessionDelegateTests.anUnsupportedKeyShapeProducesNoHash` — the
+     test was stale, not the code. A DER fallback was added so key shapes
+     outside the six-entry header table still hash, because otherwise the pin
+     silently never armed for them. Verified the RSA-1024 fixture's expected
+     hash independently with `openssl` rather than adopting what the code
+     emitted. **Done.**
+   - `NetworkingTests.parsesOptionalRegParameter` — also a stale test: its
+     `reg` was cross-origin with `srv`, which the parser now refuses by
+     design. The refusal already had its own test. **Done.**
 
 7. **Add CI.** There is no `.github/` here at all. Android has `ci.yml`,
    `codeql.yml` and `release.yml`. Minimum: `xcodebuild test` on the shared
