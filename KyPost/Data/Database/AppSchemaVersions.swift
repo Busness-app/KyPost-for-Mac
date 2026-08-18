@@ -6,7 +6,8 @@
 //  (single email/phone strings on ContactEntity); V2 adds full contactPayload
 //  parity incl. pgpKey (Client_Contact_Update.md); V3 adds pendingPgpKey to
 //  ContactEntity and the five pgp columns to EmailEntity
-//  (Client_PGP_Update.md). The stages are lightweight: V2 renames email/phone
+//  (Client_PGP_Update.md); V4 adds bodyMode/hasAttachments to EmailEntity.
+//  The stages are lightweight: V2 renames email/phone
 //  to legacyEmail/legacyPhone via originalName and adds every new field with a
 //  default. The legacy→array data copy happens in app code
 //  (ContactDAO.migrateLegacyFields), not in the migration machinery.
@@ -202,21 +203,92 @@ enum AppSchemaV3: VersionedSchema {
     static let versionIdentifier = Schema.Version(3, 0, 0)
 
     static var models: [any PersistentModel.Type] {
-        // All live top-level models; EmailEntity gained the five pgp columns
-        // and ContactEntity gained pendingPgpKey.
+        // EmailEntity gained the five pgp columns here and the V4 columns
+        // later, so it needs its own snapshot below. ContactEntity gained
+        // pendingPgpKey here and has not changed since, so V3 shares the live
+        // model.
+        [
+            AppSchemaV3.EmailEntity.self, ContactEntity.self,
+            PushNotificationEntity.self, KeywordEntity.self,
+        ]
+    }
+
+    /// Snapshot of EmailEntity with the pgp columns but before V4's
+    /// `bodyMode`/`hasAttachments`. The nested class keeps the entity name
+    /// "EmailEntity" so migration identity matches stores written at V3.
+    @Model
+    final class EmailEntity {
+        @Attribute(.unique) var serverId: String
+        var folder: String
+        var senderName: String
+        var senderEmail: String
+        var subject: String
+        var body: String
+        var sentTo: String = ""
+        var cc: String = ""
+        var keywords: [String]
+        var receivedAt: Date
+        var read: Bool
+        var starred: Bool
+        var pgpEncrypted: Bool = false
+        var pgpSigned: Bool = false
+        var pgpVerified: Bool = false
+        var pgpSignerFingerprint: String = ""
+        var pgpDecryptError: String = ""
+        var createdAt: Date
+
+        init(
+            serverId: String,
+            folder: String,
+            senderName: String,
+            senderEmail: String,
+            subject: String,
+            body: String,
+            sentTo: String = "",
+            cc: String = "",
+            keywords: [String],
+            receivedAt: Date,
+            read: Bool,
+            starred: Bool,
+            createdAt: Date = Date()
+        ) {
+            self.serverId = serverId
+            self.folder = folder
+            self.senderName = senderName
+            self.senderEmail = senderEmail
+            self.subject = subject
+            self.body = body
+            self.sentTo = sentTo
+            self.cc = cc
+            self.keywords = keywords
+            self.receivedAt = receivedAt
+            self.read = read
+            self.starred = starred
+            self.createdAt = createdAt
+        }
+    }
+}
+
+enum AppSchemaV4: VersionedSchema {
+    static let versionIdentifier = Schema.Version(4, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        // All live top-level models; EmailEntity gained bodyMode and
+        // hasAttachments.
         [EmailEntity.self, ContactEntity.self, PushNotificationEntity.self, KeywordEntity.self]
     }
 }
 
 enum AppMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [AppSchemaV1.self, AppSchemaV2.self, AppSchemaV3.self]
+        [AppSchemaV1.self, AppSchemaV2.self, AppSchemaV3.self, AppSchemaV4.self]
     }
 
     static var stages: [MigrationStage] {
         [
             .lightweight(fromVersion: AppSchemaV1.self, toVersion: AppSchemaV2.self),
             .lightweight(fromVersion: AppSchemaV2.self, toVersion: AppSchemaV3.self),
+            .lightweight(fromVersion: AppSchemaV3.self, toVersion: AppSchemaV4.self),
         ]
     }
 }

@@ -12,6 +12,14 @@ struct EmailListRow: View {
 
     let email: Email
 
+    /// The PGP marker's spelled-out label when there is one, plus the
+    /// paperclip's — VoiceOver announces neither glyph reliably on its own.
+    private var rowAccessibilityLabel: String {
+        let base = pgpRowAccessibilityLabel(state: rowPgpState, subject: email.subject)
+            ?? email.subject
+        return email.hasAttachments ? "\(base), has attachments" : base
+    }
+
     private var rowPgpState: PgpMessageState {
         pgpMessageState(
             pgpEncrypted: email.pgpEncrypted,
@@ -45,11 +53,14 @@ struct EmailListRow: View {
                         .font(AppFont.ui(14, weight: email.read ? .regular : .medium))
                         .foregroundStyle(email.read ? theme.ink : theme.inkStrong)
                         .lineLimit(1)
+                    if email.hasAttachments {
+                        Image(systemName: "paperclip")
+                            .font(AppFont.ui(11))
+                            .foregroundStyle(theme.ink.opacity(0.7))
+                    }
                 }
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel(
-                    pgpRowAccessibilityLabel(state: rowPgpState, subject: email.subject) ?? email.subject
-                )
+                .accessibilityLabel(rowAccessibilityLabel)
                 if !email.keywords.isEmpty {
                     HStack(spacing: 5) {
                         ForEach(email.keywords.sorted(), id: \.self) { keyword in

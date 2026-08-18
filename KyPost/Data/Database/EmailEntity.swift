@@ -25,6 +25,9 @@ final class EmailEntity {
     var receivedAt: Date
     var read: Bool
     var starred: Bool
+    /// Relay `bodyMode`/`hasAttachments`; added in AppSchemaV4.
+    var bodyMode: String = ""
+    var hasAttachments: Bool = false
     /// Relay OpenPGP state; added in AppSchemaV3. Any further column here
     /// needs a new versioned schema + stage in AppSchemaVersions.swift —
     /// defaults alone are not enough under a staged migration plan.
@@ -48,6 +51,8 @@ final class EmailEntity {
         receivedAt: Date,
         read: Bool,
         starred: Bool,
+        bodyMode: String = "",
+        hasAttachments: Bool = false,
         pgpEncrypted: Bool = false,
         pgpSigned: Bool = false,
         pgpVerified: Bool = false,
@@ -67,6 +72,8 @@ final class EmailEntity {
         self.receivedAt = receivedAt
         self.read = read
         self.starred = starred
+        self.bodyMode = bodyMode
+        self.hasAttachments = hasAttachments
         self.pgpEncrypted = pgpEncrypted
         self.pgpSigned = pgpSigned
         self.pgpVerified = pgpVerified
@@ -93,6 +100,8 @@ extension EmailEntity {
             receivedAt: email.receivedAt,
             read: email.read,
             starred: email.starred,
+            bodyMode: email.bodyMode,
+            hasAttachments: email.hasAttachments,
             pgpEncrypted: email.pgpEncrypted,
             pgpSigned: email.pgpSigned,
             pgpVerified: email.pgpVerified,
@@ -115,6 +124,8 @@ extension EmailEntity {
             receivedAt: receivedAt,
             read: read,
             starred: starred,
+            bodyMode: bodyMode,
+            hasAttachments: hasAttachments,
             pgpEncrypted: pgpEncrypted,
             pgpSigned: pgpSigned,
             pgpVerified: pgpVerified,

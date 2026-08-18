@@ -24,6 +24,14 @@ struct Email: Identifiable, Hashable, Sendable {
     var receivedAt: Date
     var read: Bool
     var starred: Bool
+    /// The relay's `bodyMode`: "html" or "plain", or "" when the server did
+    /// not say. When the server *did* say, the reader must honour it rather
+    /// than sniffing the body — see EmailBodyRendering.swift.
+    var bodyMode: String = ""
+    /// Relay `hasAttachments`, for the list-row marker. The inbox listing
+    /// carries no attachment metadata, so the paperclip is all this supports;
+    /// the actual list is fetched lazily on open.
+    var hasAttachments: Bool = false
     /// Relay OpenPGP state. Defaults are the wire contract for a message with
     /// no OpenPGP content — see PgpMessageState.swift for what they mean
     /// together.

@@ -55,6 +55,14 @@ struct RelayEmailDTO: Decodable, Equatable, Sendable {
     /// `.clientProtected` and send the user to webmail. Carry nil through as a
     /// distinct "unknown" before enabling delta fetches.
     var body: String?
+    /// "html" or "plain". Absent on an older relay, which is a distinct state
+    /// from either value: the reader falls back to sniffing the body only
+    /// then, never when the server has told us.
+    var bodyMode: String?
+    /// Whether the message carries attachments, for the list-row marker. The
+    /// listing carries no per-attachment metadata; that is a separate lazy
+    /// fetch on open.
+    var hasAttachments: Bool?
     var label: String?
     /// "unread" unless the server says otherwise.
     var status: String?
@@ -87,6 +95,8 @@ struct RelayEmailDTO: Decodable, Equatable, Sendable {
             receivedAt: Self.parseUtc(atUtc) ?? Date(),
             read: (status ?? "unread").lowercased() != "unread",
             starred: false,
+            bodyMode: bodyMode ?? "",
+            hasAttachments: hasAttachments ?? false,
             pgpEncrypted: pgpEncrypted ?? false,
             pgpSigned: pgpSigned ?? false,
             pgpVerified: pgpVerified ?? false,

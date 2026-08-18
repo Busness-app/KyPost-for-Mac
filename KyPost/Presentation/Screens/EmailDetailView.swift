@@ -62,8 +62,8 @@ struct EmailDetailView: View {
 
             if suppressesBody {
                 Spacer(minLength: 0)
-            } else if bodyLooksLikeHTML {
-                EmailBodyWebView(html: themedHTML(email.body))
+            } else if !rendersAsPlainText {
+                EmailBodyWebView(html: themedHTML(emailBodyToHTML(email.body, mode: email.bodyMode)))
                     .padding()
             } else {
                 ScrollView {
@@ -319,13 +319,11 @@ struct EmailDetailView: View {
         }
     }
 
-    /// The relay serves HTML bodies inline on /api/inbox; plain-text messages
-    /// come through without markup, so sniff for tags before using WebKit.
-    private var bodyLooksLikeHTML: Bool {
-        email.body.range(
-            of: "<(html|head|body|div|p|br|table|tr|td|a|img|span|ul|ol|li|h[1-6])[\\s>/]",
-            options: [.regularExpression, .caseInsensitive]
-        ) != nil
+    /// Native wrapping `Text` rather than WebKit. Driven by the relay's
+    /// `bodyMode` when it sent one — sniffing a body the server has already
+    /// described is what this replaced. See EmailBodyRendering.swift.
+    private var rendersAsPlainText: Bool {
+        isPlainTextBody(email.body, mode: email.bodyMode)
     }
 
     private var pgpState: PgpMessageState {

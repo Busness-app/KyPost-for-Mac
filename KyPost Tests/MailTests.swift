@@ -931,3 +931,85 @@ private func makeOutgoing(
         #expect(RichTextHTML.hasFormatting(linked("https://example.com"), fontTraits: noTraits))
     }
 }
+
+// MARK: - Body rendering (bodyMode)
+
+@Suite struct EmailBodyRenderingTests {
+    @Test func honoursADeclaredPlainModeOverTheBodyContent() {
+        // The point of carrying bodyMode: a plain-text message that happens to
+        // contain angle brackets must not be rendered as markup.
+        let body = "See <div> in the spec, and use <p> sparingly."
+        #expect(isPlainTextBody(body, mode: "plain"))
+        #expect(emailBodyToHTML(body, mode: "plain").contains("&lt;div&gt;"))
+        #expect(!emailBodyToHTML(body, mode: "plain").contains("<div>"))
+    }
+
+    @Test func honoursADeclaredHtmlModeWithoutSniffing() {
+        // A real HTML message that opens with text still converts verbatim.
+        let body = "Hello there.<p>Second paragraph.</p>"
+        #expect(emailBodyToHTML(body, mode: "html") == body)
+    }
+
+    @Test func sniffsOnlyWhenTheServerDidNotSayAnything() {
+        let markup = "<p>Hi</p>"
+        let text = "Just a sentence."
+        #expect(emailBodyToHTML(markup, mode: "") == markup)
+        #expect(emailBodyToHTML(text, mode: "").contains("kypost-plain-text"))
+        #expect(!isPlainTextBody(markup, mode: ""))
+        #expect(isPlainTextBody(text, mode: ""))
+    }
+
+    @Test func treatsAnUnrecognisedModeAsAbsent() {
+        // A relay that invents a third value must degrade to sniffing, not to
+        // one of the two branches by accident.
+        #expect(normalizedBodyMode("HTML") == "html")
+        #expect(normalizedBodyMode("  Plain ") == "plain")
+        #expect(normalizedBodyMode("richtext") == "")
+        #expect(normalizedBodyMode("") == "")
+    }
+
+    @Test func rendersMislabelledMarkdownNatively() {
+        // Relay and cache rows do label Markdown as HTML. Rendering it in the
+        // WebView shows the raw syntax behind a horizontal scrollbar.
+        let markdown = "# Heading\n\nSee [the docs](https://example.com/x) for more."
+        #expect(isPlainTextBody(markdown, mode: "html"))
+        // The conversion still honours the declared mode — only the choice of
+        // renderer reacts to the content.
+        #expect(emailBodyToHTML(markdown, mode: "html") == markdown)
+    }
+
+    @Test func keepsRealMarkupInTheWebViewEvenWhenLabelledHtml() {
+        #expect(!isPlainTextBody("<table><tr><td>x</td></tr></table>", mode: "html"))
+    }
+
+    @Test func escapesAmpersandsBeforeTheEscapesItIntroduces() {
+        #expect(escapeHTMLText("a & b < c") == "a &amp; b &lt; c")
+    }
+}
+
+// MARK: - Relay wire fields
+
+@Suite struct RelayBodyModeDecodingTests {
+    private func decode(_ json: String) throws -> RelayEmailDTO {
+        try JSONDecoder().decode(RelayEmailDTO.self, from: Data(json.utf8))
+    }
+
+    @Test func carriesBodyModeAndHasAttachmentsThrough() throws {
+        let dto = try decode("""
+        {"messageId": "m1", "bodyMode": "plain", "hasAttachments": true}
+        """)
+        let email = dto.toDomain(folder: "INBOX", tab: "")
+        #expect(email.bodyMode == "plain")
+        #expect(email.hasAttachments)
+    }
+
+    @Test func anOlderRelayOmittingThemDegradesToSniffing() throws {
+        // Absent is a distinct state from "html"/"plain": "" is what puts the
+        // reader back on content sniffing, and false is the safe direction for
+        // a marker.
+        let dto = try decode(#"{"messageId": "m1"}"#)
+        let email = dto.toDomain(folder: "INBOX", tab: "")
+        #expect(email.bodyMode == "")
+        #expect(!email.hasAttachments)
+    }
+}
