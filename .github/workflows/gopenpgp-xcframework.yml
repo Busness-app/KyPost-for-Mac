@@ -33,10 +33,12 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-latest
+    # Pinned, not `macos-latest`: that label moves between images and this job
+    # depends on the toolchain it finds.
+    runs-on: macos-15
     steps:
       - name: Checkout this repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: kypost
 
@@ -51,17 +53,18 @@ jobs:
           echo "Building ProtonMail/gopenpgp at $VERSION"
 
       - name: Checkout gopenpgp
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ProtonMail/gopenpgp
           ref: ${{ steps.pin.outputs.version }}
           path: gopenpgp
 
-      # Matching upstream's own iOS workflow, which pins Xcode explicitly —
-      # gomobile's bind step is sensitive to the toolchain it finds.
-      - uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: "16.0.0"
+      # Deliberately *not* pinning Xcode. Upstream's workflow pins 16.0.0,
+      # which this job copied and which then failed outright — the runner image
+      # it lands on need not carry that exact version, and pinning one that is
+      # absent breaks on an image refresh rather than on a change to this code.
+      # gomobile binds against whatever SDK the default toolchain provides, and
+      # an older SDK with a newer deployment target is the ordinary direction.
 
       - uses: actions/setup-go@v5
         with:
