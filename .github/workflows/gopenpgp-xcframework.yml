@@ -28,6 +28,16 @@ on:
       - Dependencies/gopenpgp.env
       - .github/workflows/gopenpgp-xcframework.yml
 
+# Two runs raced on the first real build: a branch push and the merge of that
+# same branch to main started nine seconds apart. One created the release and
+# wrote its checksum into the notes, the other finished later and clobbered the
+# asset — leaving a published checksum that did not describe the published
+# binary. Serialised, and never cancelled: a half-finished release upload is
+# worse than a slow queue.
+concurrency:
+  group: gopenpgp-xcframework
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
@@ -131,16 +141,26 @@ jobs:
             echo
             echo "Version: \`$VERSION\`  ·  Workflow run: $RUN_ID"
             echo
-            echo "Rebuild and compare hashes to verify — this workflow plus"
-            echo "upstream's build.sh are the whole recipe."
+            echo "This does NOT rebuild bit-for-bit: the two builds made"
+            echo "while this workflow was being debugged produced different"
+            echo "hashes from the same pinned tag. gomobile embeds build IDs"
+            echo "and paths, and this job does not pin the Xcode version, so"
+            echo "the checksum identifies this specific build and is not a"
+            echo "reproducibility claim. What it does give you is a binary"
+            echo "whose build log is public and whose bytes cannot change"
+            echo "under a pin without SPM refusing them."
           } >> "$RUNNER_TEMP/notes.md"
 
-          # Idempotent: re-running the same version replaces the asset rather
-          # than failing, so a workflow fix does not need a version bump.
+          # Deliberately not idempotent. This used to `--clobber`, which
+          # silently replaced a binary that may already be pinned by checksum
+          # in Package.swift and left the release notes describing the
+          # previous build. Replacing a published artifact in a crypto path is
+          # an act someone should have to perform on purpose, so this refuses
+          # and says how.
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$ASSET" --clobber
-          else
-            gh release create "$TAG" "$ASSET" \
-              --title "GopenPGP $VERSION (XCFramework)" \
-              --notes-file "$RUNNER_TEMP/notes.md"
+            echo "::error::Release $TAG already exists. Its binary is published and may already be pinned by checksum. To replace it deliberately: gh release delete $TAG --yes, then re-run. To publish a new build alongside it, bump GOPENPGP_VERSION."
+            exit 1
           fi
+          gh release create "$TAG" "$ASSET" \
+            --title "GopenPGP $VERSION (XCFramework)" \
+            --notes-file "$RUNNER_TEMP/notes.md"

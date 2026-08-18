@@ -98,6 +98,33 @@ Default section order:
 
 ## Local Contracts
 
+### The OpenPGP library (`Dependencies/GopenPGP`, `Domain/Security/PgpCrypto.swift`)
+
+GopenPGP is consumed as a **binary XCFramework pinned by SHA-256** in
+`Dependencies/GopenPGP/Package.swift`. SwiftPM refuses the download if the
+bytes stop matching, which is the only property that makes an opaque binary in
+a crypto path acceptable.
+
+- The binary is built by `.github/workflows/gopenpgp-xcframework.yml` from
+  ProtonMail/gopenpgp at the tag in `Dependencies/gopenpgp.env`, using
+  **upstream's own `build.sh`** rather than a reimplemented `gomobile bind`.
+  Reimplementing it got three things wrong that the script encodes; call the
+  script.
+- **The build is not bit-reproducible.** Two runs of the same pinned tag
+  produced different hashes. gomobile embeds build IDs and paths and the job
+  does not pin Xcode, so the checksum identifies one specific build. Do not
+  write a verification procedure that assumes rebuilding reproduces the hash.
+- **Verify a checksum against the asset, never against the release notes.**
+  The first release's notes quoted a hash the asset did not have, because two
+  workflow runs raced and one clobbered the other's upload. The workflow now
+  serialises and refuses to overwrite an existing release, but the habit is
+  what protects you: `shasum -a 256` the download, or read GitHub's own
+  `digest` field.
+- **Only `PgpCrypto.swift` and its conforming types may `import Gopenpgp`.**
+  The v2→v3 API break is recent enough that a swap must touch one file. The
+  reader, compose, and the signature binding must never learn which library is
+  underneath.
+
 ### Device enrollment (`Domain/Security/DeviceEnvelope|EnrollmentVault|EnrollmentCeremony`)
 
 - **Gated on Hostile Location Protection being off.** Enabling HLP destroys the
