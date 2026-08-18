@@ -220,7 +220,7 @@ final class ContactSyncRepository {
         // by reconciliation (assignUid clears their flag), so an unmatched
         // create keeps needsSync and retries on the next sync.
         try await contactDAO.clearNeedsSync(
-            localIds: pushable.filter { $0.uid != nil }.map(\.localId)
+            pushed: pushable.filter { $0.uid != nil }
         )
         pendingDeletesStore.clear()
         cursorStore.advance(to: response.cursor)
@@ -322,6 +322,10 @@ final class ContactSyncRepository {
     /// upsert, so an omitted field would be wiped server-side. Arrays are
     /// always present (an emptied list must clear); empty scalars go as nil,
     /// which the server decodes as its zero value.
+    /// Test seam for the push payload: `isSelf` must never appear in it, and
+    /// that is only checkable from outside.
+    static func wireDTOForTesting(_ contact: Contact) -> ContactDTO { toWireDTO(contact) }
+
     private static func toWireDTO(_ contact: Contact) -> ContactDTO {
         ContactDTO(
             uid: contact.uid ?? "",
@@ -449,6 +453,9 @@ final class ContactSyncRepository {
             ContactCustomField(label: $0.label, value: $0.value)
         }
         contact.pronouns = dto.pronouns ?? ""
+        // Read-only: the server owns this flag and `toWireDTO` never sends it,
+        // so a local edit cannot claim self-hood and a push cannot clear it.
+        contact.isSelf = dto.isSelf ?? false
         try await contactDAO.upsert(contacts: [contact])
     }
 

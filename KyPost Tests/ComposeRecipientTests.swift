@@ -43,7 +43,7 @@ private func makeEnvironment(
         cursorStore: ContactCursorStore(defaults: defaults),
         pendingDeletesStore: ContactPendingDeletesStore(defaults: defaults),
         securePairingStore: pairingStore
-    ))
+    ), settingsStore: ContactsSettingsStore(defaults: defaults))
     await contactsViewModel.load()
 
     let sendEmail = SendEmailUseCase(repository: MailRepository(

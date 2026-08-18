@@ -216,7 +216,7 @@ Settings → Security. Skip Android's dp-scaling layout work; it has no analogue
 
 ---
 
-## Phase 5 — Contacts depth — **next** (parity brief C, reopened)
+## Phase 5 — Contacts depth — **done 2026-08-18** (parity brief C, reopened)
 
 ### 5a. Groups
 
@@ -302,7 +302,22 @@ could over-merge.
 load-bearing in other places. Audit the rest of the contact layer for the same
 assumption before adding groups on top of it.
 
-### 5d. Pending contact change queue — evaluate, expect to skip
+### 5d. Pending contact change queue — **evaluated, skipped; the defect it hid is fixed**
+
+The queue itself is not needed here: Android's exists to carry a payload
+snapshot per edit, and this app's `needsSync` flag plus
+`ContactSyncReconciliation` covers the same ground.
+
+But the property the queue provides *structurally* was genuinely missing. A
+push reads its payload before the network call and then cleared `needsSync`
+**by localId**, so an edit landing while the push was in flight was marked
+synced without ever having been sent — a silent lost update. `clearNeedsSync`
+now takes the pushed snapshots and clears only where `updatedAt` has not
+advanced, which is the same discipline `ContactDAO.upsert` already applies to
+the mirror-image case (a stale server write landing after a local edit).
+
+Fixed with the mechanism already in the codebase rather than by porting the
+queue — which is what "most at risk of being cargo-culted" was warning about.
 
 Android has `PendingContactChangeDao` + `PendingContactChangeEntity`; we rely
 on `ContactEntity.needsSync` plus `ContactSyncReconciliation`. Brief C flagged
@@ -312,7 +327,7 @@ is a real gap before building anything.
 
 ---
 
-## Phase 6 — The signature trust model
+## Phase 6 — The signature trust model — **next**
 
 Prerequisite for Phase 9, and worth shipping on its own. Our `PgpMessageState`
 has the four content states; Android has those **plus** a six-value

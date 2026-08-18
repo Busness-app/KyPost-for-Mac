@@ -222,7 +222,7 @@ final class SingletonGraph {
         mailRepository: mailRepository,
         keywordRepository: keywordRepository
     )
-    lazy var contactsViewModel = ContactsViewModel(repository: contactSyncRepository)
+    lazy var contactsViewModel = ContactsViewModel(repository: contactSyncRepository, settingsStore: contactsSettingsStore)
 
     // MARK: - Security
 

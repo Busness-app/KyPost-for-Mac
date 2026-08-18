@@ -54,6 +54,8 @@ final class ContactEntity {
     var department: String = ""
     var customFields: [ContactCustomField] = []
     var pronouns: String = ""
+    /// Read-only mirror of the server's flag; added in AppSchemaV6.
+    var isSelf: Bool = false
     var avatarUrl: String?
     var createdAt: Date
     var updatedAt: Date
@@ -124,6 +126,7 @@ extension ContactEntity {
         department = contact.department
         customFields = contact.customFields
         pronouns = contact.pronouns
+        isSelf = contact.isSelf
         avatarUrl = contact.avatarUrl
     }
 
@@ -148,6 +151,7 @@ extension ContactEntity {
             birthday: birthday,
             photoRef: photoRef,
             groupIDs: groupIDs,
+            isSelf: isSelf,
             pgpKey: pgpKey,
             pendingPgpKey: pendingPgpKey,
             ims: ims,

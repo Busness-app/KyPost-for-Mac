@@ -196,9 +196,21 @@ actor ContactDAO {
         return removed
     }
 
-    func clearNeedsSync(localIds: [UUID]) throws {
-        for localId in localIds {
-            try fetchEntity(localId: localId)?.needsSync = false
+    /// Confirms the contacts a push actually sent.
+    ///
+    /// Takes the pushed *snapshots*, not their ids, and clears the flag only
+    /// where the row has not been edited since. A push reads its payload
+    /// before the network call, so an edit landing while it is in flight is
+    /// not in what was sent — clearing by id alone marked that edit synced and
+    /// it was never pushed at all. Android avoids this structurally by
+    /// queueing a payload snapshot per edit; the same guarantee falls out of
+    /// comparing `updatedAt`, which `upsert` already relies on for the
+    /// mirror-image case (a stale server write landing after a local edit).
+    func clearNeedsSync(pushed: [Contact]) throws {
+        for contact in pushed {
+            guard let entity = try fetchEntity(localId: contact.localId) else { continue }
+            guard entity.updatedAt <= contact.updatedAt else { continue }
+            entity.needsSync = false
         }
         try modelContext.save()
     }

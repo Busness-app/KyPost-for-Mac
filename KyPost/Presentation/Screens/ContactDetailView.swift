@@ -31,6 +31,7 @@ struct ContactDetailView: View {
     /// groups — the card is hidden either way, so there is no flash of an
     /// empty section while it loads.
     @State private var groupNames: [String] = []
+    @State private var deleteConfirmationShown = false
 
     init(contact: Contact?, viewModel: ContactsViewModel) {
         self.contact = contact
@@ -126,13 +127,28 @@ struct ContactDetailView: View {
                     metadataCard
                 }
                 if let contact {
-                    Button("Delete Contact") {
-                        Task {
-                            await viewModel.delete(contact)
-                            dismiss()
+                    Button("Delete Contact") { deleteConfirmationShown = true }
+                        .buttonStyle(DangerButtonStyle())
+                        .confirmationDialog(
+                            "Delete \(contact.name.isEmpty ? "this contact" : contact.name)?",
+                            isPresented: $deleteConfirmationShown,
+                            titleVisibility: .visible
+                        ) {
+                            Button("Delete Contact", role: .destructive) {
+                                Task {
+                                    await viewModel.delete(contact)
+                                    dismiss()
+                                }
+                            }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            // Names the reach honestly: a synced delete is not
+                            // local, and an exported card is a third place the
+                            // contact exists.
+                            Text(contact.uid == nil
+                                ? "This contact has never reached the server, so this removes it from this device."
+                                : "This removes the contact from the server and from every device you've paired.")
                         }
-                    }
-                    .buttonStyle(DangerButtonStyle())
                 }
             }
             .padding()

@@ -7,7 +7,7 @@
 //  parity incl. pgpKey (Client_Contact_Update.md); V3 adds pendingPgpKey to
 //  ContactEntity and the five pgp columns to EmailEntity
 //  (Client_PGP_Update.md); V4 adds bodyMode/hasAttachments to EmailEntity;
-//  V5 adds GroupEntity.
+//  V5 adds GroupEntity; V6 adds isSelf to ContactEntity.
 //  The stages are lightweight: V2 renames email/phone
 //  to legacyEmail/legacyPhone via originalName and adds every new field with a
 //  default. The legacy→array data copy happens in app code
@@ -277,7 +277,10 @@ enum AppSchemaV4: VersionedSchema {
         // EmailEntity gained bodyMode and hasAttachments. GroupEntity does not
         // exist yet at this version — adding a model is as much a schema change
         // as adding a column.
-        [EmailEntity.self, ContactEntity.self, PushNotificationEntity.self, KeywordEntity.self]
+        [
+            EmailEntity.self, AppSchemaV5.ContactEntity.self,
+            PushNotificationEntity.self, KeywordEntity.self,
+        ]
     }
 }
 
@@ -285,7 +288,80 @@ enum AppSchemaV5: VersionedSchema {
     static let versionIdentifier = Schema.Version(5, 0, 0)
 
     static var models: [any PersistentModel.Type] {
-        // Adds GroupEntity (GET /api/groups).
+        // Adds GroupEntity (GET /api/groups). ContactEntity gains isSelf at
+        // V6, so it needs its own snapshot there rather than here.
+        [
+            EmailEntity.self, AppSchemaV5.ContactEntity.self,
+            PushNotificationEntity.self, KeywordEntity.self, GroupEntity.self,
+        ]
+    }
+
+    /// Snapshot of ContactEntity before `isSelf`. Nested so the entity name
+    /// stays "ContactEntity" and migration identity matches stores at V3–V5.
+    @Model
+    final class ContactEntity {
+        @Attribute(.unique) var localId: UUID
+        var uid: String?
+        var rev: Int = 0
+        var name: String
+        @Attribute(originalName: "email") var legacyEmail: String = ""
+        @Attribute(originalName: "phone") var legacyPhone: String = ""
+        var givenName: String = ""
+        var familyName: String = ""
+        var middleName: String = ""
+        var prefix: String = ""
+        var suffix: String = ""
+        var nickname: String = ""
+        var org: String = ""
+        var title: String = ""
+        var emails: [ContactLabeledValue] = []
+        var phones: [ContactLabeledValue] = []
+        var addresses: [ContactPostalAddress] = []
+        var notes: String = ""
+        var birthday: String = ""
+        var photoRef: String?
+        var groupIDs: [String] = []
+        var pgpKey: String?
+        var pendingPgpKey: String?
+        var ims: [ContactIM] = []
+        var websites: [ContactLabeledValue] = []
+        var relations: [ContactRelation] = []
+        var events: [ContactEvent] = []
+        var phoneticGivenName: String = ""
+        var phoneticFamilyName: String = ""
+        var department: String = ""
+        var customFields: [ContactCustomField] = []
+        var pronouns: String = ""
+        var avatarUrl: String?
+        var createdAt: Date
+        var updatedAt: Date
+        var needsSync: Bool
+
+        init(
+            localId: UUID,
+            uid: String?,
+            rev: Int = 0,
+            name: String,
+            createdAt: Date,
+            updatedAt: Date,
+            needsSync: Bool = false
+        ) {
+            self.localId = localId
+            self.uid = uid
+            self.rev = rev
+            self.name = name
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+            self.needsSync = needsSync
+        }
+    }
+}
+
+enum AppSchemaV6: VersionedSchema {
+    static let versionIdentifier = Schema.Version(6, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        // ContactEntity gains isSelf.
         [
             EmailEntity.self, ContactEntity.self, PushNotificationEntity.self,
             KeywordEntity.self, GroupEntity.self,
@@ -297,7 +373,7 @@ enum AppMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
         [
             AppSchemaV1.self, AppSchemaV2.self, AppSchemaV3.self,
-            AppSchemaV4.self, AppSchemaV5.self,
+            AppSchemaV4.self, AppSchemaV5.self, AppSchemaV6.self,
         ]
     }
 
@@ -307,6 +383,7 @@ enum AppMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: AppSchemaV2.self, toVersion: AppSchemaV3.self),
             .lightweight(fromVersion: AppSchemaV3.self, toVersion: AppSchemaV4.self),
             .lightweight(fromVersion: AppSchemaV4.self, toVersion: AppSchemaV5.self),
+            .lightweight(fromVersion: AppSchemaV5.self, toVersion: AppSchemaV6.self),
         ]
     }
 }

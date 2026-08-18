@@ -1195,3 +1195,131 @@ private final class ResponseQueue: @unchecked Sendable {
         #expect(try await dao.names(forIDs: []).isEmpty)
     }
 }
+
+// MARK: - Self flag and PGP identity badge (Phase 5b/5c)
+
+@Suite struct PgpIdentityBadgeTests {
+    private func contact(isSelf: Bool = false, pgpKey: String? = nil) -> Contact {
+        var contact = Contact(
+            localId: UUID(), uid: "u1", name: "Ada",
+            createdAt: Date(), updatedAt: Date()
+        )
+        contact.isSelf = isSelf
+        contact.pgpKey = pgpKey
+        return contact
+    }
+
+    /// Nil is not false. A failed or not-yet-made check must leave the caller
+    /// showing what it already showed, never assert "no key".
+    @Test func anUnknownCustodyAnswersUnknown() {
+        #expect(pgpIdentityPresent(custody: nil) == nil)
+        #expect(pgpIdentityPresent(custody: .noIdentity) == false)
+        #expect(pgpIdentityPresent(custody: .serverHeld) == true)
+        #expect(pgpIdentityPresent(custody: .clientHeld) == true)
+    }
+
+    /// The account's own identity is never in the contacts database.
+    /// `Contact.pgpKey` on the self-contact is empty for essentially every
+    /// user, so reading it here is why the badge never appeared for the one
+    /// contact guaranteed to have a key.
+    @Test func theSelfContactsBadgeComesFromTheAccountNotItsPgpKeyColumn() {
+        #expect(contactHasLinkedPgpKey(
+            contact: contact(isSelf: true), accountIdentityPresent: true
+        ) == true)
+        #expect(contactHasLinkedPgpKey(
+            contact: contact(isSelf: true), accountIdentityPresent: false
+        ) == false)
+        #expect(contactHasLinkedPgpKey(
+            contact: contact(isSelf: true), accountIdentityPresent: nil
+        ) == nil)
+    }
+
+    /// A user who scanned their own key onto their self-contact should not
+    /// see the badge vanish because the server check failed.
+    @Test func anAttachedKeyOnTheSelfContactStillCounts() {
+        #expect(contactHasLinkedPgpKey(
+            contact: contact(isSelf: true, pgpKey: "-----BEGIN PGP PUBLIC KEY BLOCK-----"),
+            accountIdentityPresent: nil
+        ) == true)
+    }
+
+    @Test func anOrdinaryContactIsJudgedOnItsOwnKeyAlone() {
+        #expect(contactHasLinkedPgpKey(
+            contact: contact(pgpKey: "-----BEGIN PGP PUBLIC KEY BLOCK-----"),
+            accountIdentityPresent: false
+        ) == true)
+        #expect(contactHasLinkedPgpKey(
+            contact: contact(), accountIdentityPresent: true
+        ) == false)
+        // An empty string is not a key.
+        #expect(contactHasLinkedPgpKey(
+            contact: contact(pgpKey: ""), accountIdentityPresent: nil
+        ) == false)
+    }
+}
+
+@Suite struct ContactSelfFlagWireTests {
+    @Test func isSelfArrivesOnSyncButIsNeverPushedBack() throws {
+        let json = #"{"uid": "u1", "fn": "Me", "isSelf": true}"#
+        let dto = try JSONDecoder().decode(ContactDTO.self, from: Data(json.utf8))
+        #expect(dto.isSelf == true)
+
+        // Setting the flag is a web-only action, so a contact this app pushes
+        // must not carry a claim to it either way.
+        var contact = Contact(localId: UUID(), uid: "u1", name: "Me",
+                              createdAt: Date(), updatedAt: Date())
+        contact.isSelf = true
+        let encoded = String(
+            decoding: try JSONEncoder().encode(ContactSyncRepository.wireDTOForTesting(contact)),
+            as: UTF8.self
+        )
+        #expect(!encoded.contains("isSelf"))
+    }
+
+    @Test func anOlderServerWithoutTheFieldReadsAsNotSelf() throws {
+        let dto = try JSONDecoder().decode(
+            ContactDTO.self, from: Data(#"{"uid": "u1", "fn": "Someone"}"#.utf8)
+        )
+        #expect(dto.isSelf == nil)
+    }
+}
+
+// MARK: - 5d: is the pending-change queue a real gap?
+
+@Suite struct ContactEditDuringPushTests {
+    /// Android queues a snapshot per edit; this app carries a `needsSync` flag
+    /// and clears it after a push. The question that decides whether the queue
+    /// is needed here is what happens to an edit made *while* a push is in
+    /// flight: the flag is cleared against a snapshot taken before the network
+    /// call, so an edit that landed in between would be marked synced without
+    /// ever having been sent.
+    @Test func anEditDuringAnInFlightPushIsNotMarkedSynced() async throws {
+        let db = try AppDatabase(inMemory: true)
+        let dao = ContactDAO(modelContainer: db.container)
+        let localId = UUID()
+
+        // Queued, and captured into the push's snapshot.
+        var contact = Contact(
+            localId: localId, uid: "srv-1", name: "Before",
+            createdAt: Date(timeIntervalSince1970: 1_000),
+            updatedAt: Date(timeIntervalSince1970: 1_000),
+            needsSync: true
+        )
+        try await dao.upsert(contacts: [contact])
+        let snapshot = try await dao.listPendingSync()
+        #expect(snapshot.count == 1)
+
+        // The user edits again while the push is on the wire.
+        contact.name = "After"
+        contact.updatedAt = Date(timeIntervalSince1970: 2_000)
+        contact.needsSync = true
+        try await dao.upsert(contacts: [contact])
+
+        // The push returns and confirms what it sent.
+        try await dao.clearNeedsSync(pushed: snapshot)
+
+        let stored = try #require(try await dao.getContact(uid: "srv-1"))
+        #expect(stored.name == "After")
+        #expect(stored.needsSync, "the newer edit must stay queued for the next sync")
+    }
+}
