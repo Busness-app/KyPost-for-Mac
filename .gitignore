@@ -41,3 +41,6 @@ Package.resolved
 *.pem
 *.mobileprovision
 .env
+
+# SwiftPM working directory for the local GopenPGP package wrapper.
+Dependencies/GopenPGP/.build/

@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		927A3720300148DC0090B7AF /* GopenPGP in Frameworks */ = {isa = PBXBuildFile; productRef = 927A3722300148DC0090B7AF /* GopenPGP */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		927A36F4300148DC0090B7AF /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -66,6 +70,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				927A3720300148DC0090B7AF /* GopenPGP in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -126,6 +131,7 @@
 			);
 			name = KyPost;
 			packageProductDependencies = (
+				927A3722300148DC0090B7AF /* GopenPGP */,
 			);
 			productName = KyPost;
 			productReference = 927A36E2300148DB0090B7AF /* KyPost.app */;
@@ -209,6 +215,9 @@
 			);
 			mainGroup = 927A36D9300148DB0090B7AF;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				927A3721300148DC0090B7AF /* XCLocalSwiftPackageReference "Dependencies/GopenPGP" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 927A36E3300148DB0090B7AF /* Products */;
 			projectDirPath = "";
@@ -637,6 +646,20 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		927A3721300148DC0090B7AF /* XCLocalSwiftPackageReference "Dependencies/GopenPGP" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Dependencies/GopenPGP;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		927A3722300148DC0090B7AF /* GopenPGP */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = GopenPGP;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 927A36DA300148DB0090B7AF /* Project object */;
 }

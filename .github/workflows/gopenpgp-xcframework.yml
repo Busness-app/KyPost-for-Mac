@@ -21,12 +21,26 @@ on:
       version:
         description: "gopenpgp tag to build (defaults to Dependencies/gopenpgp.env)"
         required: false
+      replace:
+        description: "Replace the release if one already exists for this version"
+        type: boolean
+        default: false
   push:
     # A change to the pinned version is the trigger. Nothing else rebuilds it:
     # a binary that silently changes is one nobody reviewed.
     paths:
       - Dependencies/gopenpgp.env
       - .github/workflows/gopenpgp-xcframework.yml
+
+# Two runs raced on the first real build: a branch push and the merge of that
+# same branch to main started nine seconds apart. One created the release and
+# wrote its checksum into the notes, the other finished later and clobbered the
+# asset — leaving a published checksum that did not describe the published
+# binary. Serialised, and never cancelled: a half-finished release upload is
+# worse than a slow queue.
+concurrency:
+  group: gopenpgp-xcframework
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -52,7 +66,36 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Building ProtonMail/gopenpgp at $VERSION"
 
+      - name: Is there anything to publish?
+        id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: kypost
+        # Asked before the build, not after. This job also triggers on changes
+        # to its own workflow file, where the pinned version is usually
+        # unchanged and its release already exists — so the previous shape
+        # spent two minutes building and then failed on the last step because
+        # there was nothing to do. A red run that means "nothing needed doing"
+        # is worse than no run: it teaches people to ignore this check.
+        run: |
+          set -euo pipefail
+          TAG="gopenpgp-${{ steps.pin.outputs.version }}"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "No release $TAG yet — building and publishing."
+            exit 0
+          fi
+          if [ "${{ inputs.replace }}" = "true" ]; then
+            echo "::warning::Replacing the existing release $TAG. Anything pinning the old checksum will stop resolving until Package.swift is updated."
+            gh release delete "$TAG" --yes
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "publish=false" >> "$GITHUB_OUTPUT"
+          echo "::notice::Release $TAG already exists and its binary is published, so there is nothing to build. To replace it deliberately, run this workflow manually with 'replace' checked. To publish a new build alongside it, bump GOPENPGP_VERSION."
+
       - name: Checkout gopenpgp
+        if: steps.state.outputs.publish == 'true'
         uses: actions/checkout@v5
         with:
           repository: ProtonMail/gopenpgp
@@ -67,11 +110,13 @@ jobs:
       # an older SDK with a newer deployment target is the ordinary direction.
 
       - uses: actions/setup-go@v5
+        if: steps.state.outputs.publish == 'true'
         with:
           go-version: "^1.22"
           cache: false
 
       - name: Build with upstream's script
+        if: steps.state.outputs.publish == 'true'
         working-directory: gopenpgp
         run: |
           set -euo pipefail
@@ -83,6 +128,7 @@ jobs:
           find dist -maxdepth 3
 
       - name: Package and checksum
+        if: steps.state.outputs.publish == 'true'
         id: package
         run: |
           set -euo pipefail
@@ -106,6 +152,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish
+        if: steps.state.outputs.publish == 'true'
         working-directory: kypost
         env:
           GH_TOKEN: ${{ github.token }}
@@ -131,16 +178,20 @@ jobs:
             echo
             echo "Version: \`$VERSION\`  ·  Workflow run: $RUN_ID"
             echo
-            echo "Rebuild and compare hashes to verify — this workflow plus"
-            echo "upstream's build.sh are the whole recipe."
+            echo "This does NOT rebuild bit-for-bit: the two builds made"
+            echo "while this workflow was being debugged produced different"
+            echo "hashes from the same pinned tag. gomobile embeds build IDs"
+            echo "and paths, and this job does not pin the Xcode version, so"
+            echo "the checksum identifies this specific build and is not a"
+            echo "reproducibility claim. What it does give you is a binary"
+            echo "whose build log is public and whose bytes cannot change"
+            echo "under a pin without SPM refusing them."
           } >> "$RUNNER_TEMP/notes.md"
 
-          # Idempotent: re-running the same version replaces the asset rather
-          # than failing, so a workflow fix does not need a version bump.
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$ASSET" --clobber
-          else
-            gh release create "$TAG" "$ASSET" \
-              --title "GopenPGP $VERSION (XCFramework)" \
-              --notes-file "$RUNNER_TEMP/notes.md"
-          fi
+          # No --clobber. Replacing a published artifact in a crypto path is
+          # an act someone performs on purpose, via the `replace` input, which
+          # deletes the old release earlier in this job. By here the tag is
+          # known not to exist.
+          gh release create "$TAG" "$ASSET" \
+            --title "GopenPGP $VERSION (XCFramework)" \
+            --notes-file "$RUNNER_TEMP/notes.md"
