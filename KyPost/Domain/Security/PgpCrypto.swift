@@ -44,16 +44,19 @@ protocol PgpDecrypting: Sendable {
         signerKeys: [String]
     ) throws -> DecryptedMessage
 
-    /// Every usable key id in an armored public key: the primary plus every
-    /// subkey, regardless of usage flags.
+    /// The entity fingerprint of an armored public key — the primary's,
+    /// whichever component of it might sign.
     ///
-    /// A one-pass signature is ordinarily made with a dedicated signing
-    /// subkey whose id differs from the primary's, so matching only the
-    /// primary would silently reject every normally signed message. Revoked
-    /// and expired keys are excluded **before** matching. Returns an empty set
-    /// rather than throwing on a key that fails to parse — see
-    /// `PgpCryptoError.unusableKey`.
-    func keyIDs(inArmoredPublicKey key: String) -> Set<String>
+    /// Attribution is deliberately entity-level rather than key-id level. A
+    /// signature packet names its *issuer*, which is a signing subkey's id
+    /// whenever a subkey signed, and no public key can be asked for its
+    /// subkeys' ids through this library: the key-id list it exposes reports
+    /// one primary id per entity. Matching issuer against that list rejects
+    /// every subkey-signed message, silently and always as "unknown signer".
+    ///
+    /// Returns nil for a key that does not parse. An unparseable key must only
+    /// ever shrink the candidate set, never grant a pass.
+    func fingerprint(ofArmoredPublicKey key: String) -> String?
 }
 
 /// Writing. Used only on the client-custody send path.
@@ -91,7 +94,7 @@ struct UnavailablePgpCrypto: PgpDecrypting, PgpEncrypting {
         throw PgpCryptoError.unavailable
     }
 
-    func keyIDs(inArmoredPublicKey key: String) -> Set<String> { [] }
+    func fingerprint(ofArmoredPublicKey key: String) -> String? { nil }
 
     func encryptAndSign(
         plaintext: Data,

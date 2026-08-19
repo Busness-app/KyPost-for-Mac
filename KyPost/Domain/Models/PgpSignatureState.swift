@@ -63,8 +63,21 @@ nonisolated struct SignerKey: Equatable, Sendable {
 nonisolated struct RawSignature: Equatable, Sendable {
     var present = false
     var valid = false
-    /// The key id that made the signature, as the payload reports it.
+    /// The **issuer** key id from the signature packet — a signing subkey's
+    /// id whenever a subkey signed. Carried for display and diagnostics only.
+    ///
+    /// Deliberately not the attribution key. It lives at a different level
+    /// from anything a public key can be asked for: GopenPGP's key-id list
+    /// for a key ring reports `PrimaryKey.KeyId` per entity, so matching an
+    /// issuer id against it fails for every subkey-signed message, silently
+    /// and always in the direction of "unknown signer". Use
+    /// `signerFingerprint`.
     var signerKeyID: String = ""
+    /// Fingerprint of the **entity** whose key verified the signature — the
+    /// primary, whichever component actually signed. This is what attributes
+    /// a signature to a bound key, because it is the one value comparable to
+    /// what a bound public key reports about itself.
+    var signerFingerprint: String = ""
 }
 
 /// The signature verdict for a message being displayed as being from a sender
@@ -85,14 +98,19 @@ nonisolated struct RawSignature: Equatable, Sendable {
 /// (`RelayMailSource.splitSender`) and for outgoing compose
 /// (`EmailAddress.parse`); neither may ever reach this function.
 ///
-/// `keyIDs` extracts every usable key id from an armored public key. It is
-/// injected because doing it properly needs an OpenPGP implementation, which
-/// this app does not have until the crypto core lands; the ordering rules
-/// below are the part worth having early, and they are testable without it.
+/// `fingerprint` reads the entity fingerprint out of an armored public key.
+/// It is injected because doing it properly needs an OpenPGP implementation;
+/// the ordering rules below are testable without one.
+///
+/// It returns nil for a key that does not parse, and a key that does not parse
+/// must only ever shrink the candidate set. An empty fingerprint on either
+/// side therefore matches nothing at all — were it allowed to compare equal,
+/// an unparseable bound key and a signature with no attribution would agree
+/// with each other and produce a verified badge out of two absences.
 nonisolated func signatureState(
     signature: RawSignature,
     signerKeys: [SignerKey],
-    keyIDs: (String) -> Set<String>
+    fingerprint: (String) -> String?
 ) -> PgpSignatureState {
     guard signature.present else { return .none }
     guard !signerKeys.isEmpty else { return .signerUnknown }
@@ -102,7 +120,12 @@ nonisolated func signatureState(
     // survivor as verified would hide precisely the event worth reporting.
     if signerKeys.contains(where: \.conflict) { return .keyChanged }
 
-    let signedBy = signerKeys.filter { keyIDs($0.publicKey).contains(signature.signerKeyID) }
+    let signed = signature.signerFingerprint
+    let signedBy = signed.isEmpty ? [] : signerKeys.filter {
+        guard let candidate = fingerprint($0.publicKey), !candidate.isEmpty else { return false }
+        // Hex, and the case is whatever the producer chose.
+        return candidate.caseInsensitiveCompare(signed) == .orderedSame
+    }
     guard !signedBy.isEmpty else { return .signerUnknown }
     guard signature.valid else { return .invalid }
 

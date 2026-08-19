@@ -7,16 +7,30 @@
 
 import SwiftUI
 
+extension EnvironmentValues {
+    /// Whether this device holds an enrolled OpenPGP key.
+    ///
+    /// Defaults to false, which is the safe direction: a row that wrongly
+    /// promises "unlock to read" on a device that cannot sends the user to a
+    /// prompt with no way through, while the reverse merely points them at
+    /// webmail they could have used anyway.
+    @Entry var deviceIsEnrolled: Bool = false
+}
+
 struct EmailListRow: View {
     @Environment(\.theme) private var theme
+    @Environment(\.deviceIsEnrolled) private var deviceIsEnrolled
 
     let email: Email
 
     /// The PGP marker's spelled-out label when there is one, plus the
     /// paperclip's — VoiceOver announces neither glyph reliably on its own.
     private var rowAccessibilityLabel: String {
-        var base = pgpRowAccessibilityLabel(state: rowPgpState, subject: email.subject)
-            ?? email.subject
+        var base = pgpRowAccessibilityLabel(
+            state: rowPgpState,
+            subject: email.subject,
+            deviceIsEnrolled: deviceIsEnrolled
+        ) ?? email.subject
         if isPhishing {
             base = "Suspected impersonation of KyPost: \(base)"
         }

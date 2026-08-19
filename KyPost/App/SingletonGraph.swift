@@ -114,6 +114,28 @@ final class SingletonGraph {
 
     lazy var enrollmentVault = EnrollmentVault(keychain: keychain)
 
+    /// The OpenPGP implementation. One instance, because it is stateless and
+    /// every call site must reach the library through this seam.
+    lazy var pgpCrypto = GopenPGPCrypto()
+
+    /// Builds a reader for one client-protected message, or nil when unpaired.
+    ///
+    /// Rebuilt per message rather than cached, for the same reason the
+    /// enrollment ceremony is: a re-pair between reads must not be able to
+    /// reuse stale credentials.
+    func makeEncryptedMessageReader() -> EncryptedMessageReader? {
+        guard let pairing = try? securePairingStore.loadPairing() else { return nil }
+        return EncryptedMessageReader(
+            opener: DeviceVaultOpener(vault: enrollmentVault),
+            payloads: PgpPayloadClient(
+                httpClient: httpClient,
+                serverUrl: pairing.srv,
+                auth: RelayAuth(pairing: pairing)
+            ),
+            crypto: pgpCrypto
+        )
+    }
+
     /// Builds a ceremony against the current pairing, or nil when unpaired.
     /// Rebuilt per attempt so a re-pair between attempts cannot reuse stale
     /// credentials.

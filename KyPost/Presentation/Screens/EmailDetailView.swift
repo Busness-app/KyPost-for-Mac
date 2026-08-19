@@ -16,6 +16,7 @@ import os
 
 struct EmailDetailView: View {
     @Environment(\.theme) private var theme
+    @Environment(\.deviceIsEnrolled) private var deviceIsEnrolled
     @Environment(\.self) private var environment
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
@@ -39,6 +40,9 @@ struct EmailDetailView: View {
     /// reads the pairing out of the Keychain, and SwiftUI re-evaluates `body`
     /// far too often for that.
     @State private var webmailURL: URL?
+    /// Drives the Decrypt affordance. Built in `.task` because constructing it
+    /// reads the pairing out of the Keychain, which `body` must not do.
+    @State private var encryptedRead: EncryptedReadViewModel?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -63,13 +67,18 @@ struct EmailDetailView: View {
                 pgpBanner
                     .padding(.horizontal)
                     .padding(.top, 8)
+                decryptControls
+                    .padding(.horizontal)
+                    .padding(.top, 6)
             }
 
             if !attachments.isEmpty {
                 attachmentBar
             }
 
-            if suppressesBody {
+            if let decrypted = encryptedRead?.body {
+                decryptedBodyView(decrypted)
+            } else if suppressesBody {
                 Spacer(minLength: 0)
             } else if !rendersAsPlainText {
                 EmailBodyWebView(html: themedHTML(emailBodyToHTML(email.body, mode: email.bodyMode)))
@@ -131,8 +140,13 @@ struct EmailDetailView: View {
         }
         .task {
             resolveWebmailURL()
+            await prepareEncryptedRead()
             await inboxViewModel.markRead(email)
             attachments = await inboxViewModel.attachments(for: email)
+        }
+        .onDisappear {
+            // The plaintext does not outlive the screen showing it.
+            encryptedRead?.forget()
         }
     }
 
@@ -274,6 +288,98 @@ struct EmailDetailView: View {
                 attachmentExport = AttachmentDocument(name: attachment.name, data: data)
             }
             downloadingIndex = nil
+        }
+    }
+
+    /// Builds the reader and makes one attempt that is **not** allowed to
+    /// prompt. A biometric sheet raised merely by opening a message would be
+    /// the app demanding authentication for something the user has not asked
+    /// for yet; the sheet belongs to the Decrypt button.
+    @MainActor
+    private func prepareEncryptedRead() async {
+        guard pgpState == .clientProtected else {
+            encryptedRead = nil
+            return
+        }
+        let model = EncryptedReadViewModel(
+            reader: SingletonGraph.shared.makeEncryptedMessageReader(),
+            mailbox: email.folder,
+            messageId: email.serverId,
+            sender: email.senderEmail
+        )
+        encryptedRead = model
+        await model.attemptWithoutPrompting()
+    }
+
+    /// The decrypted message. Rendered from the view model's in-memory copy;
+    /// nothing here writes it back to the store.
+    @ViewBuilder
+    private func decryptedBodyView(_ decrypted: DecryptedBody) -> some View {
+        if let html = decrypted.html, !html.isEmpty {
+            EmailBodyWebView(html: themedHTML(html))
+        } else {
+            ScrollView {
+                Text(decrypted.plain ?? "")
+                    .font(AppFont.mono(13))
+                    .foregroundStyle(theme.ink)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                    .padding()
+            }
+        }
+    }
+
+    /// The Decrypt row: button, progress, and the outcome's own sentence.
+    @ViewBuilder
+    private var decryptControls: some View {
+        if let model = encryptedRead, model.isAvailable {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    if model.isWorking {
+                        ProgressView().controlSize(.small)
+                        Text("Decrypting…")
+                            .font(AppFont.ui(12))
+                            .foregroundStyle(theme.ink)
+                    }
+                    if model.showsDecryptButton {
+                        Button("Decrypt on this device") {
+                            Task { await model.decrypt() }
+                        }
+                        .font(AppFont.ui(12, weight: .medium))
+                        .buttonStyle(.borderless)
+                    }
+                    // Only where retrying could actually change the answer.
+                    // `noEncryptedContent` is terminal, and a Retry that
+                    // cannot succeed teaches the user their mail is broken.
+                    if model.showsRetryButton {
+                        Button("Try again") {
+                            Task { await model.decrypt() }
+                        }
+                        .font(AppFont.ui(12, weight: .medium))
+                        .buttonStyle(.borderless)
+                    }
+                    Spacer(minLength: 0)
+                }
+                if let message = model.statusMessage {
+                    Text(message)
+                        .font(AppFont.ui(12))
+                        .foregroundStyle(theme.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if model.body != nil, !model.resolvedSender.isEmpty,
+                   let label = signatureLabel(model.signature) {
+                    // The verdict is shown against the address the SERVER
+                    // resolved, never the raw From — the two are separable by
+                    // an attacker, and a correct verdict beside the wrong
+                    // address is still a lie.
+                    Text("\(label) — \(model.resolvedSender)")
+                        .font(AppFont.ui(12))
+                        .foregroundStyle(
+                            signatureIsAlarming(model.signature) ? SemanticColors.danger : theme.ink
+                        )
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
     }
 
@@ -464,9 +570,18 @@ struct EmailDetailView: View {
     private var pgpBannerText: String {
         switch pgpState {
         case .clientProtected:
-            webmailURL == nil
-                ? "This message is end-to-end encrypted. Only your browser holds the key, so it can't be read here.\nCouldn't work out this server's web address — open this message in your browser."
-                : "This message is end-to-end encrypted. Only your browser holds the key, so it can't be read here."
+            // The unenrolled copy is Android's, verbatim, and stays that way.
+            // The enrolled copy is new because the old sentence became false
+            // the moment this device could hold a key: telling someone their
+            // mail "can't be read here" while a Decrypt button sits beneath it
+            // is worse than saying nothing.
+            if deviceIsEnrolled {
+                "This message is end-to-end encrypted. This device holds your key, so it can be decrypted here."
+            } else if webmailURL == nil {
+                "This message is end-to-end encrypted. Only your browser holds the key, so it can't be read here.\nCouldn't work out this server's web address — open this message in your browser."
+            } else {
+                "This message is end-to-end encrypted. Only your browser holds the key, so it can't be read here."
+            }
         case .decryptFailed:
             "This message is encrypted and couldn't be decrypted: \(email.pgpDecryptError)"
         case .decryptedByServer:

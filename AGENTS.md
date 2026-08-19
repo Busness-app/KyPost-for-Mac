@@ -125,6 +125,71 @@ a crypto path acceptable.
   reader, compose, and the signature binding must never learn which library is
   underneath.
 
+### Reading client-protected mail (`Domain/UseCases/EncryptedMessageReader.swift`)
+
+- **The decrypted body is never persisted.** Not to SwiftData, not to the
+  cached body field. It is returned to the caller and lives for the life of the
+  view showing it.
+- **The exit table is eleven distinct cases, not one error string.** Each gets
+  its own sentence and sometimes its own button. Two that are easy to get
+  wrong: `cancelled` is not an error — the user dismissed a sheet they raised,
+  so the screen simply goes back to offering Decrypt; and `noEncryptedContent`
+  is *terminal*, so the UI must not offer Retry. `readOutcomeAllowsRetry` is
+  the single place that decides this.
+- **`signerKeys` arrive already narrowed to the resolved sender.** Do not
+  re-narrow them, and never parse a `From` header to do it. Android shipped
+  exactly that and a differential harness caught it disagreeing with the
+  server's parser on 27 of 111 adversarial headers.
+- **Render `resolvedSender`, never the raw `From`,** wherever a verdict is
+  shown. The two are separable by an attacker, and a correct verdict displayed
+  next to the wrong address is still a lie.
+- A decrypt failure must **not** clear `EnrollmentSession`. One message failing
+  says nothing about the held key, and clearing re-prompts for every later
+  message.
+- **The decrypted body never leaves `EncryptedReadViewModel`.** It is not
+  written to SwiftData, not assigned to the cached body field, and not carried
+  into a scene value that state restoration would archive. `forget()` runs on
+  disappear.
+- **Only a deliberate press may prompt.** The attempt made when a screen opens
+  passes `unlockIfNeeded: false`; a biometric sheet raised merely by opening a
+  message asks for authentication the user has not requested.
+- `EnrollmentSession` holds the key as bytes it can zero, and every session
+  boundary must clear it: app lock, backgrounding, memory pressure, security
+  wipe, unpair. Android's equivalent was missed by the wipe path, which then
+  reported "Complete" with the private key still in the process heap.
+
+### Signature attribution is entity-level (`Domain/Security/GopenPGPCrypto.swift`)
+
+A signature is attributed to a bound key by **entity fingerprint**, never by
+key id. This is not a style preference; the two live at different levels and
+mixing them fails silently:
+
+- `VerifyResult.SignedByKeyIdHex()` returns the signature packet's *issuer* id,
+  which is the signing **subkey's** whenever a subkey signed.
+- `KeyRing.GetHexKeyIDsJson()` returns `PrimaryKey.KeyId` per entity — no
+  subkeys, and there is no API that lists them.
+
+Match one against the other and every subkey-signed message resolves to
+"unknown signer" — no error, no alarm, and in the safe direction, which is what
+makes it survive review. `SignedByKey()` returns the entity, so its fingerprint
+is comparable to what a bound public key reports about itself.
+
+Two further rules that are only visible as things the code does **not** do:
+
+- Never call `insecureDisableUnauthenticatedMessagesCheck`,
+  `insecureAllowDecryptionWithSigningKeys`, `disableIntendedRecipients` or
+  `disableVerifyTimeCheck`. Each is an opt-out, so integrity checking and
+  signature strictness are what happen by leaving them alone. Adding one would
+  read like a fix for a decryption failure.
+- `maxDecompressedMessageSize` must stay set to `maxDecompressedPlaintextBytes`.
+  The library enforces the cap *during* decompression; the default is not this
+  app's cap, and without it an encrypted zip bomb is an OOM kill.
+
+GopenPGP also verifies against the **decryption key** whether or not it was
+offered, so self-sent mail reads as verified. Harmless — signing needs the
+private half — but a test whose message is signed by the key that decrypts it
+is not testing which keys are trusted.
+
 ### Device enrollment (`Domain/Security/DeviceEnvelope|EnrollmentVault|EnrollmentCeremony`)
 
 - **Gated on Hostile Location Protection being off.** Enabling HLP destroys the

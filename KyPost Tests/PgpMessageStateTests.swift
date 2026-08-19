@@ -59,12 +59,35 @@ import Testing
     }
 
     @Test func accessibilityLabelsSpellOutTheState() {
-        #expect(pgpRowAccessibilityLabel(state: .clientProtected, subject: "Invoice")
+        #expect(pgpRowAccessibilityLabel(state: .clientProtected, subject: "Invoice", deviceIsEnrolled: false)
             == "Encrypted, can't be read in this app: Invoice")
-        #expect(pgpRowAccessibilityLabel(state: .decryptFailed, subject: "Invoice")
+        #expect(pgpRowAccessibilityLabel(state: .decryptFailed, subject: "Invoice", deviceIsEnrolled: false)
             == "Encrypted, couldn't be decrypted: Invoice")
-        #expect(pgpRowAccessibilityLabel(state: .none, subject: "Invoice") == nil)
-        #expect(pgpRowAccessibilityLabel(state: .decryptedByServer, subject: "Invoice") == nil)
+        #expect(pgpRowAccessibilityLabel(state: .none, subject: "Invoice", deviceIsEnrolled: false) == nil)
+        #expect(pgpRowAccessibilityLabel(state: .decryptedByServer, subject: "Invoice", deviceIsEnrolled: false) == nil)
+    }
+
+    /// The lock on a client-protected row means different things on an
+    /// enrolled device and an unenrolled one, and the user who cannot see the
+    /// screen is the one who most needs the sentence to be true.
+    @Test func anEnrolledDeviceIsToldItCanUnlockRatherThanThatItCannotRead() {
+        #expect(
+            pgpRowAccessibilityLabel(
+                state: .clientProtected, subject: "Invoice", deviceIsEnrolled: true
+            ) == "Encrypted, unlock to read: Invoice"
+        )
+        #expect(
+            pgpRowAccessibilityLabel(
+                state: .clientProtected, subject: "Invoice", deviceIsEnrolled: false
+            ) == "Encrypted, can't be read in this app: Invoice"
+        )
+        // Enrollment changes nothing about a message the server failed to
+        // decrypt: no local key helps with that.
+        #expect(
+            pgpRowAccessibilityLabel(
+                state: .decryptFailed, subject: "Invoice", deviceIsEnrolled: true
+            ) == "Encrypted, couldn't be decrypted: Invoice"
+        )
     }
 }
 
@@ -198,25 +221,26 @@ import Testing
 // MARK: - Signature trust model (Phase 6)
 
 @Suite struct PgpSignatureStateTests {
-    /// Stands in for the OpenPGP key-id extraction the crypto core will
-    /// supply: maps an armored key to the ids it contains.
-    private func keyIDs(_ table: [String: Set<String>]) -> (String) -> Set<String> {
-        { table[$0] ?? [] }
+    /// Stands in for the OpenPGP entity-fingerprint read the crypto core
+    /// supplies: maps an armored key to its primary fingerprint, and nil for
+    /// a key that does not parse.
+    private func fingerprints(_ table: [String: String]) -> (String) -> String? {
+        { table[$0] }
     }
 
     private func signature(
         present: Bool = true,
         valid: Bool = true,
-        keyID: String = "AAAA"
+        fingerprint: String = "FPR1"
     ) -> RawSignature {
-        RawSignature(present: present, valid: valid, signerKeyID: keyID)
+        RawSignature(present: present, valid: valid, signerFingerprint: fingerprint)
     }
 
     @Test func anUnsignedMessageSaysNothing() {
         #expect(signatureState(
             signature: signature(present: false),
             signerKeys: [SignerKey(publicKey: "k")],
-            keyIDs: keyIDs(["k": ["AAAA"]])
+            fingerprint: fingerprints(["k": "FPR1"])
         ) == .none)
     }
 
@@ -224,14 +248,14 @@ import Testing
     /// book, a rotated key, and a forgery are locally indistinguishable.
     @Test func noBoundKeyIsUnknownRatherThanInvalid() {
         #expect(signatureState(
-            signature: signature(), signerKeys: [], keyIDs: keyIDs([:])
+            signature: signature(), signerKeys: [], fingerprint: fingerprints([:])
         ) == .signerUnknown)
 
         // Bound keys exist, but none of them made this signature.
         #expect(signatureState(
-            signature: signature(keyID: "ZZZZ"),
+            signature: signature(fingerprint: "FPRZ"),
             signerKeys: [SignerKey(publicKey: "k")],
-            keyIDs: keyIDs(["k": ["AAAA"]])
+            fingerprint: fingerprints(["k": "FPR1"])
         ) == .signerUnknown)
     }
 
@@ -245,7 +269,7 @@ import Testing
                 SignerKey(publicKey: "k", verified: true),
                 SignerKey(publicKey: "", conflict: true),
             ],
-            keyIDs: keyIDs(["k": ["AAAA"]])
+            fingerprint: fingerprints(["k": "FPR1"])
         ) == .keyChanged)
     }
 
@@ -255,7 +279,7 @@ import Testing
         #expect(signatureState(
             signature: signature(valid: false),
             signerKeys: [SignerKey(publicKey: "", conflict: true)],
-            keyIDs: keyIDs([:])
+            fingerprint: fingerprints([:])
         ) == .keyChanged)
     }
 
@@ -263,7 +287,7 @@ import Testing
         #expect(signatureState(
             signature: signature(valid: false),
             signerKeys: [SignerKey(publicKey: "k")],
-            keyIDs: keyIDs(["k": ["AAAA"]])
+            fingerprint: fingerprints(["k": "FPR1"])
         ) == .invalid)
     }
 
@@ -273,7 +297,7 @@ import Testing
         #expect(signatureState(
             signature: signature(),
             signerKeys: [SignerKey(publicKey: "k", verified: false)],
-            keyIDs: keyIDs(["k": ["AAAA"]])
+            fingerprint: fingerprints(["k": "FPR1"])
         ) == .verifiedSeenBefore)
     }
 
@@ -281,18 +305,56 @@ import Testing
         #expect(signatureState(
             signature: signature(),
             signerKeys: [SignerKey(publicKey: "k", verified: true)],
-            keyIDs: keyIDs(["k": ["AAAA"]])
+            fingerprint: fingerprints(["k": "FPR1"])
         ) == .verifiedConfirmed)
     }
 
-    /// A signing subkey's id differs from the primary key's, so matching only
-    /// the primary would reject every normally signed message.
-    @Test func aSubkeyIdStillMatchesItsBoundKey() {
+    /// A message signed by a signing subkey still resolves to the bound key.
+    ///
+    /// This is the case that made attribution entity-level. The signature's
+    /// own issuer id is the subkey's and matches nothing a public key reports
+    /// about itself, so matching on it rejected every normally signed
+    /// message. The entity fingerprint is the same whichever component signed.
+    @Test func aSubkeySignatureStillMatchesItsBoundKey() {
         #expect(signatureState(
-            signature: signature(keyID: "SUBKEY"),
+            signature: RawSignature(
+                present: true,
+                valid: true,
+                signerKeyID: "SUBKEY-ISSUER-ID",
+                signerFingerprint: "FPR1"
+            ),
             signerKeys: [SignerKey(publicKey: "k", verified: true)],
-            keyIDs: keyIDs(["k": ["PRIMARY", "SUBKEY"]])
+            fingerprint: fingerprints(["k": "FPR1"])
         ) == .verifiedConfirmed)
+    }
+
+    /// Fingerprints are hex and the case is the producer's choice.
+    @Test func fingerprintMatchingIgnoresCase() {
+        #expect(signatureState(
+            signature: signature(fingerprint: "abcdef01"),
+            signerKeys: [SignerKey(publicKey: "k", verified: true)],
+            fingerprint: fingerprints(["k": "ABCDEF01"])
+        ) == .verifiedConfirmed)
+    }
+
+    /// Two absences must not agree with each other.
+    ///
+    /// An unparseable bound key yields no fingerprint and a signature with no
+    /// attribution yields none either. If empty compared equal to empty, that
+    /// pair would produce a verified badge built from nothing at all.
+    @Test func anAbsentFingerprintNeverMatchesAnAbsentOne() {
+        #expect(signatureState(
+            signature: signature(fingerprint: ""),
+            signerKeys: [SignerKey(publicKey: "unparseable", verified: true)],
+            fingerprint: fingerprints(["unparseable": ""])
+        ) == .signerUnknown)
+
+        // And the same when the extractor reports nil rather than empty.
+        #expect(signatureState(
+            signature: signature(fingerprint: ""),
+            signerKeys: [SignerKey(publicKey: "unparseable", verified: true)],
+            fingerprint: fingerprints([:])
+        ) == .signerUnknown)
     }
 
     /// An unparseable bound key must only ever shrink the candidate set, never
@@ -301,7 +363,7 @@ import Testing
         #expect(signatureState(
             signature: signature(),
             signerKeys: [SignerKey(publicKey: "garbage", verified: true)],
-            keyIDs: keyIDs([:])
+            fingerprint: fingerprints([:])
         ) == .signerUnknown)
     }
 }

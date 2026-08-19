@@ -1,0 +1,118 @@
+//
+//  PgpPayload.swift
+//  KyPost
+//
+//  What `GET /api/mail/pgp-payload` returns, and every way reading a
+//  client-protected message can end. Swift port of kypost-android's
+//  pgp/PgpPayloadClient.kt and the ReadOutcome half of
+//  pgp/EncryptedMessageReader.kt.
+//
+
+import Foundation
+
+/// One client-protected message's OpenPGP material.
+nonisolated struct PgpPayload: Equatable, Sendable {
+    var encryptedPayload: String = ""
+    var signaturePayload: String = ""
+    /// The display body, used only on the signed-but-not-encrypted path.
+    var body: String = ""
+
+    /// The sender's candidate keys, **already narrowed to the sender the
+    /// server resolved**.
+    ///
+    /// Do not re-narrow these, and above all do not parse a `From` header here
+    /// to do it. Android shipped a client-side parser for exactly that and a
+    /// differential harness found it disagreeing with the server's on 27 of
+    /// 111 adversarial headers — including RFC 5322 comments, where
+    /// `Bob (Eve <eve@evil>) <bob@x>` is valid, the server binds `bob@x`, and
+    /// the client bound `eve@evil`. That let any contact forge a verified
+    /// badge for anyone.
+    var signerKeys: [SignerKey] = []
+
+    /// The addr-spec the verdict is about, as the server resolved it.
+    ///
+    /// Render this wherever a verdict is shown, never the raw `From`: the two
+    /// are separable by an attacker, and a badge shown next to an address the
+    /// verdict was not about is a lie regardless of how correct the
+    /// cryptography underneath it was. Empty when the server resolved none.
+    var resolvedSender: String = ""
+
+    /// Display only. Deliberately never feeds a binding decision.
+    var rawSender: String = ""
+}
+
+/// How a payload fetch ended.
+nonisolated enum PgpPayloadResult: Equatable, Sendable {
+    case success(PgpPayload)
+    case tooLarge
+    case notClientProtected
+    /// 404 — the server has the message and it carries no OpenPGP payload.
+    case noPayload
+    case failed(String)
+}
+
+/// The decrypted message, split the way the reader renders it.
+nonisolated struct DecryptedBody: Equatable, Sendable {
+    /// Both halves are kept rather than collapsed to one: the caller decides
+    /// what reaches the WebView, and a message carrying only a plain part must
+    /// not render as an empty page.
+    var html: String?
+    var plain: String?
+    /// The MIME mode that came with the selected body. Never infer this from
+    /// the body's characters — that is what `bodyLooksLikeHTML` is for, and
+    /// guessing here would let a plain-text message containing angle brackets
+    /// render as markup.
+    var bodyMode: String = ""
+    /// RFC 3156 protected subject, when the message carried one. The header
+    /// subject of an encrypted message is plaintext on the wire, so a message
+    /// that protects its subject carries the real one inside.
+    var protectedSubject: String?
+}
+
+/// Every way reading a client-protected message can end — one per row of the
+/// design spec's exit table.
+///
+/// Separate cases rather than one error string because the UI shows a
+/// different sentence, and sometimes a different button, for each.
+nonisolated enum ReadOutcome: Equatable, Sendable {
+    case decrypted(body: DecryptedBody, signature: PgpSignatureState, resolvedSender: String)
+
+    /// The key is not held and this attempt was not allowed to prompt. The
+    /// screen goes on offering Decrypt.
+    case needsUnlock
+
+    /// **Not an error.** The user dismissed a sheet they raised, so the screen
+    /// simply goes back to offering Decrypt.
+    case cancelled
+
+    case notEnrolled
+    case noSecureLockScreen
+    case tooLarge
+    case notClientProtected
+
+    /// The server has the message but it carries no OpenPGP payload.
+    ///
+    /// Terminal: unlike a transport failure, retrying cannot change it, so the
+    /// UI must not offer Retry. Reachable when the inbox flag said encrypted
+    /// and the fetched message disagrees.
+    case noEncryptedContent
+
+    case unsealFailed(String)
+    case fetchFailed(String)
+    case decryptFailed(String)
+}
+
+/// Whether an outcome is worth offering a Retry button for.
+///
+/// `noEncryptedContent` is the trap here: it reads like a failure and is not
+/// retryable, and a Retry that cannot possibly succeed teaches the user their
+/// mail is broken.
+nonisolated func readOutcomeAllowsRetry(_ outcome: ReadOutcome) -> Bool {
+    switch outcome {
+    case .fetchFailed, .decryptFailed, .unsealFailed, .tooLarge:
+        true
+    case .decrypted, .needsUnlock, .cancelled, .notEnrolled,
+         .noSecureLockScreen, .notClientProtected, .noEncryptedContent:
+        false
+    }
+}

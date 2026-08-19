@@ -12,8 +12,16 @@ import os
 /// Shared launch/lifecycle logic used by both platform delegates.
 @MainActor
 private enum PushLifecycle {
+    /// Retained for the life of the process. A dispatch source stops watching
+    /// as soon as its last reference goes, so this cannot be a local.
+    static var memoryPressureWatch: MemoryPressureWatch?
+
     static func onLaunch() {
         let graph = SingletonGraph.shared
+        // Memory pressure is the moment the kernel starts looking for pages to
+        // swap, and a private key written to a swap file has outlived every
+        // boundary this app controls.
+        memoryPressureWatch = MemoryPressureWatch()
         // Re-apply the Hostile Location Protection wipe if the mode is on.
         // Idempotent, and it repairs a toggle interrupted before its own erase
         // finished: the flag is persisted after the wipe, but a crash between
@@ -94,6 +102,13 @@ private enum PushLifecycle {
 
     static func onBackground() {
         SingletonGraph.shared.pullPollingScheduler.stopForegroundPolling()
+        // Also cleared here, not only via lock() below, because `lock()` is a
+        // no-op while the app-lock feature is switched off — and a user who
+        // has not turned on the app lock still backgrounds the app. The two
+        // calls cover different gaps: this one covers lock-disabled
+        // backgrounding, and lock() covers the macOS screen lock, which never
+        // reaches here.
+        EnrollmentSession.shared.clear()
         // iOS lock trigger: backgrounding covers home button, app switch,
         // screen lock, and incoming-call takeover. (macOS never calls this;
         // its trigger is the screen-lock notification in AppDelegate.)
