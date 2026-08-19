@@ -146,6 +146,13 @@ a crypto path acceptable.
 - A decrypt failure must **not** clear `EnrollmentSession`. One message failing
   says nothing about the held key, and clearing re-prompts for every later
   message.
+- **The decrypted body never leaves `EncryptedReadViewModel`.** It is not
+  written to SwiftData, not assigned to the cached body field, and not carried
+  into a scene value that state restoration would archive. `forget()` runs on
+  disappear.
+- **Only a deliberate press may prompt.** The attempt made when a screen opens
+  passes `unlockIfNeeded: false`; a biometric sheet raised merely by opening a
+  message asks for authentication the user has not requested.
 - `EnrollmentSession` holds the key as bytes it can zero, and every session
   boundary must clear it: app lock, backgrounding, memory pressure, security
   wipe, unpair. Android's equivalent was missed by the wipe path, which then

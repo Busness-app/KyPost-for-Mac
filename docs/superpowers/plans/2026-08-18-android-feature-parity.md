@@ -526,7 +526,7 @@ Not optional, not a follow-up:
 
 ---
 
-## Phase 9 — Reading client-protected mail on device — **core done 2026-08-18**
+## Phase 9 — Reading client-protected mail on device — **done 2026-08-18**
 
 Android source: `pgp/EncryptedMessageReader` (207 lines), `PgpPayloadClient`,
 `EnrollmentSession`, `VaultOpener`. Spec:

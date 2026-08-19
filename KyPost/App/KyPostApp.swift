@@ -40,6 +40,7 @@ struct KyPostApp: App {
                 .environment(themeManager)
                 .environment(router)
                 .environment(\.theme, themeManager.palette)
+                .environment(\.deviceIsEnrolled, graph.enrollmentVault.isEnrolled)
                 .preferredColorScheme(themeManager.palette.preferredColorScheme)
                 .background(themeManager.palette.bg.ignoresSafeArea())
                 .overlay { LockedOverlay().environment(\.theme, themeManager.palette) }
@@ -89,6 +90,9 @@ struct KyPostApp: App {
                 .environment(themeManager)
                 .environment(router)
                 .environment(\.theme, themeManager.palette)
+                // Read here rather than in a row's body: it reads the Keychain,
+                // and SwiftUI re-evaluates a list row's body constantly.
+                .environment(\.deviceIsEnrolled, graph.enrollmentVault.isEnrolled)
                 .preferredColorScheme(themeManager.palette.preferredColorScheme)
                 .background(themeManager.palette.bg.ignoresSafeArea())
                 .onOpenURL { url in
