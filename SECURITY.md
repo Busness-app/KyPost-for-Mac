@@ -7,7 +7,7 @@ how to report a vulnerability and what the app does and does not protect.
 
 For **server-side** security (TLS termination, reverse proxies, key custody at rest,
 deployment hardening), see [SECURITY.md in the server
-repository](https://github.com/Yoshiofthewire/kypost-server/blob/main/SECURITY.md).
+repository](https://github.com/Busness-app/kypost-server/blob/main/SECURITY.md).
 Report server vulnerabilities there, not here.
 
 ## Reporting Security Vulnerabilities
