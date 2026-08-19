@@ -125,6 +125,43 @@ a crypto path acceptable.
   reader, compose, and the signature binding must never learn which library is
   underneath.
 
+### Client-side encrypted send (`Domain/UseCases/ClientEncryptedSender.swift`)
+
+Each rule below is a defect someone already found once.
+
+- **Recipient keys come from `POST /api/pgp/recipients/resolve`,** and this is
+  the only path that may call it. Everywhere else uses `/check`, which answers
+  "is there a usable key" without handing back key material. The two also
+  differ in error shape: on `/resolve`, 200/409/413 are JSON while 400/500 are
+  plain text.
+- **Split with `splitRecipientFields`, never the preflight's splitter.** That
+  one dedupes across To/CC/BCC and collapses a BCC recipient into the To
+  header.
+- **To and CC share delivery 0; each BCC gets its own ciphertext,** so no BCC
+  recipient's key id appears in a packet another recipient can read. Delivery 0
+  stays first: index 0 failing is a hard failure server-side, later ones only a
+  warning.
+- **`OutgoingEnvelope` has no `bcc` field by construction,** and the writer
+  emits a fixed, closed header set with no caller-supplied path. That is what
+  structurally guarantees the relay's forbidden headers (`Received`,
+  `Authentication-Results`, `Return-Path`, `Bcc`) can never appear.
+- **The real subject rides inside the ciphertext** as a protected header; the
+  outer subject is always `outerPlaceholderSubject`, matching the server's
+  constant.
+- **The Sent copy is encrypted to the public half of the vault key,** never to
+  anything the server supplied. A hostile server handing back "your" key would
+  otherwise get a readable copy of every message sent.
+- **`tier == "key_changed"` is a broken TOFU pin** — a distinct, louder
+  outcome checked *before* "no key on file", never folded into it.
+- **There is no pickup fallback here and there must not be.** The server-side
+  one works by storing plaintext, which is the thing client custody exists to
+  prevent.
+- **Resolve before unlocking.** A send that was going to be refused anyway must
+  not interrupt the user for a biometric they gain nothing from.
+- `sanitizeHeaderValue` **must iterate `unicodeScalars`.** In Swift `"\r\n"` is
+  a single `Character` equal to neither `"\r"` nor `"\n"`, so a `Character`
+  loop lets CRLF through and header injection works.
+
 ### Reading client-protected mail (`Domain/UseCases/EncryptedMessageReader.swift`)
 
 - **The decrypted body is never persisted.** Not to SwiftData, not to the

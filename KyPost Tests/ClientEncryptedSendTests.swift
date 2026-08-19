@@ -1,0 +1,302 @@
+//
+//  ClientEncryptedSendTests.swift
+//  KyPost Tests
+//
+//  Phase 10. Each of these corresponds to a defect someone already found once
+//  — the BCC leak, the folded key_changed row, the pickup fallback that would
+//  store plaintext, and the Sent copy encrypted to a server-supplied key.
+//
+
+import Foundation
+import Testing
+@testable import KyPost
+
+// MARK: - Fakes
+
+private struct StubOpener: VaultOpening {
+    var outcome: VaultOpenOutcome = .opened(privateKey: Data("PRIVATE".utf8))
+    func open() async -> VaultOpenOutcome { outcome }
+}
+
+private struct StubResolver: RecipientKeyResolving {
+    var result: ResolveResult
+    func resolve(addresses: [String]) async -> ResolveResult { result }
+}
+
+/// Records what it was handed, so the tests can assert on the envelope rather
+/// than only on the outcome.
+private final class RecordingTransport: ClientEncryptedTransport, @unchecked Sendable {
+    var sent: ClientEncryptedMessage?
+    var result: Result<ClientSendResult, MailSendFailure> = .success(ClientSendResult(sentSaved: true))
+
+    func send(_ message: ClientEncryptedMessage) async -> Result<ClientSendResult, MailSendFailure> {
+        sent = message
+        return result
+    }
+}
+
+/// Records the recipient key sets it was asked to encrypt to, which is how the
+/// BCC isolation rule is checked.
+private final class RecordingCrypto: PgpEncrypting, @unchecked Sendable {
+    var encryptCalls: [[String]] = []
+    var error: PgpCryptoError?
+    var ownKey = "OWN-PUBLIC-KEY"
+
+    func encryptAndSign(
+        plaintext: Data,
+        recipientKeys: [String],
+        privateKey: Data
+    ) throws -> String {
+        if let error { throw error }
+        encryptCalls.append(recipientKeys)
+        return "-----BEGIN PGP MESSAGE-----\n\(recipientKeys.joined(separator: ","))\n-----END PGP MESSAGE-----"
+    }
+
+    func ownPublicKey(privateKey: Data) throws -> String {
+        if let error { throw error }
+        return ownKey
+    }
+}
+
+private func usable(_ address: String, key: String? = nil) -> ResolvedRecipientKey {
+    ResolvedRecipientKey(
+        address: address, publicKey: key ?? "KEY-\(address)", usable: true, tier: "contact"
+    )
+}
+
+private func makeSender(
+    opener: VaultOpenOutcome = .opened(privateKey: Data("PRIVATE".utf8)),
+    resolve: ResolveResult,
+    transport: RecordingTransport = RecordingTransport(),
+    crypto: RecordingCrypto = RecordingCrypto(),
+    accountAddress: String = "me@example.com",
+    session: EnrollmentSession = EnrollmentSession()
+) -> ClientEncryptedSender {
+    ClientEncryptedSender(
+        opener: StubOpener(outcome: opener),
+        resolver: StubResolver(result: resolve),
+        transport: transport,
+        crypto: crypto,
+        accountAddress: accountAddress,
+        session: session,
+        now: { Date(timeIntervalSince1970: 1_760_000_000) },
+        boundaryToken: { "FIXEDTOKEN" }
+    )
+}
+
+// MARK: - The exit table
+
+@Suite(.serialized) struct ClientEncryptedSendTests {
+
+    @Test func aBlankAccountAddressIsRefusedBeforeAnythingElse() async {
+        let sender = makeSender(resolve: .success([usable("a@b.com")]), accountAddress: "   ")
+        let outcome = await sender.send(draft: ClientSendDraft(to: "a@b.com"))
+        #expect(outcome == .noAccountAddress)
+    }
+
+    /// A send that was going to be refused anyway must not interrupt the user
+    /// for a biometric they gain nothing from — so resolution happens first.
+    @Test func recipientsAreResolvedBeforeTheUserIsAskedToUnlock() async {
+        let sender = makeSender(
+            opener: .cancelled,
+            resolve: .success([])  // no key for the recipient
+        )
+        let outcome = await sender.send(draft: ClientSendDraft(to: "nokey@b.com"))
+        // keysMissing, not cancelled: the unlock was never reached.
+        #expect(outcome == .keysMissing(["nokey@b.com"]))
+    }
+
+    /// A broken TOFU pin outranks a missing key and is checked first. Folding
+    /// it into "no key on file" tells the user nothing changed at the exact
+    /// moment the one thing worth telling them did.
+    @Test func aChangedKeyIsItsOwnLouderOutcome() async {
+        let sender = makeSender(resolve: .success([
+            ResolvedRecipientKey(
+                address: "bob@b.com", publicKey: "K", usable: true, tier: pgpTierKeyChanged
+            ),
+            usable("carol@b.com"),
+        ]))
+        let outcome = await sender.send(draft: ClientSendDraft(to: "bob@b.com, carol@b.com"))
+        #expect(outcome == .keyChanged(["bob@b.com"]))
+    }
+
+    @Test func aChangedKeyOutranksAMissingOne() async {
+        let sender = makeSender(resolve: .success([
+            ResolvedRecipientKey(
+                address: "bob@b.com", publicKey: "K", usable: true, tier: pgpTierKeyChanged
+            ),
+        ]))
+        // carol has no entry at all, so she is "missing" — but bob's changed
+        // pin is the more important thing to say.
+        let outcome = await sender.send(draft: ClientSendDraft(to: "bob@b.com, carol@b.com"))
+        #expect(outcome == .keyChanged(["bob@b.com"]))
+    }
+
+    /// **There is no pickup fallback on this path and there must not be.** The
+    /// server-side one works by storing the plaintext, which is the very thing
+    /// client custody exists to prevent — so a missing key is a refusal.
+    @Test func aMissingKeyRefusesRatherThanFallingBackToPickup() async {
+        let transport = RecordingTransport()
+        let sender = makeSender(resolve: .success([usable("a@b.com")]), transport: transport)
+        let outcome = await sender.send(draft: ClientSendDraft(to: "a@b.com, nokey@b.com"))
+        #expect(outcome == .keysMissing(["nokey@b.com"]))
+        #expect(transport.sent == nil)
+    }
+
+    @Test func anUnusableKeyCountsAsMissing() async {
+        let sender = makeSender(resolve: .success([
+            ResolvedRecipientKey(address: "a@b.com", publicKey: "K", usable: false, tier: "contact"),
+        ]))
+        #expect(await sender.send(draft: ClientSendDraft(to: "a@b.com")) == .keysMissing(["a@b.com"]))
+    }
+
+    @Test func theWrongAccountTypeIsItsOwnRow() async {
+        let sender = makeSender(resolve: .notClientProtected)
+        #expect(await sender.send(draft: ClientSendDraft(to: "a@b.com")) == .notClientProtected)
+    }
+
+    @Test func tooManyRecipientsIsItsOwnRow() async {
+        let sender = makeSender(resolve: .tooMany("at most 50"))
+        #expect(
+            await sender.send(draft: ClientSendDraft(to: "a@b.com")) == .tooManyRecipients("at most 50")
+        )
+    }
+
+    @Test func aResolveFailureIsItsOwnRow() async {
+        let sender = makeSender(resolve: .failed("offline"))
+        #expect(await sender.send(draft: ClientSendDraft(to: "a@b.com")) == .resolveFailed("offline"))
+    }
+
+    @Test func cancellingTheUnlockIsNotAnError() async {
+        let sender = makeSender(opener: .cancelled, resolve: .success([usable("a@b.com")]))
+        #expect(await sender.send(draft: ClientSendDraft(to: "a@b.com")) == .cancelled)
+    }
+
+    @Test func notEnrolledAndNoLockScreenStayDistinct() async {
+        let unenrolled = makeSender(opener: .notEnrolled, resolve: .success([usable("a@b.com")]))
+        #expect(await unenrolled.send(draft: ClientSendDraft(to: "a@b.com")) == .notEnrolled)
+
+        let noLock = makeSender(opener: .noSecureLockScreen, resolve: .success([usable("a@b.com")]))
+        #expect(await noLock.send(draft: ClientSendDraft(to: "a@b.com")) == .noSecureLockScreen)
+    }
+
+    @Test func anEncryptFailureIsReported() async {
+        let crypto = RecordingCrypto()
+        crypto.error = .cannotEncrypt("no usable recipient key")
+        let sender = makeSender(resolve: .success([usable("a@b.com")]), crypto: crypto)
+        #expect(
+            await sender.send(draft: ClientSendDraft(to: "a@b.com"))
+                == .encryptFailed("no usable recipient key")
+        )
+    }
+
+    @Test func aRelayRefusalIsReported() async {
+        let transport = RecordingTransport()
+        transport.result = .failure(MailSendFailure(message: "the server refused this message's sender address"))
+        let sender = makeSender(resolve: .success([usable("a@b.com")]), transport: transport)
+        #expect(
+            await sender.send(draft: ClientSendDraft(to: "a@b.com"))
+                == .sendFailed("the server refused this message's sender address")
+        )
+    }
+
+    @Test func aSuccessfulSendReportsWhatTheRelaySaid() async {
+        let transport = RecordingTransport()
+        transport.result = .success(ClientSendResult(sentSaved: true, warning: "one delivery deferred"))
+        let sender = makeSender(resolve: .success([usable("a@b.com")]), transport: transport)
+        #expect(
+            await sender.send(draft: ClientSendDraft(to: "a@b.com"))
+                == .sent(sentSaved: true, warning: "one delivery deferred")
+        )
+    }
+
+    // MARK: - The BCC rule
+
+    /// **To and CC share one ciphertext; each BCC gets their own.** Otherwise a
+    /// BCC recipient's key id appears in a packet another recipient can read,
+    /// which reveals to everyone that a blind copy went somewhere.
+    @Test func eachBccRecipientGetsTheirOwnCiphertext() async throws {
+        let crypto = RecordingCrypto()
+        let transport = RecordingTransport()
+        let sender = makeSender(
+            resolve: .success([
+                usable("to@b.com"), usable("cc@b.com"), usable("bcc1@b.com"), usable("bcc2@b.com"),
+            ]),
+            transport: transport,
+            crypto: crypto
+        )
+        let outcome = await sender.send(draft: ClientSendDraft(
+            to: "to@b.com", cc: "cc@b.com", bcc: "bcc1@b.com, bcc2@b.com"
+        ))
+        guard case .sent = outcome else {
+            Issue.record("expected sent, got \(outcome)")
+            return
+        }
+        let message = try #require(transport.sent)
+        // One shared delivery plus one per BCC.
+        #expect(message.deliveries.count == 3)
+        #expect(message.deliveries[0].recipients == ["to@b.com", "cc@b.com"])
+        #expect(message.deliveries[1].recipients == ["bcc1@b.com"])
+        #expect(message.deliveries[2].recipients == ["bcc2@b.com"])
+
+        // No BCC key travels in a packet another recipient can open.
+        #expect(crypto.encryptCalls[0] == ["KEY-to@b.com", "KEY-cc@b.com"])
+        #expect(crypto.encryptCalls[1] == ["KEY-bcc1@b.com"])
+        #expect(crypto.encryptCalls[2] == ["KEY-bcc2@b.com"])
+    }
+
+    /// Delivery 0 stays first, because index 0 failing is a hard failure
+    /// server-side while later ones are only a warning.
+    @Test func theSharedDeliveryIsAlwaysFirst() async throws {
+        let transport = RecordingTransport()
+        let sender = makeSender(
+            resolve: .success([usable("to@b.com"), usable("bcc@b.com")]),
+            transport: transport
+        )
+        _ = await sender.send(draft: ClientSendDraft(to: "to@b.com", bcc: "bcc@b.com"))
+        let message = try #require(transport.sent)
+        #expect(message.deliveries.first?.recipients == ["to@b.com"])
+    }
+
+    /// A BCC-only message still puts the blind recipient in their own delivery
+    /// rather than promoting them into To.
+    @Test func aBccOnlyMessageDoesNotPromoteThemIntoTo() async throws {
+        let transport = RecordingTransport()
+        let sender = makeSender(resolve: .success([usable("bcc@b.com")]), transport: transport)
+        _ = await sender.send(draft: ClientSendDraft(bcc: "bcc@b.com"))
+        let message = try #require(transport.sent)
+        #expect(message.to.isEmpty)
+        #expect(message.deliveries.count == 1)
+        #expect(message.deliveries[0].recipients == ["bcc@b.com"])
+        // And the cleartext headers every recipient reads name nobody.
+        //
+        // Asserted against the header block alone, not the whole delivery: the
+        // stub crypto echoes its recipient keys into the fake ciphertext, so
+        // searching the entire string would be testing the stub rather than
+        // the writer.
+        let headers = message.deliveries[0].ciphertext
+            .components(separatedBy: "\r\n\r\n").first ?? ""
+        #expect(!headers.contains("bcc@b.com"))
+        #expect(!headers.lowercased().contains("bcc:"))
+    }
+
+    // MARK: - The Sent copy
+
+    /// **Encrypted to the public half of the vault key, never to anything the
+    /// server supplied.** A hostile server handing back "your" public key would
+    /// otherwise get a readable copy of every message sent, with nothing on
+    /// screen looking any different.
+    @Test func theSentCopyIsEncryptedToThisDevicesOwnKey() async throws {
+        let crypto = RecordingCrypto()
+        let transport = RecordingTransport()
+        let sender = makeSender(
+            resolve: .success([usable("a@b.com")]), transport: transport, crypto: crypto
+        )
+        _ = await sender.send(draft: ClientSendDraft(to: "a@b.com"))
+        // The final encrypt is the Sent copy, and it used the key derived from
+        // the private half — not one that came over the wire.
+        #expect(crypto.encryptCalls.last == ["OWN-PUBLIC-KEY"])
+        let message = try #require(transport.sent)
+        #expect(message.sentCopy.contains("OWN-PUBLIC-KEY"))
+    }
+}
