@@ -16,7 +16,7 @@ Report vulnerabilities in the Mac app via GitHub Security Advisories rather than
 a public issue.
 
 1. Go to the [Security
-   Advisories](https://github.com/Yoshiofthewire/KyPost-for-Mac/security/advisories) page
+   Advisories](https://github.com/Busness-app/KyPost-for-Mac/security/advisories) page
 2. Click "Report a vulnerability"
 3. Provide a description, affected versions, and reproduction steps if you have them
 4. Do not disclose publicly until a patch is available
@@ -184,7 +184,7 @@ versions.
 ## Security Contacts
 
 - **Vulnerability reports:** [GitHub Security
-  Advisories](https://github.com/Yoshiofthewire/KyPost-for-Mac/security/advisories)
+  Advisories](https://github.com/Busness-app/KyPost-for-Mac/security/advisories)
 - **Maintainer:** [Yoshiofthewire](https://github.com/Yoshiofthewire)
 - **Code of Conduct concerns** are handled separately — see
   [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Security vulnerabilities are not a Code of
