@@ -2,13 +2,20 @@
 //  AppLockManager.swift
 //  KyPost
 //
-//  App-lock state and the unlock decision (security-hardening plan, Task 1).
-//  "Locked" means "has the device owner authenticated since the lock last
-//  engaged" — in-memory only, never persisted. Verification is
-//  LAContext.deviceOwnerAuthentication (biometric first, passcode fallback);
-//  rate-limiting and lockout are the OS's, not ours.
+//  App-lock state and the unlock decision (security-hardening plan, Task 1;
+//  PIN, lockout and wipe from Phase 11). "Locked" means "has the user
+//  authenticated since the lock last engaged" — in-memory only, never
+//  persisted.
+//
+//  There are two verifiers, and they are throttled by different things.
+//  `LAContext.deviceOwnerAuthentication` is the OS's, and the OS rate-limits
+//  it; a PIN set here is checked in this process, so **this file owns its
+//  throttle**. That is the reversal Phase 11 makes: the original note said
+//  lockout was the OS's job, which was true only while there was nothing of
+//  ours to guess at.
 //
 
+import Darwin
 import Foundation
 import LocalAuthentication
 import Observation
@@ -37,6 +44,52 @@ nonisolated struct LocalAuthenticationAuthenticator: DeviceAuthenticating {
             localizedReason: reason
         )) ?? false
     }
+}
+
+/// How one PIN attempt ended.
+///
+/// Every caller must switch over the whole of this. Three of Android's tested
+/// `result is Success` and treated everything else as a plain false — so a
+/// wipe reached from the settings screen showed "Incorrect PIN", left the
+/// screen running against a destroyed database, and never relaunched.
+nonisolated enum UnlockAttemptOutcome: Equatable, Sendable {
+    case success
+
+    /// Wrong PIN. `delayMillis` is how long the field should stay disabled —
+    /// zero for the first two attempts.
+    case rejected(delayMillis: Int64)
+
+    /// There is no PIN on this machine, so there was nothing to check. Not a
+    /// wrong PIN, and it does not advance the wipe counter.
+    case notConfigured
+
+    /// **The PIN could not be checked at all** — the device key behind the
+    /// stored verifier is gone or unusable, so neither "correct" nor "wrong" is
+    /// knowable.
+    ///
+    /// Distinct from `rejected` because it must not count toward the wipe
+    /// threshold. Folding it in meant an OS-level key invalidation made every
+    /// correct PIN read as wrong, and ten of those destroyed the user's mail,
+    /// contacts and pairing in response to an event they neither caused nor
+    /// could avoid.
+    case verifierUnavailable
+
+    /// The PIN was right, but the gated device secret could not be read — the
+    /// user declined the presence prompt, or the Keychain refused.
+    ///
+    /// The app stays **locked**, matching `requestUnlock`. Unlocking without
+    /// the secret produces an app that looks fine and silently no-ops every
+    /// relay call, with no way to retry short of locking and unlocking again.
+    case gatedSecretUnavailable
+
+    /// The threshold was reached and the wipe ran cleanly. By the time this
+    /// returns, the local data is gone.
+    case wiped
+
+    /// The threshold was reached, the wipe ran, and at least one step failed —
+    /// so local data may still be here. Distinct from `wiped` because the UI
+    /// must not tell the user their data is gone when it might not be.
+    case wipeFailed(failedSteps: [String], willRetry: Bool)
 }
 
 @Observable
@@ -91,16 +144,43 @@ final class AppLockManager {
     /// key still in the process heap.
     private let enrollmentSession: EnrollmentSession
 
+    /// The device-bound secret the stored verifier is peppered with. Injected
+    /// so the whole exit table below is testable without a Secure Enclave.
+    private let pepper: any PinPepper
+
+    /// The monotonic millisecond clock the lockout deadline is written on.
+    /// `CLOCK_MONOTONIC_RAW` on Darwin keeps running while the machine sleeps
+    /// and cannot be moved by changing the date, which a wall clock can — and a
+    /// lockout a user can clear from the Date & Time pane is not a lockout.
+    private let monotonicMillis: () -> Int64
+
+    /// Runs the security wipe once the threshold is reached. Injected rather
+    /// than reached for, because this class is unit-tested without a graph.
+    ///
+    /// Left unset it fails **closed**: the attempt reports a wipe that could
+    /// not run, rather than quietly rejecting the eleventh guess and every one
+    /// after it as if the threshold did not exist.
+    var onWipe: (() async -> WipeResult)?
+
     init(
         store: AppLockStore,
         authenticator: any DeviceAuthenticating = LocalAuthenticationAuthenticator(),
-        enrollmentSession: EnrollmentSession = .shared
+        enrollmentSession: EnrollmentSession = .shared,
+        pepper: (any PinPepper)? = nil,
+        monotonicMillis: @escaping () -> Int64 = AppLockManager.systemMonotonicMillis
     ) {
         self.store = store
         self.authenticator = authenticator
         self.enrollmentSession = enrollmentSession
+        self.pepper = pepper ?? DevicePinPepper(keychain: KeychainStorage())
+        self.monotonicMillis = monotonicMillis
         isLockEnabled = store.lockEnabled
         isLocked = store.lockEnabled
+        sessionFailedAttempts = store.failedAttempts
+    }
+
+    static func systemMonotonicMillis() -> Int64 {
+        Int64(clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) / 1_000_000)
     }
 
     /// Engages the lock (backgrounding on iOS, screen lock on macOS).
@@ -190,6 +270,183 @@ final class AppLockManager {
         applyLockEnabled(false)
     }
 
+    // MARK: - PIN
+
+    /// Whether a PIN is configured — for the UI only. A decision that *acts*
+    /// must read the outcome of an attempt, which distinguishes "no PIN" from
+    /// "the PIN cannot be read right now".
+    var hasPin: Bool { store.hasPin }
+
+    /// Session-scoped mirror of the persisted counter, seeded at init.
+    ///
+    /// The manager always throttles on `max(persisted, session)`. Without it, a
+    /// Keychain write that fails hands an attacker a fresh budget on every
+    /// force-quit — the durability of the counter is the whole of the
+    /// throttle, and it is the one part of this that can silently stop working.
+    private var sessionFailedAttempts = 0
+
+    /// Serialises every PIN check in the process.
+    ///
+    /// Both entry points run check-lockout → verify → account-for-failure, and
+    /// suspend inside it (the wipe is async, and so is every caller). Without
+    /// this, two checks in flight together — the settings screen and a notification-driven approval, or
+    /// simply a double submit — both read the same attempt count and both write
+    /// `n + 1`, so the ladder and the wipe threshold under-count. They also
+    /// pass the lockout gate at the same instant, which is an unthrottled
+    /// parallel guessing window.
+    private var inFlightAttempt: Task<UnlockAttemptOutcome, Never>?
+
+    /// How long the PIN field should stay disabled, or 0 if there is no active
+    /// lockout.
+    ///
+    /// Clamped to the stored duration because the deadline is on the monotonic
+    /// timebase, which restarts at zero on reboot: without the clamp, rebooting
+    /// mid-lockout would read the stored deadline as "the whole of the previous
+    /// uptime remaining". Clamping fails safe — worst case is re-serving the
+    /// original delay once.
+    var remainingLockoutMillis: Int64 {
+        let duration = store.lockoutDurationMillis
+        guard duration > 0 else { return 0 }
+        return min(max(store.lockoutUntilMillis - monotonicMillis(), 0), duration)
+    }
+
+    /// Sets or replaces the PIN. Returns the policy verdict; nothing is stored
+    /// unless it is `.valid`.
+    ///
+    /// The caller must have established the right to do this — the settings
+    /// screen re-authenticates first. This method does not, deliberately: a
+    /// method that sometimes prompts and sometimes does not is one nobody can
+    /// audit at the call site.
+    @discardableResult
+    func setPin(_ pin: String) throws -> PinPolicyResult {
+        let verdict = PinPolicy.validate(pin)
+        guard verdict == .valid else { return verdict }
+        try store.setPin(try PinHasher.hash(pin: pin, pepper: pepper))
+        try? store.resetFailedAttempts()
+        sessionFailedAttempts = 0
+        return .valid
+    }
+
+    /// Removes the PIN and disarms the tripwire with it.
+    func clearPin() throws {
+        try store.clearPin()
+        try? store.resetFailedAttempts()
+        sessionFailedAttempts = 0
+    }
+
+    /// Unlocks the app with a PIN, under the ladder and the wipe threshold.
+    func attemptPinUnlock(_ pin: String) async -> UnlockAttemptOutcome {
+        await serialized {
+            let outcome = await self.verify(pin)
+            guard outcome == .success else { return outcome }
+            // Repopulate the gated secret **before** clearing the lock, and
+            // leave the app locked if it cannot be read — the same rule
+            // `requestUnlock` follows, and for the same reason.
+            if let load = self.loadGatedSecret, self.cachedGatedSecret == nil {
+                guard let secret = load() else { return .gatedSecretUnavailable }
+                self.cachedGatedSecret = secret
+            }
+            self.failedUnlockAttempts = 0
+            self.isLocked = false
+            self.onUnlock?()
+            return .success
+        }
+    }
+
+    /// Verifies a PIN **without** unlocking — for a screen confirming one
+    /// destructive action.
+    ///
+    /// Every PIN check has to come through here or `attemptPinUnlock`. Android's
+    /// settings screens called the store's verifier directly, which meant
+    /// unlimited untimed guesses that never advanced the wipe counter —
+    /// precisely the unthrottled second entry point the ladder exists to close.
+    func verifyPinThrottled(_ pin: String) async -> UnlockAttemptOutcome {
+        await serialized { await self.verify(pin) }
+    }
+
+    private func serialized(
+        _ body: @escaping () async -> UnlockAttemptOutcome
+    ) async -> UnlockAttemptOutcome {
+        let previous = inFlightAttempt
+        let task = Task { @MainActor in
+            _ = await previous?.value
+            return await body()
+        }
+        inFlightAttempt = task
+        return await task.value
+    }
+
+    /// The whole check-verify-account sequence — the lockout gate, the
+    /// verification, and the accounting for a failure — run under `serialized`
+    /// by every entry point.
+    ///
+    /// It deliberately does **not** unlock. What happens after a correct PIN is
+    /// the only thing that distinguishes the callers, and keeping it out here is
+    /// what stops the two of them growing separate copies of this accounting.
+    private func verify(_ pin: String) async -> UnlockAttemptOutcome {
+        let remaining = remainingLockoutMillis
+        guard remaining <= 0 else { return .rejected(delayMillis: remaining) }
+
+        let stored: PinHash
+        switch store.storedPin {
+        case .configured(let hash): stored = hash
+        case .absent: return .notConfigured
+        case .unreadable: return .verifierUnavailable
+        }
+
+        // Run inline, on the main actor. 150k PBKDF2 iterations is roughly 20ms
+        // — a hitch on a modal unlock, not a freeze — and the obvious
+        // alternative, hopping to a detached task, buys that back at the cost of
+        // letting a second attempt interleave at the suspension point. The
+        // serialisation above is what makes the counter correct, and keeping the
+        // check synchronous is what keeps it simple enough to trust.
+        let verified: Bool
+        do {
+            verified = try PinHasher.matches(pin: pin, stored: stored, pepper: pepper)
+        } catch {
+            // Not a wrong PIN, and it must not be counted as one — the
+            // increment below is what feeds the wipe threshold.
+            Log.app.error("PIN verifier is unevaluable; refusing to count an attempt: \(error)")
+            return .verifierUnavailable
+        }
+
+        if verified {
+            try? store.resetFailedAttempts()
+            sessionFailedAttempts = 0
+            return .success
+        }
+
+        let attempts = max(store.failedAttempts, sessionFailedAttempts) + 1
+        sessionFailedAttempts = attempts
+        do {
+            try store.setFailedAttempts(attempts)
+        } catch {
+            // Session-scoped throttling still holds; what is lost is durability
+            // across a force-quit. Loud, because that is the difference between
+            // ten guesses and unlimited ones.
+            Log.app.error("Could not persist the failed-attempt count: \(error.localizedDescription)")
+        }
+
+        if LockoutPolicy.shouldWipe(attemptCount: attempts) {
+            guard let onWipe else {
+                Log.app.error("Wipe threshold reached with no wipe wired up")
+                return .wipeFailed(failedSteps: ["wipeNotConfigured"], willRetry: false)
+            }
+            switch await onWipe() {
+            case .complete:
+                return .wiped
+            case .incomplete(let failedSteps, let willRetry):
+                return .wipeFailed(failedSteps: failedSteps, willRetry: willRetry)
+            }
+        }
+
+        let delay = LockoutPolicy.delayMillis(forAttemptCount: attempts)
+        if delay > 0 {
+            try? store.setLockout(untilMillis: monotonicMillis() + delay, durationMillis: delay)
+        }
+        return .rejected(delayMillis: delay)
+    }
+
     private func applyLockEnabled(_ enabled: Bool) -> Bool {
         do {
             try store.setLockEnabled(enabled)
@@ -201,6 +458,10 @@ final class AppLockManager {
         if !enabled {
             isLocked = false
             failedUnlockAttempts = 0
+            // The PIN belongs to the lock. Left behind, it would be a verifier
+            // for a gate that no longer exists — and the tripwire it arms would
+            // still be watching for its disappearance.
+            try? clearPin()
         }
         return true
     }

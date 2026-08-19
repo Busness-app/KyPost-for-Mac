@@ -99,6 +99,17 @@ final class PushNotificationDispatcher: NSObject {
 
     /// Processes a remote payload (APNs wake or `xcrun simctl push`).
     func handleIncoming(userInfo: [AnyHashable: Any]) async {
+        // Refuse everything after a wipe that gave up. That state means a wipe
+        // ran because this Mac was presumed to be in the wrong hands, it could
+        // not delete everything, and it has stopped trying — and the pairing
+        // credential is one of the likelier survivors. Recording an arrival
+        // here would write sender and subject back into a machine the app has
+        // already decided is compromised. The blocking screen covers windows;
+        // this path never presents one.
+        guard !SingletonGraph.shared.securityWipe.blockedByAbandonedWipe else {
+            Log.push.error("Ignoring a push: a previous wipe was abandoned with data still on disk")
+            return
+        }
         guard let payload = PushPayloadMapper.map(userInfo: userInfo) else {
             Log.push.warning("Ignoring unrecognized push payload")
             return
@@ -132,6 +143,7 @@ final class PushNotificationDispatcher: NSObject {
         redactContent: Bool? = nil
     ) async {
         guard pushSettingsStore.systemNotificationsEnabled else { return }
+        guard !SingletonGraph.shared.securityWipe.blockedByAbandonedWipe else { return }
         let redact = redactContent ?? SingletonGraph.shared.appLockManager.isLocked
 
         let content = UNMutableNotificationContent()

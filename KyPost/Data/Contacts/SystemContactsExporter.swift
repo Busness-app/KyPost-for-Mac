@@ -363,9 +363,15 @@ final class SystemContactsExporter {
     /// created and forgets the links. Cards the user created in Contacts.app
     /// (imports) are kept and baselined so they aren't re-imported. Works
     /// with the toggle off.
+    ///
+    /// Returns the whole `Summary`, not just the count removed. `deleteLinked`
+    /// drops a link even when the provider refused the delete — so a caller
+    /// that has to *report* whether anything survived cannot ask
+    /// `hasExportedContacts` afterwards and get a truthful answer.
+    /// `SecurityWipe` is that caller, and `failed` is what it reads.
     @discardableResult
-    func removeAllExported() async -> Int {
-        guard isAuthorized else { return 0 }
+    func removeAllExported() async -> Summary {
+        guard isAuthorized else { return Summary() }
         let summary = await serialized {
             var summary = Summary()
             for link in self.linkStore.all() {
@@ -383,7 +389,7 @@ final class SystemContactsExporter {
             }
             return summary
         }
-        return summary.deleted
+        return summary
     }
 
     // MARK: - Private

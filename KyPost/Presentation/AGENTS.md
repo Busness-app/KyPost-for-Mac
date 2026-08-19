@@ -34,6 +34,21 @@ Domain.
   back to that button handed the downgrade to whoever shapes the push payload.
   `MfaApprovalViewModel.respond` refuses a numberless approval before any
   request, and the server refuses it too.
+- **The lock screen leads with a PIN when one is set**, and auto-prompts
+  `LAContext` only when one is not. A system authentication sheet raised over a
+  PIN field asks for something the user did not ask for; a PIN exists only
+  because they chose it. Removing a PIN is an *off* path and re-authenticates
+  like the rest.
+- **Every PIN outcome gets its own sentence, and `verifierUnavailable` is the
+  one that matters.** It means the PIN was *not* wrong — telling the user it was
+  invites them to burn attempts against a threshold that outcome deliberately
+  does not advance. The two wipe outcomes say nothing on the lock screen: the
+  wipe rebuilds the app underneath it, so the notice is carried in
+  `AppEnvironment.wipeNotice` and rendered by the rebuilt window.
+- **"Erased" and "partly erased" are different banners**, and "it will be
+  retried" must never be shown by the run that stopped retrying. An abandoned
+  wipe replaces the whole app with `ManualRecoveryView` rather than warning
+  above it.
 - **Every *off* path in Security settings re-authenticates first.** Turning a
   protection off is the destructive direction and the pane is reachable from
   the macOS menu bar. Authentication must precede the downgrade, not follow

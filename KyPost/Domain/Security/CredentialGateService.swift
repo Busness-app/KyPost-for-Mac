@@ -169,11 +169,22 @@ extension CredentialGateService: PairingSecretGate {
     }
 
     /// Unpair: the gated copy goes with the pairing.
-    func removeAll() {
-        try? gatedStore.remove()
-        try? appLockStore.setCredentialGateEnabled(false)
+    ///
+    /// Returns the names of anything it could not remove, and keeps going past
+    /// the first failure. `SecurityWipe` needs the names — a step that cannot
+    /// fail cannot be reported, and the pairing credential surviving a wipe is
+    /// exactly what an incomplete result exists to say. Callers that are simply
+    /// tidying up may discard the result.
+    @discardableResult
+    func removeAll() -> [String] {
+        var failures: [String] = []
+        do { try gatedStore.remove() } catch { failures.append("deleteGatedSecret") }
+        do { try appLockStore.setCredentialGateEnabled(false) } catch {
+            failures.append("clearCredentialGateFlag")
+        }
         isEnabled = false
         lockManager.cacheGatedSecret(nil)
         unwire()
+        return failures
     }
 }

@@ -18,6 +18,11 @@ private enum PushLifecycle {
 
     static func onLaunch() {
         let graph = SingletonGraph.shared
+        // First, and guarded against re-entry: a wipe rebuilds the graph, and a
+        // rebuild re-runs this function. The root view holds a neutral
+        // placeholder until the verdict settles, so no screen reads cached data
+        // the tripwire is about to have erased.
+        Task { await AppEnvironment.shared.enforceWipeAtStartupOnce() }
         // Memory pressure is the moment the kernel starts looking for pages to
         // swap, and a private key written to a swap file has outlived every
         // boundary this app controls.
@@ -49,6 +54,11 @@ private enum PushLifecycle {
         // While locked, onForeground is skipped; run the deferred sync the
         // moment the user unlocks instead.
         graph.appLockManager.onUnlock = { onForeground() }
+        // The wipe threshold is only real if something is wired to act on it.
+        // Left unset, `AppLockManager` reports the eleventh wrong PIN as a wipe
+        // that could not run rather than silently rejecting it, so a missing
+        // wiring is visible instead of quietly disabling the whole ladder.
+        graph.appLockManager.onWipe = { await AppEnvironment.shared.performSecurityWipe() }
         Task {
             await graph.pushNotificationDispatcher.requestAuthorization()
         }

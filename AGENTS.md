@@ -96,6 +96,26 @@ Default section order:
   Note `parallelizable` belongs on each entry in `testTargets`, not in
   `defaultOptions`, where it is silently ignored.
 
+- **Roughly one run in three dies with a Go runtime crash**, unrelated to any
+  test:
+
+  ```
+  signal 16 received on thread with no signal stack
+  fatal error: non-Go code disabled sigaltstack
+  ```
+
+  Signal 16 is `SIGURG`, which Go uses for goroutine preemption; it arrives on a
+  thread whose alternate signal stack something else has removed. It comes from
+  the GopenPGP XCFramework's embedded Go runtime, which is live for the whole
+  test process once any test touches PGP, and it fails the run with exit 65.
+
+  **Measured against `8152c1b`, before the app-lock PIN work, at the same rate**
+  (1 of 3 there, 1 of 3 after) — so it arrived with the XCFramework in Phase 8,
+  not with anything since. Re-run before investigating a failing suite; if the
+  only failure is this line, nothing is wrong with the code. It does mean a CI
+  job that runs the tests will be flaky, and retrying the job is the current
+  answer.
+
 ## Local Contracts
 
 ### The OpenPGP library (`Dependencies/GopenPGP`, `Domain/Security/PgpCrypto.swift`)
@@ -285,6 +305,61 @@ is not testing which keys are trusted.
   the candidate set, never grant a pass, and subkey ids must match — a signing
   subkey's id differs from the primary's, so matching only the primary rejects
   every normally signed message.
+
+### App lock, PIN, lockout and wipe (`Domain/Security/AppLockManager|SecurityWipe`)
+
+Phase 11 **reversed** the earlier "verification is `LAContext`'s job, lockout is
+the OS's" position. It held while `LAContext` was the only verifier; a PIN
+checked in this process has no OS counter behind it, so this app owns the
+throttle. `AppLockStore` and the README say so in place rather than having the
+old sentence edited out.
+
+- **A PIN that cannot be *checked* is not a wrong PIN.** `PepperUnavailable` →
+  `UnlockAttemptOutcome.verifierUnavailable`, which does **not** advance the
+  wipe counter. Folding the two together is how Android destroyed user data in
+  response to an OS-level key invalidation the user neither caused nor could
+  avoid. `PinHasher.matches` therefore throws instead of returning false.
+- **`PinPepper.ensureExists` is only called when setting a PIN**, never when
+  verifying one. Minting a pepper on the verify path makes every later correct
+  PIN read as wrong, and ten of those wipe the machine.
+- **Minimum length is 8, not 6.** Iteration count cannot defend a small
+  keyspace; the pepper forces brute force on-device, and 10^6 is an hour of
+  that where 10^8 is days. Runs, repeats, keypad walks and dates are refused
+  because ten guesses makes them a real risk.
+- **Every PIN check goes through `attemptPinUnlock` or `verifyPinThrottled`.**
+  A screen that checks the store directly is an unthrottled oracle that never
+  advances the wipe counter. Both serialise through one in-flight task: two
+  concurrent checks otherwise read the same count, both write `n + 1`, and both
+  clear the lockout gate at the same instant.
+- The lockout deadline is on **`CLOCK_MONOTONIC_RAW`**, and clamped to the
+  stored duration. A wall clock is cleared from the Date & Time pane; a
+  monotonic one restarts at zero on reboot, so without the clamp a reboot reads
+  the deadline as the whole previous uptime.
+- **The tripwire is armed by `setPin`, not by `setLockEnabled`.** The PIN is
+  optional on this platform, so arming it with the toggle would make
+  "configured, and the PIN vanished" true immediately and wipe the machine at
+  the next launch. `unreadable` never arms it either — a Keychain that will not
+  answer yet is the ordinary state of a Mac mid-launch.
+- **The wipe fails closed.** `WipeResult.complete` is only returned when every
+  step ran; a step must not catch its own errors, or the step cannot fail and
+  the claim cannot be supported. An incomplete run keeps its marker, resumes at
+  the next launch, and after `SecurityWipe.maxResumes` sets `abandoned` —
+  which stops the retries **without** forgetting. Clearing the marker to
+  express "giving up" is the bug that presented a clean first-run app over data
+  that was never deleted.
+- **Order: in-memory plaintext, then local files, then network.** The
+  deregister is not a step and is never folded into the result — an unreachable
+  relay says nothing about local data, and counting it would keep the resume
+  marker set forever.
+- **Read the pairing before the wipe, not at the deregister's call site.** The
+  `pairing` step deletes what that call authenticates with.
+- The Hostile Location Protection posture is captured at the start and restored
+  after the defaults sweep, and is **sticky across resumes** — re-reading it on
+  a resumed run reads defaults the interrupted run already swept and loses the
+  setting permanently.
+- `SecurityWipe` takes its steps as a parameter. That is what makes its whole
+  exit table a plain unit test; `SecurityWipeSteps` is the only half that knows
+  about SwiftData, Contacts and the Keychain.
 
 ### Phishing flag and message-body navigation
 

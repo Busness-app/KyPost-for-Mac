@@ -2,11 +2,20 @@
 //  AppLockStore.swift
 //  KyPost
 //
-//  Keychain-backed app-lock settings (security-hardening plan, Task 1).
-//  Keys are a binding contract: appLock.enabled,
-//  appLock.credentialGateEnabled. Deliberately no PIN or lockout fields —
-//  verification is LAContext's job, lockout is the OS's (see the design's
-//  "lean on the platform passcode" decision).
+//  Keychain-backed app-lock settings and PIN state. Keys are a binding
+//  contract: appLock.enabled, appLock.credentialGateEnabled, appLock.pinSalt,
+//  appLock.pinHash, appLock.pinVersion, appLock.failedAttempts,
+//  appLock.lockoutUntil, appLock.lockoutDuration.
+//
+//  **The PIN fields reverse this file's original decision.** It used to say
+//  "deliberately no PIN or lockout fields — verification is LAContext's job,
+//  lockout is the OS's". That held while `LAContext` was the only verifier:
+//  the OS throttles guesses at the device passcode, so there was nothing for
+//  this app to count. An app-lock PIN of our own has no such backstop — a PIN
+//  checked in-process is an unthrottled oracle unless something here counts
+//  the attempts — so the ladder and the wipe threshold live in
+//  `LockoutPolicy`, and their state lives here. `LAContext` remains the
+//  verifier wherever a PIN is not configured.
 //
 
 import Foundation
@@ -15,7 +24,18 @@ final class AppLockStore: Sendable {
     private enum Key {
         static let lockEnabled = "appLock.enabled"
         static let credentialGateEnabled = "appLock.credentialGateEnabled"
+        static let pinSalt = "appLock.pinSalt"
+        static let pinHash = "appLock.pinHash"
+        static let pinVersion = "appLock.pinVersion"
+        static let failedAttempts = "appLock.failedAttempts"
+        static let lockoutUntil = "appLock.lockoutUntil"
+        static let lockoutDuration = "appLock.lockoutDuration"
     }
+
+    /// The unencrypted companion marker — see `tripwireBroken`. In
+    /// `UserDefaults` on purpose: it has to survive the disappearance of the
+    /// Keychain items it vouches for.
+    private static let tripwireKey = "appLock.wasConfigured"
 
     /// A stored flag, or the fact that it could not be read.
     ///
@@ -24,16 +44,28 @@ final class AppLockStore: Sendable {
     /// routine, transient status on a Mac whose Keychain is not ready yet, and
     /// collapsing it into "the user turned this off" let one flaky read move
     /// the device secret out from behind user presence for good.
-    enum FlagState: Equatable {
+    nonisolated enum FlagState: Equatable {
         case on
         case off
         case unreadable
     }
 
-    private let keychain: KeychainStorage
+    /// The same discipline for the PIN itself, and here it is load-bearing in
+    /// a much louder way: `absent` while `tripwireBroken` is armed destroys the
+    /// user's local data, so a Keychain that merely will not answer must never
+    /// be able to produce it.
+    nonisolated enum StoredPin: Equatable {
+        case configured(PinHash)
+        case absent
+        case unreadable
+    }
 
-    init(keychain: KeychainStorage) {
+    private let keychain: KeychainStorage
+    private let defaults: UserDefaults
+
+    init(keychain: KeychainStorage, defaults: UserDefaults = .standard) {
         self.keychain = keychain
+        self.defaults = defaults
     }
 
     /// Feature 1: Require Unlock to Open. Callers that only decide what to
@@ -51,6 +83,11 @@ final class AppLockStore: Sendable {
 
     var lockEnabled: Bool { lockState == .on }
 
+    /// **Does not arm the tripwire.** The marker vouches for a stored PIN, and
+    /// on this platform the PIN is optional — the lock can be on with `LAContext`
+    /// as the only verifier. Arming it here would make "a lock was configured
+    /// but there is no PIN" true the instant the toggle went on, and the next
+    /// launch would erase the user's mail for switching a setting.
     func setLockEnabled(_ enabled: Bool) throws {
         try keychain.set(enabled ? "true" : "false", forKey: Key.lockEnabled)
     }
@@ -64,5 +101,129 @@ final class AppLockStore: Sendable {
 
     func setCredentialGateEnabled(_ enabled: Bool) throws {
         try keychain.set(enabled ? "true" : "false", forKey: Key.credentialGateEnabled)
+    }
+
+    // MARK: - PIN
+
+    var storedPin: StoredPin {
+        do {
+            guard let salt = try keychain.string(forKey: Key.pinSalt),
+                  let hash = try keychain.string(forKey: Key.pinHash),
+                  let saltData = Data(base64Encoded: salt),
+                  let hashData = Data(base64Encoded: hash)
+            else { return .absent }
+            // A missing version is not a legacy verifier — this app has never
+            // shipped one — so it is a partially written record, which must not
+            // read as "no PIN configured".
+            guard let version = try keychain.string(forKey: Key.pinVersion).flatMap(Int.init) else {
+                return .unreadable
+            }
+            return .configured(PinHash(salt: saltData, hash: hashData, version: version))
+        } catch {
+            return .unreadable
+        }
+    }
+
+    var hasPin: Bool {
+        if case .configured = storedPin { return true }
+        return false
+    }
+
+    /// Writes the verifier and arms the tripwire.
+    ///
+    /// Order is the point, and it is the opposite of `clearPin`'s: the marker
+    /// goes down **after** the hash exists, so an interruption leaves a PIN
+    /// with no marker (harmless — the tripwire simply does not fire) rather
+    /// than a marker with no PIN, which is the state that wipes the device.
+    func setPin(_ hash: PinHash) throws {
+        try keychain.set(hash.salt.base64EncodedString(), forKey: Key.pinSalt)
+        try keychain.set(hash.hash.base64EncodedString(), forKey: Key.pinHash)
+        try keychain.set(String(hash.version), forKey: Key.pinVersion)
+        defaults.set(true, forKey: Self.tripwireKey)
+    }
+
+    /// Removes the verifier. The tripwire goes **first**: `tripwireBroken` is
+    /// "a lock was configured but the PIN is gone", so clearing the hash first
+    /// opens a window in which that is momentarily true, and a crash inside it
+    /// destroys the user's data in response to them switching a setting off.
+    func clearPin() throws {
+        defaults.set(false, forKey: Self.tripwireKey)
+        try keychain.remove(Key.pinSalt)
+        try keychain.remove(Key.pinHash)
+        try keychain.remove(Key.pinVersion)
+    }
+
+    /// Whether a lock was ever configured on this machine.
+    var wasConfigured: Bool { defaults.bool(forKey: Self.tripwireKey) }
+
+    /// The Keychain lost the PIN while the plain marker still says one was
+    /// stored — OS-level invalidation, a restore to a new machine, or
+    /// someone deleting the item to disable the lock. `SecurityWipe` turns
+    /// this into a wipe at startup, so the inbox is not opened over a cache
+    /// the lock was supposed to be guarding.
+    ///
+    /// **`unreadable` deliberately does not arm it.** A Keychain that will not
+    /// answer yet is the ordinary state of a Mac a few hundred milliseconds
+    /// into launch, and treating that as tampering would erase the user's mail
+    /// for a transient status.
+    var tripwireBroken: Bool { wasConfigured && storedPin == .absent }
+
+    // MARK: - Lockout accounting
+
+    /// Consecutive wrong attempts. A read failure answers 0 — the manager
+    /// keeps its own session-scoped count and takes whichever is higher, so a
+    /// Keychain that will not answer cannot hand an attacker a fresh budget
+    /// inside one run of the app.
+    var failedAttempts: Int {
+        Int((try? keychain.string(forKey: Key.failedAttempts)) ?? "") ?? 0
+    }
+
+    func setFailedAttempts(_ count: Int) throws {
+        try keychain.set(String(count), forKey: Key.failedAttempts)
+    }
+
+    /// Lockout deadline on the **monotonic** timebase (`ContinuousClock`), not
+    /// the wall clock: a wall-clock deadline is cleared by setting the date
+    /// forward, which is not a defence at all. `lockoutDurationMillis` is
+    /// stored beside it purely to clamp the remaining time after a reboot,
+    /// where the monotonic clock restarts and the stored deadline would
+    /// otherwise read as the machine's entire previous uptime.
+    var lockoutUntilMillis: Int64 {
+        Int64((try? keychain.string(forKey: Key.lockoutUntil)) ?? "") ?? 0
+    }
+
+    var lockoutDurationMillis: Int64 {
+        Int64((try? keychain.string(forKey: Key.lockoutDuration)) ?? "") ?? 0
+    }
+
+    func setLockout(untilMillis: Int64, durationMillis: Int64) throws {
+        try keychain.set(String(untilMillis), forKey: Key.lockoutUntil)
+        try keychain.set(String(durationMillis), forKey: Key.lockoutDuration)
+    }
+
+    func resetFailedAttempts() throws {
+        try setFailedAttempts(0)
+        try setLockout(untilMillis: 0, durationMillis: 0)
+    }
+
+    /// Clears the PIN, both feature flags and the attempt counters — the
+    /// app-lock half of `SecurityWipe`, and also what "turn off Require Unlock
+    /// to Open" runs.
+    ///
+    /// Tripwire first, for `clearPin`'s reason. Every removal is attempted
+    /// even after one fails, and the first error is rethrown: a caller told
+    /// "the lock could not be cleared" while three of five items are already
+    /// gone is better served by the remaining two also being gone.
+    func reset() throws {
+        defaults.set(false, forKey: Self.tripwireKey)
+        var firstError: Error?
+        for key in [
+            Key.pinSalt, Key.pinHash, Key.pinVersion,
+            Key.failedAttempts, Key.lockoutUntil, Key.lockoutDuration,
+            Key.lockEnabled, Key.credentialGateEnabled,
+        ] {
+            do { try keychain.remove(key) } catch { firstError = firstError ?? error }
+        }
+        if let firstError { throw firstError }
     }
 }

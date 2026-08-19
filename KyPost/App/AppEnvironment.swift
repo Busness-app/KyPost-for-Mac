@@ -141,6 +141,125 @@ final class AppEnvironment {
         }
     }
 
+    /// The security wipe, end to end: capture what the network step will need,
+    /// destroy everything local, tell the relay, then rebuild the graph.
+    ///
+    /// The pairing is read **before** the destruction, not at the deregister's
+    /// call site. `pairing` is one of the steps below, so reading it at call
+    /// time meant the deregister could only ever report "not registered" and
+    /// the server kept pushing to a wiped device forever. Holding it in memory
+    /// for the duration costs nothing — the same secret was already in memory
+    /// to get here, and this process is about to be rebuilt.
+    ///
+    /// The deregister is deliberately **not** folded into the result. An
+    /// unreachable relay says nothing about whether the data on this machine is
+    /// gone, every byte of which is already deleted by that line. Counting it
+    /// would tell an offline user their mail might still be here when it is
+    /// not, and would keep the resume marker set so the app re-ran the whole
+    /// destructive pass at every launch until the server came back.
+    @discardableResult
+    func performSecurityWipe() async -> WipeResult {
+        let graph = self.graph
+        let pairing = try? graph.securePairingStore.loadPairing()
+        let deregisterClient = graph.deregisterClient
+        let hostileLocationEnabled = graph.hostileLocationProtectionStore.enabled
+        let hostileStore = graph.hostileLocationProtectionStore
+
+        let result = await graph.securityWipe.run(
+            steps: SecurityWipeSteps.build(graph: graph, defaultsDomain: Bundle.main.bundleIdentifier),
+            hostileLocationEnabled: hostileLocationEnabled,
+            restoreHostileLocation: { hostileStore.enabled = true }
+        )
+
+        if let pairing, let deviceId = pairing.lastDeviceId, !deviceId.isEmpty,
+           !pairing.deviceSecret.isEmpty {
+            let outcome = await deregisterClient.deregister(
+                serverUrl: pairing.srv, auth: RelayAuth(pairing: pairing)
+            )
+            if case .failure(let message) = outcome {
+                Log.app.error(
+                    """
+                    Local wipe finished but server deregistration failed (\(message)); \
+                    the relay may keep pushing to this device until it is removed server-side
+                    """
+                )
+            }
+        }
+
+        // Recorded before the rebuild, which replaces the graph the wipe just
+        // emptied — and would take a notice stored there with it.
+        wipeNotice = result
+
+        // Rebuilding is what actually closes the SwiftData container's file
+        // descriptors on the store the wipe unlinked, and what brings the app
+        // back up in the unpaired, unlocked state the wipe leaves behind.
+        do {
+            try rebuild { try SingletonGraph() }
+        } catch {
+            Log.app.error("Could not rebuild the graph after a wipe: \(error.localizedDescription)")
+        }
+        return result
+    }
+
+    /// Where the startup wipe check has got to.
+    ///
+    /// The check is a **gate**, and `.pending` exists so it can be used as one:
+    /// the root view renders nothing but a neutral placeholder until this
+    /// settles. Android ran the equivalent inside a fire-and-forget coroutine
+    /// under a comment claiming it ran "before anything reads cached data" —
+    /// a claim the launch path could not make — so someone who deleted the
+    /// app-lock state to disable the lock got the inbox rendered with every
+    /// cached message intact, and the wipe landed a few hundred milliseconds
+    /// later, tearing the database out from under a live screen.
+    enum StartupWipeVerdict: Equatable {
+        case pending
+        /// The check finished. `nil` means nothing was needed; a value is the
+        /// result of the wipe that ran, so the first screen can say what
+        /// actually happened rather than claiming an erasure that failed.
+        case settled(WipeResult?)
+    }
+
+    private(set) var startupWipeVerdict: StartupWipeVerdict = .pending
+
+    /// Set when a wipe finishes, and held here rather than in the graph
+    /// because the graph is replaced by the wipe's own rebuild — a notice
+    /// stored in it would be destroyed by the event it describes.
+    private(set) var wipeNotice: WipeResult?
+
+    func dismissWipeNotice() { wipeNotice = nil }
+
+    /// Runs the startup gate exactly once per process.
+    ///
+    /// Once, because a wipe rebuilds the graph and a rebuild re-runs the launch
+    /// wiring: without the guard, a wipe would re-enter this and wipe again,
+    /// forever.
+    func enforceWipeAtStartupOnce() async {
+        guard startupWipeVerdict == .pending, !startupCheckBegun else { return }
+        startupCheckBegun = true
+
+        let graph = self.graph
+        // Checked before the resume, and never cleared by anything but a clean
+        // run: past the ceiling the app stops re-running the destructive pass,
+        // but it does not stop knowing that data may still be here.
+        if let abandoned = graph.securityWipe.abandonedWipe {
+            startupWipeVerdict = .settled(abandoned)
+            return
+        }
+        // A wipe that started and never finished is resumed before anything
+        // else, *including the tripwire check* — the interrupted run may have
+        // deleted the app-lock state the tripwire reads, so relying on the
+        // tripwire alone would leave the rest undone forever. Re-running is
+        // safe: every step is idempotent.
+        guard graph.securityWipe.hasInterruptedWipe || graph.appLockStore.tripwireBroken else {
+            startupWipeVerdict = .settled(nil)
+            return
+        }
+        let result = await performSecurityWipe()
+        startupWipeVerdict = .settled(result)
+    }
+
+    private var startupCheckBegun = false
+
     /// Escape hatch from the app lock, offered by UnlockView after repeated
     /// authentication failures.
     ///

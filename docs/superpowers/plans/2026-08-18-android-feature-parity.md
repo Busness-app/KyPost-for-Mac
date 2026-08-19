@@ -71,20 +71,21 @@ actions and draft save have all landed. Fix it in Phase 0.
 
 Cheap, unblocks the rest, no runtime change.
 
-1. **Import `Mobile_Mail_Relay.md`.** `README.md` and `AGENTS.md` both name it
-   as the source of truth for relay endpoints and payload shapes, and the file
-   does not exist in this repo. Copy it from Android and mark it as mirrored,
-   not owned.
-2. **Update this repo's `Client_Encrypted_Send.md`.** Android's copy carries a
-   "PARTLY SUPERSEDED" banner explaining that its central premise — "This
-   device never holds the account's private key" — stopped being true when
-   enrollment landed. Ours still asserts the superseded premise as fact, and
-   Phases 7–10 will contradict it. Port the banner, adapted.
-3. **Rewrite `README.md`'s known-gaps list** to what is actually missing.
-4. **Add `SECURITY.md`.** Android has one that is honest about where each
-   control stops. This app has none, and it ships the same TOFU pinning, the
-   same HLP tradeoffs and (after Phase 8) the same on-device key. Mirror the
-   structure; the Apple specifics differ.
+1. ~~**Import `Mobile_Mail_Relay.md`.**~~ **Done 2026-08-18.** Mirrored from
+   Android with a "mirrored, not owned" banner: it is written from the Android
+   app's point of view, and Mac-specific behaviour belongs in `AGENTS.md` or
+   `Client_Encrypted_Send.md` rather than in edits to it.
+2. ~~**Update this repo's `Client_Encrypted_Send.md`.**~~ **Done 2026-08-18**,
+   once Phases 7–10 had actually contradicted the superseded premise. The
+   banner is adapted to this app's names: Secure Enclave rather than StrongBox,
+   `EnrollmentVault`, and the GopenPGP XCFramework behind `PgpCrypto.swift`.
+3. ~~**Rewrite `README.md`'s known-gaps list**~~ **Done 2026-08-18.**
+   Attachments, delta sync and read/archive/delete had all landed and were
+   still listed. What replaced them includes the honest one: the on-device
+   encrypted send and read paths have never run against a live relay.
+4. ~~**Add `SECURITY.md`.**~~ **Done 2026-08-18**, after Phase 11, so the
+   app-lock section describes the ladder and the fail-closed wipe that now
+   exist rather than promising them.
 5. ~~**Add `CONTRIBUTING.md` and `CODE_OF_CONDUCT.md`**~~ — already landed
    upstream in `7e1fbbf`.
 6. **Fix `main`, which does not compile** (found 2026-08-18, present on
@@ -613,7 +614,29 @@ Exit table as distinct cases again: `sent`, `cancelled`, `notEnrolled`,
 
 ---
 
-## Phase 11 — App-lock PIN, lockout ladder, and wipe
+## Phase 11 — App-lock PIN, lockout ladder, and wipe — **done 2026-08-18**
+
+Shipped as `PinPolicy`, `LockoutPolicy`, `PinHasher` + `PinPepper`, the PIN and
+lockout fields on `AppLockStore`, `WipeStateStore`, `SecurityWipe` +
+`SecurityWipeSteps`, and the PIN half of `AppLockManager`. UI: PIN entry in
+`UnlockView`, `AppPinSetupView`, the App PIN section in `SecuritySettingsView`,
+and `ManualRecoveryView` / `SecurityWipeNoticeBanner`.
+
+Two deviations from the Android source, both deliberate:
+
+- **The PIN is optional here**, because `LAContext` is a real verifier on a Mac
+  where Android's screen lock is not a substitute for the app PIN. That changes
+  where the tripwire is armed — `setPin`, not `setLockEnabled` — since arming it
+  with the toggle would make "configured, and the PIN vanished" true the instant
+  the user switched the lock on.
+- **The pepper is a Secure Enclave key agreement**, falling back to a
+  device-only Keychain key where no enclave exists, with the backing recorded in
+  the stored value so an existing verifier stays evaluable either way.
+
+Not ported: Android's `BiometricUnlockVault` PIN-derived credential sealing.
+This app's credential gate already binds to the Keychain's own access control
+rather than to PIN-derived keys, so there is nothing here for a PIN change to
+re-seal.
 
 **This reverses a written decision.** `AppLockStore.swift:6-8` and the README
 both state that verification is `LAContext`'s job and lockout is the OS's.

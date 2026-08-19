@@ -113,8 +113,36 @@ struct KyPostApp: App {
         .modelContainer(environment.graph.database.container)
     }
 
+    /// The startup wipe gate, then the app.
+    ///
+    /// Three states, and the order is the point. An abandoned wipe blocks
+    /// everything — data the wipe could not remove is still here, and the
+    /// pairing is often part of it. A pending verdict shows a neutral
+    /// placeholder rather than the inbox, because a tripwire that is about to
+    /// fire must not have rendered the cached mail first. Only then the app,
+    /// with a one-time notice above it if a wipe just ran.
     @ViewBuilder
     private var rootView: some View {
+        if case .incomplete(let steps, false) = graph.securityWipe.abandonedWipe {
+            // Read from the graph, not from `startupWipeVerdict`: a wipe
+            // triggered at runtime by ten wrong PINs reaches this state without
+            // the startup check ever having seen it, and the block must not wait
+            // for a relaunch.
+            ManualRecoveryView(failedSteps: steps)
+        } else if environment.startupWipeVerdict == .pending {
+            StartupGatePlaceholder()
+        } else {
+            VStack(spacing: 0) {
+                if let notice = environment.wipeNotice {
+                    SecurityWipeNoticeBanner(result: notice) { environment.dismissWipeNotice() }
+                }
+                appContent
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var appContent: some View {
 #if os(macOS)
         MacRootView()
 #else
@@ -146,3 +174,21 @@ private struct CloseOnHostileLocationProtection: ViewModifier {
     }
 }
 #endif
+
+/// Held while the startup wipe check runs. Deliberately says nothing about
+/// mail: if the tripwire fires, everything this window could have shown is
+/// about to be deleted.
+private struct StartupGatePlaceholder: View {
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+            Text("Checking this Mac…")
+                .font(AppFont.ui(13))
+                .foregroundStyle(theme.ink.opacity(0.8))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(theme.bg)
+    }
+}

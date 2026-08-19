@@ -27,6 +27,10 @@ final class SettingsViewModel {
     private let deviceRegistrationService: DeviceRegistrationService
     private let deregisterDeviceUseCase: DeregisterDeviceUseCase
     private let pushNotificationDispatcher: PushNotificationDispatcher
+    /// The sealed OpenPGP envelope, so unpairing destroys it. Optional for the
+    /// same reason `appLockManager` is: existing tests build this view model
+    /// without one.
+    private let enrollmentVault: EnrollmentVault?
     /// Re-authentication for the destructive actions on this screen. Optional
     /// so existing call sites and tests that don't exercise the lock keep
     /// working; nil means "no lock configured", i.e. proceed.
@@ -64,6 +68,7 @@ final class SettingsViewModel {
         deviceRegistrationService: DeviceRegistrationService,
         deregisterDeviceUseCase: DeregisterDeviceUseCase,
         pushNotificationDispatcher: PushNotificationDispatcher,
+        enrollmentVault: EnrollmentVault? = nil,
         appLockManager: AppLockManager? = nil
     ) {
         self.securePairingStore = securePairingStore
@@ -76,6 +81,7 @@ final class SettingsViewModel {
         self.deviceRegistrationService = deviceRegistrationService
         self.deregisterDeviceUseCase = deregisterDeviceUseCase
         self.pushNotificationDispatcher = pushNotificationDispatcher
+        self.enrollmentVault = enrollmentVault
         self.appLockManager = appLockManager
         systemNotificationsEnabled = pushSettingsStore.systemNotificationsEnabled
         exportContactsToSystem = contactsSettingsStore.exportToSystemContactsEnabled
@@ -115,6 +121,15 @@ final class SettingsViewModel {
         }
         _ = await deregisterDeviceUseCase()
         try? securePairingStore.clear()
+        // Unpairing is a session boundary for the OpenPGP key as much as for
+        // the credential. The envelope is the account's private key sealed to
+        // *this* device, and leaving it behind means the key outlives the
+        // pairing that authorised putting it here — on a Mac the account no
+        // longer knows about, so no revocation reaches it. The in-memory copy
+        // goes with it; destroying the sealed blob while an unsealed one sits
+        // in this process would be theatre.
+        enrollmentVault?.destroy()
+        EnrollmentSession.shared.clear()
         statusMessage = "Pairing removed"
     }
 
@@ -237,7 +252,7 @@ final class SettingsViewModel {
         guard await confirmDestructive(
             String(localized: "Remove exported contacts from Apple Contacts")
         ) else { return }
-        let removed = await systemContactsExporter.removeAllExported()
+        let removed = await systemContactsExporter.removeAllExported().deleted
         hasExportedContacts = systemContactsExporter.hasExportedContacts()
         statusMessage = "Removed \(removed) exported contact(s) from Apple Contacts"
     }

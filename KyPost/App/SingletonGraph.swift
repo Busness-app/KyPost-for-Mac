@@ -296,6 +296,9 @@ final class SingletonGraph {
 
     // MARK: - Security
 
+    lazy var wipeStateStore = WipeStateStore(defaults: userDefaults)
+    lazy var securityWipe = SecurityWipe(state: wipeStateStore)
+
     lazy var appLockManager = AppLockManager(store: appLockStore)
     lazy var credentialGateService = CredentialGateService(
         appLockStore: appLockStore,
@@ -327,7 +330,10 @@ final class SingletonGraph {
     private static let legacyContactFieldsMigratedKey = "contacts.legacyFieldsMigrated"
     private static let reconciliationRepairKey = "contacts.reconciliationRepair.v1"
     private static let systemImportDupeRepairKey = "contacts.systemImportDupeRepair.v1"
-    private let userDefaults: UserDefaults
+    /// Exposed so the security wipe can sweep the same domain the
+    /// UserDefaults-backed stores were built against — the app's in production,
+    /// a scratch suite in tests.
+    let userDefaults: UserDefaults
 
     /// One-time data backfills after schema migrations (the V1→V2 legacy
     /// email/phone → arrays copy, and the cleanup of rows duplicated by the
@@ -388,7 +394,7 @@ final class SingletonGraph {
             }
         }
         self.keychain = keychain
-        appLockStore = AppLockStore(keychain: keychain)
+        appLockStore = AppLockStore(keychain: keychain, defaults: userDefaults)
         securePairingStore = SecurePairingStore(keychain: keychain)
         keywordSettingsStore = KeywordSettingsStore(defaults: userDefaults)
         notificationCursorStore = NotificationCursorStore(defaults: userDefaults)
