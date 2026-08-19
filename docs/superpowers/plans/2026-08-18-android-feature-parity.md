@@ -67,7 +67,7 @@ actions and draft save have all landed. Fix it in Phase 0.
 
 ---
 
-## Phase 0 — Contracts and repo housekeeping
+## Phase 0 — Contracts and repo housekeeping — **done 2026-08-18**
 
 Cheap, unblocks the rest, no runtime change.
 
@@ -126,7 +126,7 @@ Cheap, unblocks the rest, no runtime change.
 
 ---
 
-## Phase 1 — Relay wire parity
+## Phase 1 — Relay wire parity — **done 2026-08-18**
 
 Small, self-contained, no new dependencies. Do this before Phase 2; delta sync
 is much harder to reason about on top of a body whose mode is guessed.
@@ -157,11 +157,12 @@ the three calls, the `deletable` field, and the sidebar/folder-menu affordances.
 Ours has 8 cases; Android's has 10, and the three it has that we lack are each
 a different sentence to the user:
 
-- **429 + `Retry-After`** → `rateLimited(retryAfter:)`. This is parity brief
-  C5, still open. `NetworkError.rateLimited` exists but `HTTPClient` discards
-  response headers on non-2xx, so the seconds never reach the user. Android
-  notes this must be mapped in the per-request path, **not** in the status-code
-  mapper, which cannot see headers. Same constraint applies here.
+- **429 + `Retry-After`** → `rateLimited(retryAfter:)`, parity brief C5.
+  `HTTPClient` used to discard response headers on non-2xx, so the seconds never
+  reached the user. Fixed the way Android had to: parsed in the per-request path
+  that holds the `HTTPURLResponse` and passed in, **not** in the status-code
+  mapper, which cannot see headers. A malformed value reads as absent, never as
+  zero.
 - **400 "imap configuration is required…"** → `notConfigured`. Direct the user
   to the web app. Android's rule is absolute: *never build UI for the server's
   web-only mail configuration endpoints; an unconfigured relay is an empty
