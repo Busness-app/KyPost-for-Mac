@@ -560,7 +560,7 @@ which holds the key for the life of the page.
 
 ---
 
-## Phase 10 — Client-side encrypted send — **core done 2026-08-18**
+## Phase 10 — Client-side encrypted send — **done 2026-08-18**
 
 Android source: `pgp/ClientEncryptedSender` (195 lines),
 `RecipientResolveClient`, `PgpComposeState`, `ComposePgpController`. Spec:

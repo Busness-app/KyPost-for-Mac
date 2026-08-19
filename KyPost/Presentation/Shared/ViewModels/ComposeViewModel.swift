@@ -144,6 +144,19 @@ final class ComposeViewModel {
     /// one that might lie.
     var pgpCustody: PgpKeyCustody? { pgp.custody }
 
+    /// Which PGP controls this compose window may offer.
+    ///
+    /// Re-derived on every read rather than stored: enrollment can change
+    /// while the app runs, and a value captured when the window opened would
+    /// keep offering an on-device send after the key was wiped.
+    var pgpComposeControls: PgpComposeState {
+        pgp.composeState(deviceEnrolled: SingletonGraph.shared.enrollmentVault.isEnrolled)
+    }
+
+    /// On the client-side path the two chips are one decision: the relay
+    /// accepts `multipart/encrypted` only, so sign-only cannot be expressed.
+    var pgpChipsAreCoupled: Bool { pgpComposeControls.clientSide }
+
     func loadPgpIdentityIfNeeded() async {
         await pgp.loadIfNeeded()
     }
@@ -467,6 +480,15 @@ final class ComposeViewModel {
             return
         }
         let email = outgoingEmail(fontTraits: fontTraits)
+
+        // The client-custody path encrypts here and posts to /api/mail/send-pgp.
+        // Checked before the preflight below, which asks the server whether it
+        // has keys — a question this path answers itself, with /resolve.
+        if pgpComposeControls.clientSide, encrypt {
+            await deliverClientEncrypted(email)
+            return
+        }
+
         // Reassigned either way, so turning Encrypt off clears a warning left
         // by an earlier encrypted attempt.
         keylessWarning = encrypt
@@ -547,6 +569,89 @@ final class ComposeViewModel {
             errorMessage = message
         case .failure(let message):
             errorMessage = message
+        }
+    }
+
+    /// Encrypts on this device and posts the ciphertext to the relay.
+    ///
+    /// Like `deliver`, this does not own `isSending`: the caller claims it
+    /// before its first `await`.
+    private func deliverClientEncrypted(_ email: OutgoingEmail) async {
+        pendingPickup = nil
+
+        guard let sender = SingletonGraph.shared.makeClientEncryptedSender(
+            accountAddress: pgp.accountAddress
+        ) else {
+            errorMessage = "Pair this device before sending."
+            return
+        }
+
+        let draft = ClientSendDraft(
+            to: email.to.joined(separator: ", "),
+            cc: email.cc.joined(separator: ", "),
+            bcc: email.bcc.joined(separator: ", "),
+            subject: email.subject,
+            body: email.body,
+            mode: email.mode,
+            attachments: email.attachments.map {
+                OutgoingMimeAttachment(
+                    name: $0.name,
+                    mimeType: $0.mimeType,
+                    dataBase64: $0.data.base64EncodedString()
+                )
+            }
+        )
+
+        switch await sender.send(draft: draft) {
+        case .sent(_, let warning):
+            errorMessage = nil
+            if warning.isEmpty {
+                didSend = true
+            } else {
+                // Sent. Keep the window open so the notice is readable, and
+                // leave Send disabled — a retry would duplicate the message.
+                isSent = true
+                noticeMessage = warning
+            }
+        // Not an error: the user dismissed a prompt they raised, so the screen
+        // goes back to offering Send with nothing said.
+        case .cancelled:
+            errorMessage = nil
+        case .notEnrolled:
+            errorMessage = "This device is no longer set up to encrypt. Enroll it again in Settings."
+        case .noSecureLockScreen:
+            errorMessage = "This device has no passcode or biometric lock, so it can't hold your key."
+        case .unsealFailed(let message):
+            errorMessage = "Couldn't unlock this device's key: \(message)"
+        case .notClientProtected:
+            errorMessage = "This account isn't set up for on-device encryption."
+        case .noAccountAddress:
+            errorMessage = "No mail address is configured for this account, so this message can't be sent from here."
+        // Louder than a missing key, and deliberately never folded into it: a
+        // pin that no longer matches is what a rotation looks like, and also
+        // what interception looks like.
+        case .keyChanged(let addresses):
+            keylessWarning = addresses
+            errorMessage = """
+            The key on file for \(addresses.joined(separator: ", ")) has changed. Confirm the new \
+            fingerprint with them before sending.
+            """
+        // No pickup fallback here, and there must not be: the server-side one
+        // works by storing the plaintext this path exists to avoid.
+        case .keysMissing(let addresses):
+            keylessWarning = addresses
+            errorMessage = """
+            No usable key for \(addresses.joined(separator: ", ")). This account encrypts on your \
+            device, so there's no way to send to them without one.
+            """
+        case .tooManyRecipients(let message):
+            errorMessage = "Too many recipients: \(message)"
+        case .resolveFailed(let message):
+            errorMessage = "Couldn't look up recipient keys: \(message)"
+        case .encryptFailed(let message):
+            errorMessage = "Couldn't encrypt this message: \(message)"
+        case .sendFailed(let message):
+            errorMessage = "Couldn't send this message: \(message)"
         }
     }
 

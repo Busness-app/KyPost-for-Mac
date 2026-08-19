@@ -136,6 +136,26 @@ final class SingletonGraph {
         )
     }
 
+    /// Builds a client-encrypted sender, or nil when unpaired.
+    ///
+    /// Per send rather than cached, for the same reason as the reader: a
+    /// re-pair between attempts must not reuse stale credentials.
+    func makeClientEncryptedSender(accountAddress: String) -> ClientEncryptedSender? {
+        guard let pairing = try? securePairingStore.loadPairing() else { return nil }
+        let auth = RelayAuth(pairing: pairing)
+        return ClientEncryptedSender(
+            opener: DeviceVaultOpener(vault: enrollmentVault),
+            resolver: RecipientResolveClient(
+                httpClient: httpClient, serverUrl: pairing.srv, auth: auth
+            ),
+            transport: ClientEncryptedSendClient(
+                httpClient: httpClient, serverUrl: pairing.srv, auth: auth
+            ),
+            crypto: pgpCrypto,
+            accountAddress: accountAddress
+        )
+    }
+
     /// Builds a ceremony against the current pairing, or nil when unpaired.
     /// Rebuilt per attempt so a re-pair between attempts cannot reuse stale
     /// credentials.

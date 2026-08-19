@@ -28,9 +28,33 @@ final class PgpSendService {
     /// no toggle while it is nil — better no toggle than one that lies.
     private(set) var custody: PgpKeyCustody?
 
+    /// Bootstrap's raw answers, kept so the compose state can be re-derived.
+    private(set) var hasIdentity: Bool?
+    private(set) var protection: String?
+
+    /// `suggestedUserIDs[0]`, or empty when the account has no mail address
+    /// configured — in which case no delivery `From` can be built.
+    private(set) var accountAddress = ""
+
     init(client: PgpSendClient, securePairingStore: SecurePairingStore) {
         self.client = client
         self.securePairingStore = securePairingStore
+    }
+
+    /// Which controls compose may offer.
+    ///
+    /// **Derived on every call, never cached.** Custody is fixed when the key
+    /// is created, so the bootstrap response is worth caching — but enrollment
+    /// can change while the app is running, and a state computed once at
+    /// launch would keep offering an on-device send after the key was wiped,
+    /// or keep hiding it after the user enrolled.
+    func composeState(deviceEnrolled: Bool) -> PgpComposeState {
+        pgpComposeState(
+            hasIdentity: hasIdentity,
+            protection: protection,
+            deviceEnrolled: deviceEnrolled,
+            accountAddress: accountAddress
+        )
     }
 
     /// Loads key custody once per session. Cheap to call from every compose
@@ -42,6 +66,9 @@ final class PgpSendService {
                 serverUrl: credentials.serverUrl,
                 auth: credentials.auth
             )
+            hasIdentity = response.hasIdentity
+            protection = response.protection
+            accountAddress = response.suggestedUserIDs?.first ?? ""
             custody = pgpKeyCustody(
                 hasIdentity: response.hasIdentity,
                 protection: response.protection

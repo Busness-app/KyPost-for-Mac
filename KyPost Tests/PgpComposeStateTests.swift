@@ -108,3 +108,45 @@ import Testing
         #expect(fields.cc.isEmpty)
     }
 }
+
+// MARK: - Re-derivation
+
+/// **Cache the bootstrap, not the composed state.** Custody is fixed when the
+/// key is created, so the bootstrap answer is worth keeping — but enrollment
+/// can change while the app runs, and a state computed once at launch would
+/// keep offering an on-device send after the key was wiped, or keep hiding it
+/// after the user enrolled.
+@Suite(.serialized) struct PgpComposeStateFreshnessTests {
+
+    @Test func enrollingFlipsTheSameBootstrapToClientSide() {
+        let before = pgpComposeState(
+            hasIdentity: true,
+            protection: "client",
+            deviceEnrolled: false,
+            accountAddress: "me@example.com"
+        )
+        let after = pgpComposeState(
+            hasIdentity: true,
+            protection: "client",
+            deviceEnrolled: true,
+            accountAddress: "me@example.com"
+        )
+        #expect(before.handoffToWebmail)
+        #expect(!before.clientSide)
+        #expect(after.clientSide)
+        #expect(!after.handoffToWebmail)
+    }
+
+    /// The direction that matters more: a wipe must take the on-device send
+    /// away again, not leave a Send that cannot work.
+    @Test func aWipedKeyTakesTheOnDeviceSendAway() {
+        let afterWipe = pgpComposeState(
+            hasIdentity: true,
+            protection: "client",
+            deviceEnrolled: false,
+            accountAddress: "me@example.com"
+        )
+        #expect(!afterWipe.clientSide)
+        #expect(afterWipe.handoffToWebmail)
+    }
+}

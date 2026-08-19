@@ -38,6 +38,13 @@ nonisolated struct PgpBootstrapResponse: Decodable, Equatable, Sendable {
     /// `unlockRequired`, `signerPublicKeys`, `payloadEndpoint`, …) stay
     /// ignored.
     var publicKey: String?
+
+    /// The account's mail addresses, as the server suggests them for key User
+    /// IDs. **`suggestedUserIDs[0]` and nothing else** is the account address
+    /// the client-encrypted send path puts in every delivery's `From` — the
+    /// server derives it from the same expression and answers 403 on a
+    /// mismatch. Not the public key's own User ID, and not the self-contact.
+    var suggestedUserIDs: [String]?
 }
 
 nonisolated struct PgpRecipientCheckRequest: Encodable, Equatable, Sendable {
