@@ -24,10 +24,26 @@ The app talks only to the relay backend. There is no direct IMAP or SMTP. You pa
 ### Security (Settings → Security)
 
 - **Require Unlock to Open** — gates the app behind Face ID, Touch ID, or
-  the device passcode (`LAContext`). The OS owns the rate-limiting and the
-  lockout, and there is no app-specific PIN. iOS locks the app when you send
-  it to the background. macOS locks the app when the screen locks, and not
-  when you switch apps.
+  the device passcode (`LAContext`). iOS locks the app when you send it to the
+  background. macOS locks the app when the screen locks, and not when you
+  switch apps.
+- **App PIN** — optional, 8 to 12 digits, separate from your device passcode.
+  This reverses an earlier decision. The README used to say the OS owned
+  rate-limiting and lockout and there was no app-specific PIN; that was true
+  only while `LAContext` was the sole verifier, because the OS throttles
+  guesses at the passcode, not at anything of ours. A PIN checked inside the
+  app has no such backstop, so KyPost owns the throttle:
+  - the first two wrong attempts are free,
+  - the third onward adds a growing wait — 30s, 60s, 5m, 15m, 30m,
+  - **ten wrong attempts in a row erase** the pairing and everything KyPost
+    has stored on this device. Your mail stays on your server.
+
+  If the key protecting the PIN verifier becomes unavailable, KyPost says so
+  and counts nothing — a PIN it cannot check is not a wrong PIN, and it must
+  not spend your attempts. A wipe that cannot finish says which parts it
+  could not remove, retries at the next launch, and after three failed
+  attempts blocks the app behind a "reinstall to clear this" screen rather
+  than presenting a clean first-run app over data that is still here.
 - **Hostile Location Protection** — keeps no mail, contacts, or attachments
   on the device. All data stays in memory and reloads from your server. The
   app erases the local cache when you turn this option on. There are two
@@ -113,14 +129,22 @@ xcodebuild test -project "KyPost.xcodeproj" -scheme "KyPost"
 
 The network-facing tests run against a stubbed `HTTPClient`. They need no backend.
 
-## Known gaps (v2 candidates)
+## Known gaps
 
-- Attachments (compose and viewing)
-- Mail cursor and delta sync. Every refresh gets a full folder snapshot.
-- Read, archive and delete actions from the reader. Move-by-drag works on macOS.
-- Draft saving from compose. The PGP webmail handoff saves a draft on the server, but there is no Save Draft button and no auto-save.
-- Server-side search. Search runs against the local cache.
-- QR scanning with the camera on macOS. You must paste the pairing links and the PGP key links. Camera scanning works on iOS.
+- **Draft saving from compose.** The PGP webmail handoff saves a draft on the
+  server, but there is no Save Draft button and no auto-save.
+- **Search runs against the local cache**, so it only finds what this device has
+  already fetched. The relay has no search endpoint, so this is not a client-side
+  fix.
+- **QR scanning with the camera on macOS.** Paste the pairing links and PGP key
+  links instead. Camera scanning works on iOS.
+- **The on-device encrypted send and read paths have not been exercised against a
+  live relay.** They are covered by unit tests against fakes, so the wire
+  contracts for `/api/pgp/recipients/resolve`, `/api/mail/send-pgp` and
+  `/api/mail/pgp-payload` are unverified in practice.
+
+Attachments, mail delta sync, and read/archive/delete from the reader used to be
+listed here and have since landed.
 
 ## License
 

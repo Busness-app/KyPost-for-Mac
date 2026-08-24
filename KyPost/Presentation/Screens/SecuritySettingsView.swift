@@ -29,6 +29,14 @@ struct SecuritySettingsContent: View {
     }
     @State private var credentialGateConfirmationShown = false
     @State private var credentialGateMessage: String?
+    @State private var pinSheet: PinSheet?
+    @State private var pinMessage: String?
+
+    /// One value for both actions so they cannot be presented at once.
+    enum PinSheet: String, Identifiable {
+        case set, change
+        var id: String { rawValue }
+    }
 
     var body: some View {
         Section {
@@ -40,6 +48,32 @@ struct SecuritySettingsContent: View {
             }
         } footer: {
             Text("Unlocks with Face ID, Touch ID, or this device's passcode. KyPost locks when it goes to the background (iOS) or the screen locks (Mac).")
+        }
+
+        Section {
+            if lockManager.hasPin {
+                Button("Change PIN…") { pinSheet = .change }
+                Button("Remove PIN", role: .destructive) { removePin() }
+            } else {
+                Button("Set a PIN…") { pinSheet = .set }
+                    .disabled(!lockManager.isLockEnabled)
+            }
+            if let pinMessage {
+                Text(pinMessage)
+                    .font(AppFont.ui(13))
+                    .foregroundStyle(SemanticColors.danger)
+            }
+        } header: {
+            Text("App PIN")
+        } footer: {
+            // The erasure is stated here as well as in the sheet. This is the
+            // screen someone reads while deciding, and a consequence that only
+            // appears once they have already decided is not a disclosure.
+            Text("An optional PIN, separate from your Mac's password. The first two wrong attempts are free; after that each one adds a wait, from 30 seconds up to 30 minutes. Ten wrong attempts in a row erase the pairing and everything KyPost has stored on this Mac. Your mail stays on your server. Requires Require Unlock to Open.")
+        }
+        .sheet(item: $pinSheet) { sheet in
+            AppPinSetupView(manager: lockManager, isChange: sheet == .change)
+                .environment(\.theme, theme)
         }
 
         Section {
@@ -231,6 +265,25 @@ struct SecuritySettingsContent: View {
                 }
             }
         )
+    }
+
+    /// Removing the PIN is a downgrade, so it re-authenticates first — the same
+    /// rule every other *off* path on this screen follows.
+    private func removePin() {
+        Task {
+            guard await lockManager.confirmWithDeviceAuth(
+                reason: String(localized: "Remove the KyPost PIN")
+            ) else {
+                pinMessage = "Authentication was cancelled, so the PIN is unchanged."
+                return
+            }
+            do {
+                try lockManager.clearPin()
+                pinMessage = nil
+            } catch {
+                pinMessage = "Could not remove the PIN: \(error.localizedDescription)"
+            }
+        }
     }
 
     private func applyHostileProtection(_ enabled: Bool) {

@@ -1,5 +1,29 @@
 # Encrypted Send from a Paired Client — macOS Integration Guide
 
+> **PARTLY SUPERSEDED — read this first.**
+>
+> Everything below about **`server`-custody** send is current and implemented. What is obsolete is
+> this document's central premise, stated in "Scope": *"this client pairs by QR/deep link and never
+> learns the account password … **This client never holds the account's private key.**"*
+>
+> That stopped being true when the device enrollment ceremony landed. A browser seals the account's
+> OpenPGP private key to this Mac's Secure Enclave key, and the app keeps it in
+> `Domain/Security/EnrollmentVault`. It already decrypted with it; since Phase 10 it encrypts and
+> signs with it too. See `AGENTS.md` — "Client-side encrypted send" and "Device enrollment".
+>
+> Consequently, for a `client`-custody account on an **enrolled** Mac:
+> - "Out of scope, deliberately: bundling GnuPG or Sequoia and doing OpenPGP in this client" — no
+>   longer true. GopenPGP is a checksum-pinned XCFramework (`Dependencies/GopenPGP`), consumed
+>   through `Domain/Security/PgpCrypto.swift` alone.
+> - "Do not build … any call to `POST /api/mail/send-pgp`" — that is now exactly the send path
+>   (`Data/Networking/ClientEncryptedSendClient.swift`).
+> - "Use `check`, never `resolve`" — still correct for `server`-custody, and inverted here:
+>   `/api/pgp/recipients/resolve` is the right and only endpoint for client-side send, and it 409s
+>   for precisely the accounts that path excludes.
+> - The webmail handoff remains the behaviour for an **unenrolled** Mac.
+>
+> The rest of this document stands. Do not "fix" the code to match the superseded parts.
+
 This document specifies how this client sends **encrypted and signed mail** through the relay, and
 how it handles a recipient who has no PGP key. It mirrors the shape of `Client_PGP_Update.md` and
 `Client_Contact_Update.md`: concrete API contracts, exact JSON, and clear scoping — written so a

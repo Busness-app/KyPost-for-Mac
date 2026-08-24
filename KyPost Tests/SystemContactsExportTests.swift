@@ -14,8 +14,11 @@ import Testing
 
 // MARK: - Helpers
 
+/// Not private: `UnpairTeardownTests` builds a `SettingsViewModel`, which needs
+/// an exporter, and an exporter built on the live store reaches the real
+/// Contacts database from a test process.
 @MainActor
-private final class MockSystemContactStore: SystemContactStoring {
+final class MockSystemContactStore: SystemContactStoring {
     struct StubError: Error {}
 
     var authorizationStatus: CNAuthorizationStatus = .authorized
@@ -965,7 +968,7 @@ private func makeCard(
         await env.exporter.reconcileAll() // imports the user's card
         #expect(env.linkStore.all().count == 1)
 
-        let removed = await env.exporter.removeAllExported()
+        let removed = await env.exporter.removeAllExported().deleted
         #expect(removed == 0)
         #expect(env.mock.cards.count == 1) // user's card kept
         #expect(env.linkStore.all().isEmpty)
@@ -984,7 +987,7 @@ private func makeCard(
         await env.exporter.reconcileAll()
         #expect(env.mock.cards.count == 2)
 
-        let removed = await env.exporter.removeAllExported()
+        let removed = await env.exporter.removeAllExported().deleted
         #expect(removed == 2)
         #expect(env.mock.cards.isEmpty)
         #expect(env.linkStore.all().isEmpty)

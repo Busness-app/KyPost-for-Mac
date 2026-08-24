@@ -3,8 +3,13 @@
 //  KyPost
 //
 //  Full-window cover shown while the app is locked (security-hardening
-//  plan, Task 2). Auto-attempts device-owner authentication on appear;
-//  the button retries after a cancel or failure.
+//  plan, Task 2; PIN entry from Phase 11).
+//
+//  Two verifiers, and which one leads depends on what the user configured. A
+//  PIN is only there because they chose it, so with one set the field leads and
+//  nothing is auto-prompted — raising a system authentication sheet over a PIN
+//  field asks for something the user did not ask for. Without a PIN, this
+//  behaves as it always did: auto-attempt on appear, button to retry.
 //
 //  Presentation is per-platform: iOS uses a fullScreenCover from
 //  MainTabView; macOS overlays each window's root via LockedOverlay.
@@ -19,6 +24,13 @@ struct UnlockView: View {
 
     @State private var resetConfirmationShown = false
     @State private var resetMessage: String?
+    @State private var pin = ""
+    @State private var pinStatus: String?
+    @State private var submitting = false
+    /// Mirrors `manager.remainingLockoutMillis` so the field re-enables itself
+    /// when the wait is over. Polled rather than derived, because nothing else
+    /// changes to redraw this view while a lockout runs out.
+    @State private var lockoutRemaining: Int64 = 0
 
     var body: some View {
         VStack(spacing: 20) {
@@ -28,11 +40,20 @@ struct UnlockView: View {
             Text("KyPost is locked")
                 .font(AppFont.ui(17, weight: .semibold))
                 .foregroundStyle(theme.inkStrong)
-            Button("Unlock") {
-                Task { await manager.requestUnlock() }
+            if manager.hasPin {
+                pinEntry
+                Button("Use Touch ID or Password") {
+                    Task { await manager.requestUnlock() }
+                }
+                .buttonStyle(.bordered)
+                .tint(theme.accent)
+            } else {
+                Button("Unlock") {
+                    Task { await manager.requestUnlock() }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(theme.accent)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(theme.accent)
 
             // The lock has no bypass, so a device that can no longer satisfy
             // the authenticator at all — biometric enrolment changed, passcode
@@ -74,7 +95,99 @@ struct UnlockView: View {
         } message: {
             Text("Removes the pairing, the app lock, and all cached mail, contacts, photos, attachments, and drafts. You'll need to pair this device again from the web app.")
         }
-        .task { await manager.requestUnlock() }
+        .task {
+            // Only without a PIN. See the file header.
+            if !manager.hasPin { await manager.requestUnlock() }
+        }
+        .task(id: manager.hasPin) {
+            guard manager.hasPin else { return }
+            // A lockout is the one piece of state here that changes on its own.
+            while !Task.isCancelled {
+                lockoutRemaining = manager.remainingLockoutMillis
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var pinEntry: some View {
+        VStack(spacing: 8) {
+            SecureField("PIN", text: $pin)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 220)
+                .disabled(submitting || lockoutRemaining > 0)
+                .onSubmit { submit() }
+            Button("Unlock", action: submit)
+                .buttonStyle(.borderedProminent)
+                .tint(theme.accent)
+                .disabled(pin.isEmpty || submitting || lockoutRemaining > 0)
+
+            if lockoutRemaining > 0 {
+                Text("Too many attempts. Try again in \(Self.wait(lockoutRemaining)).")
+                    .font(AppFont.ui(12))
+                    .foregroundStyle(theme.ink.opacity(0.8))
+            }
+            if let pinStatus {
+                Text(pinStatus)
+                    .font(AppFont.ui(12))
+                    .foregroundStyle(SemanticColors.danger)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 320)
+            }
+        }
+    }
+
+    private func submit() {
+        guard !pin.isEmpty, !submitting else { return }
+        submitting = true
+        Task {
+            let outcome = await manager.attemptPinUnlock(pin)
+            pin = ""
+            submitting = false
+            lockoutRemaining = manager.remainingLockoutMillis
+            apply(outcome)
+        }
+    }
+
+    /// Every outcome gets its own sentence.
+    ///
+    /// `verifierUnavailable` is the one that matters most: the PIN was **not**
+    /// wrong, and telling the user it was invites them to burn attempts against
+    /// a threshold this outcome deliberately does not advance. The wipe cases
+    /// say nothing here — `AppEnvironment` records the notice and the rebuilt
+    /// window shows it, because this view is destroyed by the rebuild the wipe
+    /// performs.
+    private func apply(_ outcome: UnlockAttemptOutcome) {
+        switch outcome {
+        case .success:
+            pinStatus = nil
+        case .rejected(let delay):
+            pinStatus = delay > 0 ? nil : "Incorrect PIN."
+        case .notConfigured:
+            pinStatus = "There is no PIN set on this Mac."
+        case .gatedSecretUnavailable:
+            pinStatus = """
+                Your PIN was correct, but KyPost couldn't read the credential it \
+                needs to reach your server, so it stayed locked. Try again and \
+                allow the authentication prompt.
+                """
+        case .verifierUnavailable:
+            pinStatus = """
+                KyPost can't check your PIN on this Mac right now — the key that \
+                protects it is unavailable. This does not mean the PIN is wrong. \
+                Restart, and use Reset below if it keeps happening.
+                """
+        case .wiped, .wipeFailed:
+            pinStatus = nil
+        }
+    }
+
+    /// Whole minutes once past a minute; the ladder's rungs are 30s to 30m, so
+    /// a live-ticking second counter would be noise for all but the first.
+    static func wait(_ millis: Int64) -> String {
+        let seconds = Int((millis + 999) / 1000)
+        if seconds < 60 { return "\(seconds)s" }
+        return "\(Int((Double(seconds) / 60).rounded(.up)))m"
     }
 
     private func reset() {

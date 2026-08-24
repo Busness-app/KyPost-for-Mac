@@ -26,10 +26,6 @@ private struct StubAuthenticator: DeviceAuthenticating {
     }
 }
 
-private func makeLockStore() -> AppLockStore {
-    AppLockStore(keychain: KeychainStorage(service: "com.urlxl.mail.tests.\(UUID().uuidString)"))
-}
-
 // MARK: - AppLockStore
 
 @Suite struct AppLockStoreTests {

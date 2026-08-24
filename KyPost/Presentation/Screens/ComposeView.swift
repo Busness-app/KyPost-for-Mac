@@ -199,11 +199,41 @@ struct ComposeView: View {
 
     // MARK: - PGP
 
-    /// Toggles only for a server-custody account. A client-custody account
-    /// gets the webmail handoff instead — this app holds no private key and
-    /// must never let the user believe an encrypted send succeeded from here.
+    /// Toggles for a server-custody account, and for a client-custody account
+    /// **on an enrolled device** — which can do the crypto itself. An
+    /// unenrolled one still gets the webmail handoff: this app must never let
+    /// the user believe an encrypted send succeeded when it could not happen.
     @ViewBuilder
     private var pgpControls: some View {
+        if viewModel.pgpComposeControls.clientSide {
+            clientSideControls
+        } else {
+            serverCustodyControls
+        }
+    }
+
+    /// On this path the two chips are one decision. The relay accepts
+    /// `multipart/encrypted` only, so sign-only cannot be expressed — offering
+    /// it as a separate switch would be offering something that silently does
+    /// nothing.
+    @ViewBuilder
+    private var clientSideControls: some View {
+        HStack(spacing: 16) {
+            Toggle("Encrypt and sign on this device", isOn: Binding(
+                get: { viewModel.encrypt },
+                set: { newValue in
+                    viewModel.encrypt = newValue
+                    viewModel.sign = newValue
+                }
+            ))
+            Spacer(minLength: 0)
+        }
+        .font(AppFont.ui(12, weight: .medium))
+        .foregroundStyle(theme.ink)
+    }
+
+    @ViewBuilder
+    private var serverCustodyControls: some View {
         switch viewModel.pgpCustody {
         case .serverHeld:
             HStack(spacing: 16) {

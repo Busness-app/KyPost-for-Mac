@@ -33,7 +33,11 @@ protocol PairingSecretGate: AnyObject {
     func read() throws -> String
     func write(_ secret: String) throws
     /// The pairing is being cleared (unpair) — drop the gated copy too.
-    func removeAll()
+    /// Returns the names of anything it could not remove, so a security wipe
+    /// can report an incomplete erasure rather than a clean one. An ordinary
+    /// unpair discards the result.
+    @discardableResult
+    func removeAll() -> [String]
 }
 
 /// Reached from every background task that talks to the relay (MailRepository,

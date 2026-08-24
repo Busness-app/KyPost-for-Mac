@@ -14,8 +14,21 @@ import Foundation
 nonisolated struct PgpPayload: Equatable, Sendable {
     var encryptedPayload: String = ""
     var signaturePayload: String = ""
-    /// The display body, used only on the signed-but-not-encrypted path.
+    /// The display body. On the signed-but-not-encrypted path it is the
+    /// server's transfer-decoded *render*, kept only as a fallback for when the
+    /// verbatim signed part is unavailable — never as the thing a signature is
+    /// checked against.
     var body: String = ""
+
+    /// The verbatim transmitted octets of a signed-but-not-encrypted message,
+    /// base64-encoded — the exact bytes the detached `signaturePayload` covers.
+    ///
+    /// A detached-signature check is byte-exact, and `body` above is a decoded
+    /// render that reads identically to a human but can differ by a byte, so
+    /// verification must run over THIS and never over `body`. Empty for an
+    /// encrypted message, and empty on the signed-only path when the server
+    /// could not re-fetch the raw part.
+    var signedPartBase64: String = ""
 
     /// The sender's candidate keys, **already narrowed to the sender the
     /// server resolved**.

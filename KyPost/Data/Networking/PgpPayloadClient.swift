@@ -19,6 +19,7 @@ private struct PgpPayloadDTO: Decodable {
     var encryptedPayload: String = ""
     var signaturePayload: String = ""
     var body: String = ""
+    var signedPartBase64: String = ""
     var signerKeys: [SignerKeyDTO] = []
     var sender: String = ""
     var resolvedSender: String = ""
@@ -49,16 +50,13 @@ final class PgpPayloadClient: PgpPayloadSource {
     /// - Returns: a result for every documented outcome. Only an undocumented
     ///   status or a transport error becomes `.failed`.
     func fetch(mailbox: String, messageId: String) async throws -> PgpPayloadResult {
-        guard var components = URLComponents(string: serverUrl) else {
-            return .failed("the server address is not a valid URL")
-        }
-        components.path = (components.path as NSString)
-            .appendingPathComponent("api/mail/pgp-payload")
-        components.queryItems = [
-            URLQueryItem(name: "mailbox", value: mailbox),
-            URLQueryItem(name: "message", value: messageId),
-        ]
-        guard let url = components.url else {
+        // `URL(string:).appending(path:)`, matching RelayMailSource.endpoint and
+        // every other mail call. The previous URLComponents + NSString path build
+        // produced a nil URL for a bare-host `srv` — the stored form has no
+        // trailing slash, so `components.path` came out without a leading slash,
+        // which is not a valid absolute path when a host is present. That failed
+        // every read before the request left the device.
+        guard let url = URL(string: serverUrl)?.appending(path: "api/mail/pgp-payload") else {
             return .failed("the server address is not a valid URL")
         }
 
@@ -66,12 +64,22 @@ final class PgpPayloadClient: PgpPayloadSource {
             let dto = try await httpClient.get(
                 PgpPayloadDTO.self,
                 url: url,
+                query: [
+                    URLQueryItem(name: "mailbox", value: mailbox),
+                    // The server reads `messageId` (an IMAP UID) and 400s without
+                    // it — see attachmentRequestParams, the same parser every
+                    // other mail call hits (RelayMailSource.listAttachments). A
+                    // bare `message` reached it as an empty UID and surfaced as
+                    // "this message could not be fetched".
+                    URLQueryItem(name: "messageId", value: messageId),
+                ],
                 headers: auth.headerFields
             )
             return .success(PgpPayload(
                 encryptedPayload: dto.encryptedPayload,
                 signaturePayload: dto.signaturePayload,
                 body: dto.body,
+                signedPartBase64: dto.signedPartBase64,
                 signerKeys: dto.signerKeys.map {
                     SignerKey(
                         addresses: $0.addresses,

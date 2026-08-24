@@ -32,6 +32,9 @@ private struct FakeCrypto: PgpDecrypting {
     var signature = RawSignature()
     var error: PgpCryptoError?
     var fingerprints: [String: String] = [:]
+    /// Captures what `verifyDetached` was handed, so a signed-only test can
+    /// assert the verdict is computed over the canonical octets and not `body`.
+    let detachedInput = Box<(bytes: Data, signature: String)?>(nil)
 
     func decrypt(
         armoredCiphertext: String,
@@ -40,6 +43,15 @@ private struct FakeCrypto: PgpDecrypting {
     ) throws -> DecryptedMessage {
         if let error { throw error }
         return DecryptedMessage(body: body, signature: signature)
+    }
+
+    func verifyDetached(
+        signedBytes: Data,
+        armoredSignature: String,
+        signerKeys: [String]
+    ) -> RawSignature {
+        detachedInput.value = (signedBytes, armoredSignature)
+        return signature
     }
 
     func fingerprint(ofArmoredPublicKey key: String) -> String? { fingerprints[key] }
@@ -280,6 +292,94 @@ private func freshSession() -> EnrollmentSession { EnrollmentSession() }
             return
         }
         #expect(signature == .verifiedConfirmed)
+    }
+
+    // MARK: - The signed-but-not-encrypted path
+
+    /// The heart of the signed-only fix: the verdict is computed over the
+    /// verbatim signed octets (`signedPartBase64`), never over `body`. A body
+    /// that reads the same but differs by a byte would fail a byte-exact
+    /// detached check and falsely accuse a real correspondent.
+    @Test func aSignedOnlyMessageVerifiesOverTheCanonicalOctetsNotTheBody() async {
+        let payload = PgpPayload(
+            signaturePayload: "-----BEGIN PGP SIGNATURE-----",
+            body: "a different render the signature must NOT be checked against",
+            signedPartBase64: mimeBody.base64EncodedString(),
+            signerKeys: [SignerKey(publicKey: "k", verified: true)],
+            resolvedSender: "bob@example.com"
+        )
+        let crypto = FakeCrypto(
+            signature: RawSignature(present: true, valid: true, signerFingerprint: "FPR1"),
+            fingerprints: ["k": "FPR1"]
+        )
+        let reader = makeReader(payload: .success(payload), crypto: crypto, session: freshSession())
+        let outcome = await reader.read(
+            mailbox: "INBOX", messageId: "1", sender: "a@b", unlockIfNeeded: true
+        )
+        guard case .decrypted(let body, let signature, let resolvedSender) = outcome else {
+            Issue.record("expected decrypted, got \(outcome)")
+            return
+        }
+        // Rendered from the signed part, not the divergent `body`.
+        #expect(body.plain?.contains("hello") == true)
+        #expect(signature == .verifiedConfirmed)
+        #expect(resolvedSender == "bob@example.com")
+        // And what was actually handed to the verifier were those exact octets.
+        #expect(crypto.detachedInput.value?.bytes == mimeBody)
+        #expect(crypto.detachedInput.value?.signature == "-----BEGIN PGP SIGNATURE-----")
+    }
+
+    /// A signed-only message from a sender with no saved key reads as unknown —
+    /// "signed by a key you haven't saved" — which is information, not an alarm.
+    @Test func aSignedOnlyMessageFromAnUnsavedSenderReadsAsUnknown() async {
+        let payload = PgpPayload(
+            signaturePayload: "SIG",
+            signedPartBase64: mimeBody.base64EncodedString()
+        )
+        // What GopenPGP returns with no offered key: present, not valid.
+        let crypto = FakeCrypto(signature: RawSignature(present: true))
+        let reader = makeReader(payload: .success(payload), crypto: crypto, session: freshSession())
+        guard case .decrypted(_, let signature, _) = await reader.read(
+            mailbox: "INBOX", messageId: "1", sender: "a@b", unlockIfNeeded: true
+        ) else {
+            Issue.record("expected decrypted")
+            return
+        }
+        #expect(signature == .signerUnknown)
+    }
+
+    /// When the server could not re-fetch the raw signed part it leaves `body`
+    /// populated and ships an empty `signedPartBase64`. Show the readable body,
+    /// but claim nothing about a signature that cannot be checked.
+    @Test func aSignedOnlyMessageWithNoVerifiablePartShowsTheBodyWithoutAVerdict() async {
+        let payload = PgpPayload(
+            signaturePayload: "",
+            body: "readable but unverifiable",
+            signedPartBase64: "",
+            resolvedSender: "bob@example.com"
+        )
+        let reader = makeReader(payload: .success(payload), session: freshSession())
+        let outcome = await reader.read(
+            mailbox: "INBOX", messageId: "1", sender: "a@b", unlockIfNeeded: true
+        )
+        guard case .decrypted(let body, let signature, _) = outcome else {
+            Issue.record("expected decrypted, got \(outcome)")
+            return
+        }
+        #expect(body.plain == "readable but unverifiable")
+        #expect(signature == .none)
+    }
+
+    /// A signed-only message with neither a verifiable part nor a readable body
+    /// is terminal, and — like `noEncryptedContent` — must not offer Retry.
+    @Test func aSignedOnlyMessageWithNothingReadableIsTerminal() async {
+        let payload = PgpPayload(signaturePayload: "", body: "", signedPartBase64: "")
+        let reader = makeReader(payload: .success(payload), session: freshSession())
+        let outcome = await reader.read(
+            mailbox: "INBOX", messageId: "1", sender: "a@b", unlockIfNeeded: true
+        )
+        #expect(outcome == .noEncryptedContent)
+        #expect(!readOutcomeAllowsRetry(outcome))
     }
 }
 

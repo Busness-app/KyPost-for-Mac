@@ -32,6 +32,13 @@ private struct StubCrypto: PgpDecrypting {
         if let error { throw error }
         return DecryptedMessage(body: body, signature: RawSignature())
     }
+    func verifyDetached(
+        signedBytes: Data,
+        armoredSignature: String,
+        signerKeys: [String]
+    ) -> RawSignature {
+        RawSignature()
+    }
     func fingerprint(ofArmoredPublicKey key: String) -> String? { nil }
 }
 

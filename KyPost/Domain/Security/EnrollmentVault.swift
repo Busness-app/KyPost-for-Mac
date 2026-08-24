@@ -186,14 +186,33 @@ final class EnrollmentVault: @unchecked Sendable {
     /// those is the account's private key sitting on a device that is supposed
     /// to hold nothing.
     func destroy() {
+        _ = destroyReportingFailures()
+    }
+
+    /// The same destruction, naming what it could not remove.
+    ///
+    /// `SecurityWipe` needs the names: a key surviving a wipe nobody chose is
+    /// exactly what an incomplete result exists to report, and `destroy`'s
+    /// discarded errors cannot say so. The envelope is re-read afterwards
+    /// rather than trusted to the delete's status — the claim being made is
+    /// "the private key is gone", so it is worth checking.
+    func destroyReportingFailures() -> [String] {
         lock.lock()
         defer { lock.unlock() }
-        try? keychain.remove(Key.envelope)
-        try? keychain.remove(Key.fingerprint)
+        var failures: [String] = []
+        do { try keychain.remove(Key.envelope) } catch { failures.append("deleteEnvelope") }
+        do { try keychain.remove(Key.fingerprint) } catch { failures.append("deleteFingerprint") }
         let query: [String: Any] = [
             kSecClass as String: kSecClassKey,
             kSecAttrApplicationTag as String: keyTag,
         ]
-        SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(query as CFDictionary)
+        if status != errSecSuccess && status != errSecItemNotFound {
+            failures.append("deleteDeviceKey")
+        }
+        if ((try? keychain.data(forKey: Key.envelope)) ?? nil) != nil {
+            failures.append("envelopeSurvived")
+        }
+        return failures
     }
 }

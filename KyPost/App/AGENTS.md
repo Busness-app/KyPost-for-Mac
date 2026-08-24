@@ -45,6 +45,32 @@ erases rather than bypasses: gated secret, pairing, desktop session, both lock
 flags, store, photos, temp attachments, delivered notifications, drafts. Keep
 it that way — anything that unlocks *without* erasing is a bypass.
 
+## The startup wipe gate
+
+`PushLifecycle.onLaunch` starts `AppEnvironment.enforceWipeAtStartupOnce()`
+**first**, and `KyPostApp.rootView` renders `StartupGatePlaceholder` until
+`startupWipeVerdict` settles. The check is a gate and has to be used as one:
+Android ran the equivalent in a fire-and-forget coroutine under a comment
+claiming it ran before anything read cached data, so deleting the app-lock
+state to disable the lock got the inbox rendered with every cached message
+intact and the wipe landed a few hundred milliseconds later.
+
+- **Once per process.** A wipe rebuilds the graph and a rebuild re-runs
+  `onLaunch`; without the guard the app would wipe itself in a loop.
+- `AppEnvironment.performSecurityWipe` reads the pairing **before** the steps
+  run (the `pairing` step deletes what the deregister authenticates with),
+  records `wipeNotice` **before** the rebuild (the rebuild replaces the graph a
+  notice stored there would live in), and rebuilds last — which is what closes
+  the SwiftData file descriptors on the store the wipe unlinked.
+- A verdict of `.settled(.incomplete(_, willRetry: false))` blocks the whole
+  app behind `ManualRecoveryView`. Entry points that never present a window
+  guard on `securityWipe.blockedByAbandonedWipe` themselves — currently
+  `PushNotificationDispatcher.handleIncoming` and `presentLocally`.
+
+`AppLockManager.onWipe` is wired in `onLaunch`. Left unset it fails closed and
+reports a wipe that could not run, rather than rejecting the eleventh wrong PIN
+exactly like the third.
+
 ## Lock ordering at launch
 
 `PushLifecycle.onLaunch` wires `credentialGateService.wireAtLaunch()`
@@ -77,7 +103,8 @@ without authenticating"; a subject line on the lock screen breaks that.
 ## Verification
 
 - `xcodebuild test -scheme "KyPost" -destination 'platform=macOS'`
-  (`AppEnvironmentTests`, `SecurityTests`).
+  (`AppEnvironmentTests`, `SecurityTests`, `SecurityWipeTests`,
+  `SecurityWipeStepsTests`).
 - The rebuild path is exercised end-to-end by toggling Hostile Location
   Protection in Settings → Security on a paired build.
 

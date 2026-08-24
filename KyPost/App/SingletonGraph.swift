@@ -136,6 +136,26 @@ final class SingletonGraph {
         )
     }
 
+    /// Builds a client-encrypted sender, or nil when unpaired.
+    ///
+    /// Per send rather than cached, for the same reason as the reader: a
+    /// re-pair between attempts must not reuse stale credentials.
+    func makeClientEncryptedSender(accountAddress: String) -> ClientEncryptedSender? {
+        guard let pairing = try? securePairingStore.loadPairing() else { return nil }
+        let auth = RelayAuth(pairing: pairing)
+        return ClientEncryptedSender(
+            opener: DeviceVaultOpener(vault: enrollmentVault),
+            resolver: RecipientResolveClient(
+                httpClient: httpClient, serverUrl: pairing.srv, auth: auth
+            ),
+            transport: ClientEncryptedSendClient(
+                httpClient: httpClient, serverUrl: pairing.srv, auth: auth
+            ),
+            crypto: pgpCrypto,
+            accountAddress: accountAddress
+        )
+    }
+
     /// Builds a ceremony against the current pairing, or nil when unpaired.
     /// Rebuilt per attempt so a re-pair between attempts cannot reuse stale
     /// credentials.
@@ -276,6 +296,9 @@ final class SingletonGraph {
 
     // MARK: - Security
 
+    lazy var wipeStateStore = WipeStateStore(defaults: userDefaults)
+    lazy var securityWipe = SecurityWipe(state: wipeStateStore)
+
     lazy var appLockManager = AppLockManager(store: appLockStore)
     lazy var credentialGateService = CredentialGateService(
         appLockStore: appLockStore,
@@ -307,7 +330,10 @@ final class SingletonGraph {
     private static let legacyContactFieldsMigratedKey = "contacts.legacyFieldsMigrated"
     private static let reconciliationRepairKey = "contacts.reconciliationRepair.v1"
     private static let systemImportDupeRepairKey = "contacts.systemImportDupeRepair.v1"
-    private let userDefaults: UserDefaults
+    /// Exposed so the security wipe can sweep the same domain the
+    /// UserDefaults-backed stores were built against — the app's in production,
+    /// a scratch suite in tests.
+    let userDefaults: UserDefaults
 
     /// One-time data backfills after schema migrations (the V1→V2 legacy
     /// email/phone → arrays copy, and the cleanup of rows duplicated by the
@@ -368,7 +394,7 @@ final class SingletonGraph {
             }
         }
         self.keychain = keychain
-        appLockStore = AppLockStore(keychain: keychain)
+        appLockStore = AppLockStore(keychain: keychain, defaults: userDefaults)
         securePairingStore = SecurePairingStore(keychain: keychain)
         keywordSettingsStore = KeywordSettingsStore(defaults: userDefaults)
         notificationCursorStore = NotificationCursorStore(defaults: userDefaults)

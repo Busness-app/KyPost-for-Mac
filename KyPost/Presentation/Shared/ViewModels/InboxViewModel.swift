@@ -315,7 +315,16 @@ final class InboxViewModel {
     /// Protection toggles (both directions), so no pre-toggle bytes survive
     /// the mode switch. Missing directory is fine.
     static func purgeAttachmentTempFiles() {
-        try? FileManager.default.removeItem(at: attachmentTempRoot)
+        try? deleteAttachmentTempFiles()
+    }
+
+    /// The same purge, reporting a failure instead of swallowing it.
+    /// `SecurityWipe` needs the throw: a preview file left in the temporary
+    /// directory is decrypted attachment plaintext, and a wipe that could not
+    /// remove it must not report a clean erasure.
+    static func deleteAttachmentTempFiles() throws {
+        guard FileManager.default.fileExists(atPath: attachmentTempRoot.path) else { return }
+        try FileManager.default.removeItem(at: attachmentTempRoot)
     }
 
     /// The relay-supplied `serverId` must never be trusted as a path
