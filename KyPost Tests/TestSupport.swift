@@ -10,7 +10,7 @@
 import Foundation
 @testable import KyPost
 
-let server = "https://relay.example.com"
+nonisolated let server = "https://relay.example.com"
 
 /// An `HTTPClient` whose transport answers every request with `json` and
 /// `status`, handing the request to `onRequest` first so tests can assert on
@@ -34,7 +34,12 @@ func stubClient(
 
 /// Lock-protected storage for whatever a test captures inside `stubClient`'s
 /// closure. The closure is `@Sendable`, so it cannot write to a local `var`.
-final class Box<T>: @unchecked Sendable {
+///
+/// `nonisolated`: the whole helper opts out of the test target's default
+/// MainActor isolation. Its entire point is to be read and written from the
+/// `@Sendable`, off-actor closures the transport stubs run — the internal
+/// `NSLock` is what makes that safe, not actor isolation.
+nonisolated final class Box<T>: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: T
 

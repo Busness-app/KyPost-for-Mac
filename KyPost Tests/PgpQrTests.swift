@@ -15,7 +15,7 @@ import Testing
 // MARK: - Helpers
 
 
-private let tokenJSON = #"""
+private nonisolated let tokenJSON = #"""
 {
   "token": "tok-abc",
   "expiresAt": "2026-07-15T10:02:00Z",
@@ -37,7 +37,7 @@ xg0EYAAAAAEACQEjAAID
 """
 let syntheticKeyFingerprint = "6853864FF482DCF29CD0CB0E56CD3B5CB8625680"
 
-private let keyJSON = #"""
+private nonisolated let keyJSON = #"""
 {
   "name": "Ada Lovelace",
   "fingerprint": "6853864FF482DCF29CD0CB0E56CD3B5CB8625680",

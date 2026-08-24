@@ -443,7 +443,7 @@ private struct AlwaysAuthenticates: DeviceAuthenticating {
     @Test func engagingTheAppLockDropsTheKey() throws {
         let session = EnrollmentSession()
         session.put(armoredKey: "PRIVATE")
-        let store = try AppLockStore(keychain: KeychainStorage(service: scratchService()))
+        let store = AppLockStore(keychain: KeychainStorage(service: scratchService()))
         try store.setLockEnabled(true)
         let manager = AppLockManager(
             store: store,
@@ -460,7 +460,7 @@ private struct AlwaysAuthenticates: DeviceAuthenticating {
     @Test func theKeyIsDroppedEvenWhenTheAppLockIsOff() throws {
         let session = EnrollmentSession()
         session.put(armoredKey: "PRIVATE")
-        let store = try AppLockStore(keychain: KeychainStorage(service: scratchService()))
+        let store = AppLockStore(keychain: KeychainStorage(service: scratchService()))
         try store.setLockEnabled(false)
         let manager = AppLockManager(
             store: store,
@@ -474,7 +474,7 @@ private struct AlwaysAuthenticates: DeviceAuthenticating {
     /// Already-locked is not a reason to keep it either.
     @Test func lockingTwiceStillLeavesNothingHeld() throws {
         let session = EnrollmentSession()
-        let store = try AppLockStore(keychain: KeychainStorage(service: scratchService()))
+        let store = AppLockStore(keychain: KeychainStorage(service: scratchService()))
         try store.setLockEnabled(true)
         let manager = AppLockManager(
             store: store,
