@@ -8,6 +8,7 @@
 //
 
 import Foundation
+import Gopenpgp
 import Testing
 @testable import KyPost
 
@@ -167,6 +168,83 @@ import Testing
                 signerKeys: []
             )
         }
+    }
+
+    // MARK: - Detached signatures (the signed-but-not-encrypted path)
+
+    /// Produces an armored detached signature over `data`, the way the server's
+    /// signedOnlyParts hands one to the client. Built here rather than stored as
+    /// a fixture because what is asserted is a byte-exact verification, and a
+    /// round trip proves it end to end against the real library.
+    private func detachedSignature(over data: Data) throws -> String {
+        let pgp = try #require(CryptoPGP())
+        let key = try #require(CryptoKey(fromArmored: TestPgpFixtures.armoredPrivate))
+        let builder = try #require(pgp.sign())
+        builder.signing(key)
+        builder.detached()
+        let handle = try builder.new()
+        let signature = try #require(try handle.sign(data, encoding: CryptoArmor))
+        return String(decoding: signature, as: UTF8.self)
+    }
+
+    /// The heart of the signed-only path: the offered key that signed the exact
+    /// octets verifies, and is attributed to the entity fingerprint the bound
+    /// key reports about itself — the value `signatureState` matches on.
+    @Test func verifiesADetachedSignatureOverTheExactOctets() throws {
+        let signed = Data("the exact octets that were signed\r\n".utf8)
+        let signature = try detachedSignature(over: signed)
+
+        let verdict = crypto.verifyDetached(
+            signedBytes: signed,
+            armoredSignature: signature,
+            signerKeys: [TestPgpFixtures.armoredPublic]
+        )
+        #expect(verdict.present)
+        #expect(verdict.valid)
+        #expect(
+            verdict.signerFingerprint.caseInsensitiveCompare(TestPgpFixtures.fingerprint)
+                == .orderedSame
+        )
+    }
+
+    /// One flipped byte must fail. This is the whole reason the server ships the
+    /// verbatim signed part and the reader checks it instead of `body`: a
+    /// byte-exact check is what makes a detached signature mean anything.
+    @Test func aSingleAlteredByteDoesNotVerify() throws {
+        let signed = Data("the exact octets that were signed\r\n".utf8)
+        let signature = try detachedSignature(over: signed)
+
+        let verdict = crypto.verifyDetached(
+            signedBytes: signed + Data([0x21]),
+            armoredSignature: signature,
+            signerKeys: [TestPgpFixtures.armoredPublic]
+        )
+        #expect(!verdict.valid)
+    }
+
+    /// Only an offered key may vouch. Offered the wrong key — or none — a real
+    /// signature comes back not valid, which `signatureState` renders as an
+    /// unknown signer, never a pass.
+    @Test func onlyAnOfferedKeyValidatesADetachedSignature() throws {
+        let signed = Data("the exact octets that were signed\r\n".utf8)
+        let signature = try detachedSignature(over: signed)
+
+        let wrongKey = crypto.verifyDetached(
+            signedBytes: signed,
+            armoredSignature: signature,
+            signerKeys: [TestPgpFixtures.unrelatedPublicKey]
+        )
+        #expect(!wrongKey.valid)
+
+        // No offered key: a signature is present (the caller only calls this
+        // with one) but nothing can vouch for it.
+        let noKey = crypto.verifyDetached(
+            signedBytes: signed,
+            armoredSignature: signature,
+            signerKeys: []
+        )
+        #expect(noKey.present)
+        #expect(!noKey.valid)
     }
 
     // MARK: - Fingerprints

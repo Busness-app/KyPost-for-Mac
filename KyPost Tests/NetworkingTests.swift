@@ -595,3 +595,84 @@ private let validPairingLink = URL(
         #expect(RelayMailSource.conflictError(body: body) == .clientSideNeeded)
     }
 }
+
+// MARK: - PgpPayloadClient request shape and decoding
+
+@Suite struct PgpPayloadClientTests {
+    private let auth = RelayAuth(deviceId: "dev-1", deviceSecret: "secret-1")
+
+    /// The request contract, none of which was covered before — and every part
+    /// of which had a live bug:
+    ///
+    ///   * the URL must be built so a bare-host `srv` (the stored form, with no
+    ///     trailing slash) yields a valid absolute path. The old URLComponents
+    ///     build produced a nil URL here and failed every read on the device;
+    ///   * the mailbox and message travel as query items named `mailbox` and
+    ///     `messageId`. The server parses `messageId` as an IMAP UID and 400s on
+    ///     anything else, so a stray `message` broke every client-protected read;
+    ///   * device identity travels in the pairing headers.
+    @Test func requestTargetsThePayloadEndpointWithMailboxAndMessageId() async throws {
+        let client = stubClient(status: 200, json: "{}") { request in
+            let url = request.url!
+            #expect(url.scheme == "https")
+            #expect(url.host == "relay.example.com")
+            #expect(url.path == "/api/mail/pgp-payload")
+
+            let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            #expect(items.contains(URLQueryItem(name: "mailbox", value: "INBOX")))
+            #expect(items.contains(URLQueryItem(name: "messageId", value: "42")))
+            #expect(!items.contains { $0.name == "message" })
+
+            #expect(request.httpMethod == "GET")
+            #expect(request.value(forHTTPHeaderField: "X-Kypost-Device-Id") == "dev-1")
+            #expect(request.value(forHTTPHeaderField: "X-Kypost-Device-Secret") == "secret-1")
+        }
+        _ = try await PgpPayloadClient(
+            httpClient: client, serverUrl: "https://relay.example.com", auth: auth
+        ).fetch(mailbox: "INBOX", messageId: "42")
+    }
+
+    /// The signed-only wire fields decode. `signedPartBase64` is the octets the
+    /// detached signature covers; if it silently dropped, signed-only mail would
+    /// read blank — the very drift that motivated this path.
+    @Test func decodesTheSignedOnlyWireFields() async throws {
+        let json = """
+        {
+          "encryptedPayload": "",
+          "signaturePayload": "-----BEGIN PGP SIGNATURE-----",
+          "signedPartBase64": "aGk=",
+          "body": "",
+          "signerKeys": [],
+          "sender": "Bob <bob@example.com>",
+          "resolvedSender": "bob@example.com"
+        }
+        """
+        let client = stubClient(status: 200, json: json)
+        let outcome = try await PgpPayloadClient(
+            httpClient: client, serverUrl: "https://relay.example.com", auth: auth
+        ).fetch(mailbox: "INBOX", messageId: "42")
+        guard case .success(let payload) = outcome else {
+            Issue.record("expected success, got \(outcome)")
+            return
+        }
+        #expect(payload.signedPartBase64 == "aGk=")
+        #expect(payload.signaturePayload == "-----BEGIN PGP SIGNATURE-----")
+        #expect(payload.resolvedSender == "bob@example.com")
+        #expect(payload.rawSender == "Bob <bob@example.com>")
+    }
+
+    /// The three status codes each map to their own row rather than a generic
+    /// failure, because each is a different sentence to the reader.
+    @Test(arguments: [
+        (404, PgpPayloadResult.noPayload),
+        (409, PgpPayloadResult.notClientProtected),
+        (413, PgpPayloadResult.tooLarge),
+    ]) func statusCodesMapToTheirOwnRow(testCase: (status: Int, expected: PgpPayloadResult)) async throws {
+        let outcome = try await PgpPayloadClient(
+            httpClient: stubClient(status: testCase.status),
+            serverUrl: "https://relay.example.com",
+            auth: auth
+        ).fetch(mailbox: "INBOX", messageId: "42")
+        #expect(outcome == testCase.expected)
+    }
+}

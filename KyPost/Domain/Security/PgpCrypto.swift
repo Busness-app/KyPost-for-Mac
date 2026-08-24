@@ -44,6 +44,21 @@ protocol PgpDecrypting: Sendable {
         signerKeys: [String]
     ) throws -> DecryptedMessage
 
+    /// Verifies a detached signature over `signedBytes` — the verbatim octets
+    /// the signature covers — using the server-narrowed candidate keys. This is
+    /// the signed-but-not-encrypted counterpart of `decrypt`.
+    ///
+    /// Public-key only: it needs no private key, so the reader can call it
+    /// without unsealing the vault. It reports on the same terms `decrypt` sets
+    /// for its `RawSignature` — a signature that will not parse is absent, one
+    /// with no matching offered key is present but not valid, and only a real
+    /// verification against an offered key is a pass.
+    func verifyDetached(
+        signedBytes: Data,
+        armoredSignature: String,
+        signerKeys: [String]
+    ) -> RawSignature
+
     /// The entity fingerprint of an armored public key — the primary's,
     /// whichever component of it might sign.
     ///
@@ -92,6 +107,14 @@ struct UnavailablePgpCrypto: PgpDecrypting, PgpEncrypting {
         signerKeys: [String]
     ) throws -> DecryptedMessage {
         throw PgpCryptoError.unavailable
+    }
+
+    func verifyDetached(
+        signedBytes: Data,
+        armoredSignature: String,
+        signerKeys: [String]
+    ) -> RawSignature {
+        RawSignature()
     }
 
     func fingerprint(ofArmoredPublicKey key: String) -> String? { nil }

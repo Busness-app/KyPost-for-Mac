@@ -127,6 +127,56 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting {
         )
     }
 
+    func verifyDetached(
+        signedBytes: Data,
+        armoredSignature: String,
+        signerKeys: [String]
+    ) -> RawSignature {
+        // The caller only reaches here with a non-empty detached signature, so
+        // a signature IS present; the only question is whether an offered key
+        // verifies it. With no offered key nothing can, which `signatureState`
+        // renders as "signed by a key you haven't saved" — present, not valid,
+        // and not an accusation.
+        guard !signerKeys.isEmpty,
+              let verificationKeys = try? keyRing(fromArmored: signerKeys),
+              verificationKeys.countEntities() > 0 else {
+            return RawSignature(present: true)
+        }
+
+        do {
+            guard let builder = try pgp.verify() else { return RawSignature() }
+            builder.verificationKeys(verificationKeys)
+            // Note what is NOT called: `utf8()` would canonicalise line endings
+            // before the check, and a detached signature covers the transmitted
+            // bytes exactly. The server ships those exact bytes in
+            // signedPartBase64, so the input is already what was signed.
+            let handle = try builder.new()
+            let result = try handle.verifyDetached(
+                signedBytes,
+                signature: Data(armoredSignature.utf8),
+                encoding: Self.autoDetectEncoding
+            )
+
+            var verified = true
+            do { try result.signatureError() } catch { verified = false }
+
+            // A VerifyResult came back, so the signature parsed: it is present
+            // regardless of whether an offered key matched. Attribution stays
+            // entity-level, exactly as on the decrypt path — see rawSignature.
+            let fingerprint = result.signedByKey()?.getFingerprint() ?? ""
+            return RawSignature(
+                present: true,
+                valid: verified && !fingerprint.isEmpty,
+                signerKeyID: result.signedByKeyIdHex(),
+                signerFingerprint: fingerprint
+            )
+        } catch {
+            // A signature that will not parse is absent, not invalid — matching
+            // the encrypted path and Android's verifyDetached.
+            return RawSignature()
+        }
+    }
+
     func fingerprint(ofArmoredPublicKey key: String) -> String? {
         guard let parsed = CryptoKey(fromArmored: key) else { return nil }
         let value = parsed.getFingerprint()

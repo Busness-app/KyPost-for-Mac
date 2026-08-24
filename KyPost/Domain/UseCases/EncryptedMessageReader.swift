@@ -102,6 +102,12 @@ nonisolated struct EncryptedMessageReader: Sendable {
             return .fetchFailed(error.localizedDescription)
         }
 
+        guard !payload.encryptedPayload.isEmpty else {
+            // A signed-but-not-encrypted message: readable content in the
+            // clear, a detached signature, nothing to decrypt.
+            return signedOnly(payload)
+        }
+
         // Conflicted entries carry no key material and must never be offered
         // to a signature check. They stay in `payload.signerKeys` so
         // `signatureState` can still report `.keyChanged` from them.
@@ -113,24 +119,6 @@ nonisolated struct EncryptedMessageReader: Sendable {
         // longer short-circuits first. Do not remove it as dead code without
         // re-checking that precedence.
         let offeredKeys = payload.signerKeys.filter { !$0.conflict }.map(\.publicKey)
-
-        guard !payload.encryptedPayload.isEmpty else {
-            // A signed-but-not-encrypted message: readable body, detached
-            // signature, nothing to decrypt.
-            //
-            // NOT REACHABLE TODAY, and deliberately not implemented. The
-            // server keeps the two payloads mutually exclusive, and this
-            // function only runs for messages it flagged encrypted.
-            //
-            // Reviving it is a design decision, not a cleanup. `payload.body`
-            // is the server's extracted *display* body, not the canonical
-            // octets that were signed, and a body that reads identically to a
-            // human but differs by a byte fails verification outright — which
-            // `signatureState` maps to `.invalid`, the strongest accusation
-            // this app makes. Wiring it up as-is would falsely accuse real
-            // correspondents over a routine canonicalisation mismatch.
-            return .decryptFailed("this message carries no encrypted content")
-        }
 
         let decrypted: DecryptedMessage
         do {
@@ -163,6 +151,57 @@ nonisolated struct EncryptedMessageReader: Sendable {
             body: body,
             signature: signatureState(
                 signature: decrypted.signature,
+                signerKeys: payload.signerKeys,
+                fingerprint: crypto.fingerprint(ofArmoredPublicKey:)
+            ),
+            resolvedSender: payload.resolvedSender
+        )
+    }
+
+    /// A signed-but-not-encrypted message: nothing to decrypt, but a detached
+    /// signature still to check.
+    ///
+    /// Verification runs over `signedPartBase64` — the verbatim transmitted
+    /// octets the server re-fetched raw — and **never** over `body`. `body` is
+    /// the server's transfer-decoded render: it reads identically to a human
+    /// but can differ from the signed bytes by a newline, and a byte-exact
+    /// detached check over it would falsely accuse a real correspondent. That
+    /// is precisely the trap the server's own signedOnlyParts avoids by
+    /// shipping the raw part.
+    private func signedOnly(_ payload: PgpPayload) -> ReadOutcome {
+        guard let signedPart = Data(base64Encoded: payload.signedPartBase64),
+              !signedPart.isEmpty,
+              !payload.signaturePayload.isEmpty else {
+            // The server could not produce verifiable octets (its raw re-fetch
+            // failed), so it left the readable `body` populated instead. Show
+            // it, but claim nothing about a signature that cannot be checked —
+            // the honest could-not-check state, neither a false accusation nor
+            // a failure. With nothing readable either, it is terminal.
+            guard !payload.body.isEmpty else { return .noEncryptedContent }
+            return .decrypted(
+                body: DecryptedBody(html: nil, plain: payload.body, protectedSubject: nil),
+                signature: .none,
+                resolvedSender: payload.resolvedSender
+            )
+        }
+
+        guard let body = mime(signedPart) else {
+            return .decryptFailed("this message could not be read")
+        }
+
+        // Conflicted entries carry no key material and must never be offered to
+        // a signature check; they stay in `signerKeys` so the verdict can be
+        // `.keyChanged`. Same reasoning as the encrypted path above.
+        let offeredKeys = payload.signerKeys.filter { !$0.conflict }.map(\.publicKey)
+        let signature = crypto.verifyDetached(
+            signedBytes: signedPart,
+            armoredSignature: payload.signaturePayload,
+            signerKeys: offeredKeys
+        )
+        return .decrypted(
+            body: body,
+            signature: signatureState(
+                signature: signature,
                 signerKeys: payload.signerKeys,
                 fingerprint: crypto.fingerprint(ofArmoredPublicKey:)
             ),
