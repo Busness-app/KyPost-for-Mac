@@ -124,4 +124,4 @@ The network-facing tests run against a stubbed `HTTPClient`. They need no backen
 
 ## License
 
-GPL-3.0 — see [LICENSE.txt](LICENSE.txt).
+MIT, developed by Busnes.app — see [LICENSE.txt](LICENSE.txt).
