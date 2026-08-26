@@ -1,0 +1,60 @@
+name: Bug report
+description: Something in the KyPost Apple client does not work as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        **Not for security vulnerabilities** — use
+        [Security Advisories](https://github.com/Busness-app/KyPost-for-Mac/security/advisories/new).
+
+
+        This client is **pre-release** and not yet a supported launch channel.
+        Reports are welcome; expect gaps.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what you expected instead
+    validations: {required: true}
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+    validations: {required: true}
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Which platform?
+      options: ["macOS", "iOS", "iPadOS"]
+    validations: {required: true}
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version and hardware
+      placeholder: "macOS 15.6, Apple Silicon (M2) — or iOS 18.5, iPhone 15"
+    validations: {required: true}
+  - type: input
+    id: app-version
+    attributes:
+      label: App version and build
+      placeholder: "0.1.0 (42)"
+  - type: input
+    id: server-version
+    attributes:
+      label: Server version, if the problem involves one
+      description: On the server, Admin -> Server -> Application.
+      placeholder: "0.3.0"
+  - type: dropdown
+    id: delivery
+    attributes:
+      label: Notification delivery, if this is a notification bug
+      description: >-
+        APNs delivery on this client currently runs against the PRODUCTION Apple
+        environment, not sandbox.
+      options: ["Not a notification bug", "Push (APNs)", "App Pull"]
+  - type: textarea
+    id: logs
+    attributes:
+      label: Console output or a crash report
+      description: "**Redact before pasting** — logs can carry email addresses and hostnames."
+      render: text
