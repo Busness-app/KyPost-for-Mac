@@ -541,6 +541,7 @@ private final class PinArmingRecorder: @unchecked Sendable {
         let client = stubClient(json: json, onRequest: { _ in recorder.snapshotAtRequest() })
         let env = try makeEnvironment(client: client)
         env.service.setPendingPin = { pin, _ in recorder.arm(pin) }
+        env.service.probeSpkiHash = { _ in "hash-from-link" }
 
         var pinned = params
         pinned.pin = "hash-from-link"
@@ -558,6 +559,7 @@ private final class PinArmingRecorder: @unchecked Sendable {
         let json = #"{"ok": true, "deviceId": "dev-7", "deviceSecret": "s-7"}"#
         let env = try makeEnvironment(client: stubClient(json: json))
         env.service.observedSpkiHash = { _ in "hash-observed" }
+        env.service.probeSpkiHash = { _ in "hash-from-link" }
 
         var pinned = params
         pinned.pin = "hash-from-link"
@@ -573,6 +575,7 @@ private final class PinArmingRecorder: @unchecked Sendable {
         let json = #"{"ok": true, "deviceId": "dev-9", "deviceSecret": "s-9"}"#
         let env = try makeEnvironment(client: stubClient(json: json), paired: true)
         try env.pairingStore.setPinnedSpkiHash("hash-old")
+        env.service.probeSpkiHash = { _ in "hash-renewed" }
 
         var pinned = params
         pinned.pin = "hash-renewed"
@@ -593,6 +596,67 @@ private final class PinArmingRecorder: @unchecked Sendable {
 
         #expect(sawPin == nil)
         #expect(PairingParams(pairing: makePairing()).pin == nil)
+    }
+
+    /// Arming a pin is not the same as enforcing one. The delegate's
+    /// server-trust callback fires once per CONNECTION, so a registration on a
+    /// pooled or resumed connection is never compared against the armed pin.
+    /// The pairing token must not leave until a live handshake has shown the
+    /// relay actually presents that key.
+    @Test func aRelayPresentingTheWrongKeyIsRefusedBeforeAnythingIsSent() async throws {
+        let posts = Box<Int>(0)
+        let env = try makeEnvironment(client: stubClient { request in
+            if request.httpMethod == "POST" { posts.mutate { $0 += 1 } }
+        })
+        env.service.probeSpkiHash = { _ in "hash-the-relay-really-has" }
+
+        var pinned = params
+        pinned.pin = "hash-from-link"
+        let outcome = await env.service.pair(params: pinned, deviceToken: "t")
+
+        guard case .failure = outcome else {
+            Issue.record("expected a refusal, got \(outcome)")
+            return
+        }
+        #expect(posts.value == 0, "the pairing token must not be sent to a relay failing the pin")
+        #expect(try env.pairingStore.loadPairing() == nil)
+        #expect(env.pairingStore.pinnedSpkiHash == nil)
+    }
+
+    /// No observable handshake is not "assume it was fine". It is the same
+    /// fail-open the TOFU path already guards against, and on this path the
+    /// link explicitly asked for a pin.
+    @Test func anUnobservableHandshakeRefusesRatherThanPairingUnpinned() async throws {
+        let posts = Box<Int>(0)
+        let env = try makeEnvironment(client: stubClient { request in
+            if request.httpMethod == "POST" { posts.mutate { $0 += 1 } }
+        })
+        env.service.probeSpkiHash = { _ in nil }
+
+        var pinned = params
+        pinned.pin = "hash-from-link"
+        let outcome = await env.service.pair(params: pinned, deviceToken: "t")
+
+        guard case .failure = outcome else {
+            Issue.record("expected a refusal, got \(outcome)")
+            return
+        }
+        #expect(posts.value == 0)
+        #expect(try env.pairingStore.loadPairing() == nil)
+    }
+
+    /// A hostile link cannot install a pin the relay does not present, which
+    /// would lock this device out of the real relay until it was unpaired.
+    @Test func aPinTheRelayDoesNotPresentNeverReplacesTheStoredOne() async throws {
+        let env = try makeEnvironment(client: stubClient(), paired: true)
+        try env.pairingStore.setPinnedSpkiHash("hash-real-relay")
+        env.service.probeSpkiHash = { _ in "hash-real-relay" }
+
+        var pinned = params
+        pinned.pin = "hash-attacker-chose"
+        _ = await env.service.pair(params: pinned, deviceToken: "t")
+
+        #expect(env.pairingStore.pinnedSpkiHash == "hash-real-relay")
     }
 
     /// A relay that publishes no pin still pairs, and still records the TOFU

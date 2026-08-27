@@ -8,6 +8,40 @@
 	     and silently receives nothing from a production relay. -->
 	<key>aps-environment</key>
 	<string>production</string>
+	<!-- ACCESS-GROUP RENAME, 2026-08-27. Read before changing this value again.
+
+	     This group moved with the bundle id, from com.urlxl.mail. Keychain
+	     items are scoped to their access group, and KeychainStorage /
+	     GatedCredentialStore derive their service name from
+	     Bundle.main.bundleIdentifier — so everything written by a pre-rename
+	     build (device secret, gated credential, app-lock PIN verifier,
+	     enrollment envelope, and the Secure Enclave key whose tag also moved
+	     in EnrollmentVault) is now unreachable. Unreachable means it cannot be
+	     read, and equally that unpair, "Reset KyPost on this device" and the
+	     Hostile Location Protection erase cannot delete it: they delete by the
+	     current service name only.
+
+	     The decision, recorded so it is auditable rather than inferred: NO
+	     migration or dual-group entitlement was added, because no build of
+	     this app has ever reached an end user. Verified, not assumed — the
+	     repository has no app release and no version tag (the only release is
+	     the GopenPGP XCFramework), and no distribution workflow existed at all
+	     until the one added in this same change.
+
+	     What that does NOT cover: developer machines that ran a pre-rename
+	     build still hold those items, and the wipe paths will not reach them.
+	     The residual exposure is bounded by the data-protection Keychain
+	     itself — the items stay encrypted, this-device-only, and reachable
+	     only by something signed with the old team-and-group pair, which no
+	     longer exists — but the app's own "erase everything" promise does not
+	     cover them, and on a machine that matters that gap should be closed by
+	     hand.
+
+	     If it ever turns out a build DID reach someone's device, this decision
+	     is wrong and the other option is required: add
+	     $(AppIdentifierPrefix)com.urlxl.mail as a second entry here, and a
+	     one-time purge on launch and in the wipe paths that deletes every item
+	     under the old service names and the old Secure Enclave key tag. -->
 	<key>keychain-access-groups</key>
 	<array>
 		<string>$(AppIdentifierPrefix)org.kysecurity.mail</string>

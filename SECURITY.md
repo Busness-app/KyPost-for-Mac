@@ -165,6 +165,26 @@ is minted by the server at registration and returned exactly once.
   envelope. If it cannot, the wipe reports itself incomplete and the app fails closed;
   see **App lock** above.
 
+### Keychain items from before the identifier rename
+
+On 2026-08-27 the bundle identifier and Keychain access group moved from
+`com.urlxl.mail` to `org.kysecurity.mail`. Keychain items are scoped to their
+access group, so anything a pre-rename build stored is unreachable to the app
+now — including by the wipe paths, which delete by the current service name.
+
+No migration was added, because no build of this app has ever reached an end
+user: there is no app release and no version tag, and no distribution pipeline
+existed before that date. Developer machines that ran a pre-rename build are
+the exception. Those items stay in the data-protection Keychain,
+this-device-only, reachable only by something signed with the old
+team-and-group pair — but **the "erase everything" guarantee below does not
+reach them**, and on a machine where that matters they should be cleared by
+hand.
+
+This is stated rather than left to be inferred so that it is auditable, and so
+that the decision is revisited if the premise turns out to be wrong. See the
+comment in `KyPost/KyPost.entitlements` for what to do in that case.
+
 ### What is out of scope
 
 - **A machine with an attacker at the keyboard, unlocked, with the app open.** Every
