@@ -1,0 +1,86 @@
+name: Bug report
+description: Something in the KyPost Apple client does not work as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        **Not for security vulnerabilities** — use
+        [Security Advisories](https://github.com/Busness-app/KyPost-for-Mac/security/advisories/new).
+
+
+        This client is **pre-release** and not yet a supported launch channel.
+        Reports are welcome; expect gaps.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what you expected instead
+    validations: {required: true}
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+    validations: {required: true}
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Which platform?
+      options: ["macOS", "iOS", "iPadOS"]
+    validations: {required: true}
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version and hardware
+      placeholder: "macOS 15.6, Apple Silicon (M2) — or iOS 18.5, iPhone 15"
+    validations: {required: true}
+  - type: input
+    id: app-version
+    attributes:
+      label: App version, build, and the commit you built from
+      description: >-
+        The commit matters more than the version here. There is no release
+        channel yet and `MARKETING_VERSION` is a constant, so the version alone
+        does not distinguish one tester's binary from another's.
+      placeholder: "1.0 (1), commit a1b2c3d"
+    validations: {required: true}
+  - type: input
+    id: server-version
+    attributes:
+      label: Server version, if the problem involves one
+      description: On the server, Admin -> Server -> Application.
+      placeholder: "0.3.0"
+  - type: dropdown
+    id: delivery
+    attributes:
+      label: Notification delivery, if this is a notification bug
+      options: ["Not a notification bug", "Push (APNs)", "App Pull"]
+
+  - type: dropdown
+    id: build-config
+    attributes:
+      label: How was this build produced, if push is involved?
+      description: >-
+        This decides which Apple environment your device token belongs to, and
+        it is the first thing to check when push never arrives. A **Debug** build
+        run from Xcode uses `KyPost.entitlements`, which is
+        `aps-environment = development` — a SANDBOX token. Only **Release**
+        uses `KyPost_Release.entitlements` and registers a production token. A
+        token from one environment will never receive a push sent to the other.
+      options:
+        - "Not a push problem"
+        - "Debug, built and run from Xcode (sandbox token)"
+        - "Release build"
+        - "TestFlight"
+        - "Not sure"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Console output or a crash report
+      description: >-
+        **Check what you are pasting.** A crash report from an Xcode build embeds
+        your home directory path (`/Users/<you>/Library/Developer/Xcode/...`) in
+        every stack frame, and console output can carry your self-hosted server's
+        URL, your email address and this device's identifier. For a project whose
+        point is keeping mail metadata off other people's infrastructure, a public
+        issue is a poor place to publish yours.
+      render: text

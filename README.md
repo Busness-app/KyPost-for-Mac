@@ -148,4 +148,4 @@ listed here and have since landed.
 
 ## License
 
-GPL-3.0 — see [LICENSE.txt](LICENSE.txt).
+MIT, developed by Busnes.app — see [LICENSE.txt](LICENSE.txt).
