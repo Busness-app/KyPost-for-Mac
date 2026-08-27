@@ -173,8 +173,9 @@ access group, so anything a pre-rename build stored is unreachable to the app
 now — including by the wipe paths, which delete by the current service name.
 
 No migration was added, because no build of this app has ever reached an end
-user: there is no app release and no version tag, and no distribution pipeline
-existed before that date. Developer machines that ran a pre-rename build are
+user. Two bases: there is no app release and no version tag, and no
+distribution pipeline existed before that date; and the maintainer attested on
+2026-08-27 that no build has ever existed outside their control. Developer machines that ran a pre-rename build are
 the exception. Those items stay in the data-protection Keychain,
 this-device-only, reachable only by something signed with the old
 team-and-group pair — but **the "erase everything" guarantee below does not
