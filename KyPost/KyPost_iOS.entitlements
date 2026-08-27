@@ -2,11 +2,19 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- iOS, Debug. Paired with KyPost_iOS_Release.entitlements; both are
+	     selected by CODE_SIGN_ENTITLEMENTS[sdk=iphone*] in project.pbxproj.
+	     
+	     This file existed for months with ZERO references in project.pbxproj
+	     while both configurations pointed at the macOS files — so an iOS
+	     build silently carried com.apple.security.* sandbox keys, which mean
+	     nothing on iOS. Do not "tidy up" by pointing iOS back at the macOS
+	     files; that is the bug this replaced. -->
 	<key>aps-environment</key>
 	<string>development</string>
 	<key>keychain-access-groups</key>
 	<array>
-		<string>$(AppIdentifierPrefix)com.urlxl.mail</string>
+		<string>$(AppIdentifierPrefix)org.kysecurity.mail</string>
 	</array>
 </dict>
 </plist>

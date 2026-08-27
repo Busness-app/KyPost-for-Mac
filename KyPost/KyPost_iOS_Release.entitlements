@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- iOS, Release. The ONLY difference from KyPost_iOS.entitlements is a
+	     production aps-environment: a TestFlight or App Store build signed
+	     with `development` here gets its push tokens from the sandbox APNs
+	     and silently receives nothing from a production relay. -->
+	<key>aps-environment</key>
+	<string>production</string>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)org.kysecurity.mail</string>
+	</array>
+</dict>
+</plist>
