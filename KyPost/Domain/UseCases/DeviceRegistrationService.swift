@@ -17,7 +17,12 @@ extension PairingParams {
             sub: pairing.sub,
             srv: pairing.srv,
             pt: pairing.pairingToken,
-            reg: pairing.registrationUrl
+            reg: pairing.registrationUrl,
+            // Deliberately no pin. Re-registration is not a user handing the
+            // app a fresh link; the pin persisted at pairing already governs
+            // this host, and synthesising one here would let a stored value
+            // re-arm itself forever.
+            pin: nil
         )
     }
 }
@@ -39,6 +44,10 @@ final class DeviceRegistrationService {
     /// the registration rode a pooled or resumed connection and no challenge
     /// ever fired. Wired by SingletonGraph; nil in tests.
     var probeSpkiHash: ((_ url: URL) async -> String?)?
+    /// Arms a link-supplied pin on the transport for the duration of a
+    /// pairing attempt, and clears it afterwards (nil pin). Wired by
+    /// SingletonGraph to the pinned session's delegate; nil in tests.
+    var setPendingPin: ((_ pin: String?, _ host: String) -> Void)?
 
     /// One registration per (pairing token, device token). A pairing deep
     /// link is delivered to every open main window and each auto-pairs, so
@@ -85,6 +94,41 @@ final class DeviceRegistrationService {
         deviceToken: String,
         deviceId: String?
     ) async -> RegistrationOutcome {
+        // Arm BEFORE the POST, not after it. This request carries the
+        // pairing token and the push endpoint up and brings the device
+        // secret back down, so a pin applied once the response has landed
+        // has already missed everything it was meant to protect.
+        let srvURL = URL(string: params.srv)
+        let srvHost = srvURL?.host()
+        if let linkPin = params.pin {
+            // A pin we cannot bind to a host is a pin we cannot enforce. The
+            // link asked for pinning, so refuse rather than quietly pairing
+            // without it.
+            guard let srvURL, let srvHost else {
+                return .failure("This pairing link's server address could not be read, so its certificate pin could not be applied.")
+            }
+            setPendingPin?(linkPin, srvHost)
+
+            // Arming is not enforcement. The delegate's server-trust callback
+            // fires once per CONNECTION, so a registration riding a pooled or
+            // resumed connection is never compared against the pin — the same
+            // fail-open-on-arming hazard `probeSpkiHash` already exists to
+            // close on the TOFU path below. Force a handshake here, while the
+            // pin is armed, and check what it presented BEFORE any credential
+            // is sent. A refused or unobtainable handshake yields nil.
+            let observed = await probeSpkiHash?(srvURL)
+            guard let observed, observed == linkPin else {
+                setPendingPin?(nil, srvHost)
+                Log.app.error("Relay certificate does not match the pin in the pairing link; refusing to register.")
+                return .failure("This server's certificate does not match the pairing link. Nothing was sent. Do not pair on this network.")
+            }
+        }
+        defer {
+            if params.pin != nil, let srvHost {
+                setPendingPin?(nil, srvHost)
+            }
+        }
+
         let outcome = await client.register(
             deviceToken: deviceToken,
             params: params,
@@ -121,9 +165,30 @@ final class DeviceRegistrationService {
             // way to re-pin, which is the documented rotation recovery.
             // Best effort: a Keychain hiccup must not fail a good registration.
             // Empty counts as unpinned, matching the delegate's own lookup.
-            if (securePairingStore.pinnedSpkiHash ?? "").isEmpty,
-               let srvURL = URL(string: params.srv),
-               let host = srvURL.host() {
+            if let linkPin = params.pin {
+                // Reached only after the probe above observed this exact key
+                // on a live handshake, so persisting it records something that
+                // was checked rather than something that was hoped for. That
+                // ordering is also what makes overwriting an existing pin safe
+                // — a mangled or hostile link cannot install a pin the relay
+                // does not actually present, which would otherwise lock the
+                // device out of the real relay until it was unpaired. It is
+                // how a certificate renewal recovers: re-scan, and the new pin
+                // replaces the old.
+                //
+                // NOT `try?`. A pairing that demanded a pin and then failed to
+                // store one leaves every later request on system trust while
+                // reporting success — the TOFU branch below at least logs that
+                // case, and this one is stricter because the link was explicit.
+                do {
+                    try securePairingStore.setPinnedSpkiHash(linkPin)
+                } catch {
+                    Log.app.error("Paired but could not store the certificate pin: \(error)")
+                    try? securePairingStore.clear()
+                    return .failure("Paired, but this device could not store the server's certificate pin, so the pairing was undone. Try again.")
+                }
+            } else if (securePairingStore.pinnedSpkiHash ?? "").isEmpty,
+               let srvURL, let host = srvHost {
                 // `observedSpkiHash` only has a value when this registration
                 // happened to open a new TLS connection. Connection reuse and
                 // session resumption skip the challenge entirely, which used to

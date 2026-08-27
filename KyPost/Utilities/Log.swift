@@ -9,7 +9,7 @@ import Foundation
 import os
 
 enum Log {
-    private static let subsystem = Bundle.main.bundleIdentifier ?? "com.urlxl.mail"
+    private static let subsystem = Bundle.main.bundleIdentifier ?? "org.kysecurity.mail"
 
     static let app = Logger(subsystem: subsystem, category: "app")
     static let mail = Logger(subsystem: subsystem, category: "mail")

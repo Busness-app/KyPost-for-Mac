@@ -11,6 +11,10 @@ import Testing
 // MARK: - Envelope
 
 @Suite struct DeviceEnvelopeParsingTests {
+    /// `v` is emitted as a **raw JSON token**, so the default `2` reaches the
+    /// parser as a JSON *number* — which is what the browser serialises and
+    /// what the normative spec shows (`"v": 1`, unquoted). A quoted form is
+    /// passed as `"\"2\""` where a test needs it.
     private func envelope(
         v: String = "2",
         alg: String = "ECDH-P256+HKDF-SHA256+A256GCM",
@@ -19,7 +23,7 @@ import Testing
         ct: Data = Data(repeating: 3, count: 32)
     ) -> String {
         """
-        {"v":"\(v)","alg":"\(alg)","epk":"\(epk.base64EncodedString())",
+        {"v":\(v),"alg":"\(alg)","epk":"\(epk.base64EncodedString())",
          "iv":"\(iv.base64EncodedString())","ct":"\(ct.base64EncodedString())"}
         """
     }
@@ -28,6 +32,16 @@ import Testing
         let fields = parseDeviceEnvelope(envelope())
         #expect(fields?.epk.count == 65)
         #expect(fields?.iv.count == 12)
+    }
+
+    /// The version tag arrives as a JSON number from the server, but a quoted
+    /// string must parse too — Android reads the primitive's textual content,
+    /// and a strict `as? String` check here rejected every real server
+    /// envelope as malformed. Both forms of "2" are accepted; "1" is not.
+    @Test func acceptsTheVersionTagAsNumberOrString() {
+        #expect(parseDeviceEnvelope(envelope(v: "2")) != nil, "number 2")
+        #expect(parseDeviceEnvelope(envelope(v: "\"2\"")) != nil, "string \"2\"")
+        #expect(parseDeviceEnvelope(envelope(v: "\"1\"")) == nil, "string \"1\"")
     }
 
     /// Nil means re-run the ceremony, never retry — so every malformed shape
@@ -218,8 +232,8 @@ import Testing
         #expect(enrollmentBucket(at: Date(timeIntervalSince1970: 241)) == 2)
     }
 
-    @Test func displaysAsTwoGroupsOfSeven() {
-        #expect(formattedEnrollmentCode("ABCDEFGHJKMNPQ") == "ABCDEFG-HJKMNPQ")
+    @Test func displaysAsFourGroups() {
+        #expect(formattedEnrollmentCode("ABCDEFGHJKMNPQ") == "ABCD-EFG-HJKM-NPQ")
     }
 }
 

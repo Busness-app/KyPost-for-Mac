@@ -18,7 +18,7 @@ private func scratchDefaults() -> UserDefaults {
 
 /// Keychain in a unique test service so runs never collide or pollute the app's items.
 private func scratchKeychain() -> KeychainStorage {
-    KeychainStorage(service: "com.urlxl.mail.tests.\(UUID().uuidString)")
+    KeychainStorage(service: "org.kysecurity.mail.tests.\(UUID().uuidString)")
 }
 
 private func makeEmail(

@@ -499,5 +499,5 @@ private struct AlwaysAuthenticates: DeviceAuthenticating {
 }
 
 private func scratchService() -> String {
-    "com.urlxl.mail.tests.\(UUID().uuidString)"
+    "org.kysecurity.mail.tests.\(UUID().uuidString)"
 }

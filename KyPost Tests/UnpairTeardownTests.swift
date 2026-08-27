@@ -15,7 +15,7 @@ import Testing
     private func makeGraph() throws -> SingletonGraph {
         try SingletonGraph(
             userDefaults: UserDefaults(suiteName: "tests.\(UUID().uuidString)")!,
-            keychain: KeychainStorage(service: "com.urlxl.mail.tests.\(UUID().uuidString)"),
+            keychain: KeychainStorage(service: "org.kysecurity.mail.tests.\(UUID().uuidString)"),
             database: AppDatabase(inMemory: true)
         )
     }

@@ -2,16 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- iOS, Debug. Paired with KyPost_iOS_Release.entitlements; both are
-	     selected by CODE_SIGN_ENTITLEMENTS[sdk=iphone*] in project.pbxproj.
-	     
-	     This file existed for months with ZERO references in project.pbxproj
-	     while both configurations pointed at the macOS files — so an iOS
-	     build silently carried com.apple.security.* sandbox keys, which mean
-	     nothing on iOS. Do not "tidy up" by pointing iOS back at the macOS
-	     files; that is the bug this replaced. -->
+	<!-- iOS, Release. The ONLY difference from KyPost_iOS.entitlements is a
+	     production aps-environment: a TestFlight or App Store build signed
+	     with `development` here gets its push tokens from the sandbox APNs
+	     and silently receives nothing from a production relay. -->
 	<key>aps-environment</key>
-	<string>development</string>
+	<string>production</string>
 	<!-- ACCESS-GROUP RENAME, 2026-08-27. Read before changing this value again.
 
 	     This group moved with the bundle id, from com.urlxl.mail. Keychain

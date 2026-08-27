@@ -182,7 +182,7 @@ import Testing
 
     @Test @MainActor func notPairedProducesFriendlyError() async throws {
         let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
-        let keychain = KeychainStorage(service: "com.urlxl.mail.tests.\(UUID().uuidString)")
+        let keychain = KeychainStorage(service: "org.kysecurity.mail.tests.\(UUID().uuidString)")
         let db = try AppDatabase(inMemory: true)
         let viewModel = InboxViewModel(
             mailRepository: MailRepository(

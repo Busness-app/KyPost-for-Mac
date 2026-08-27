@@ -390,6 +390,69 @@ private func makeDTO(
         #expect(log.value == ["POST", "GET"])
     }
 
+    // MARK: - 500-change paging
+
+    /// The relay answers 413 above 500 changes in one request. This bit
+    /// hardest on the very first sync of an existing address book, which is
+    /// the worst possible moment for contact sync to start failing.
+    @Test func aPushOverTheRelayLimitIsSplitIntoPages() async throws {
+        let pageSizes = Box<[Int]>([])
+        let env = try makeEnvironment(client: stubClient(json: #"{"cursor": 1}"#) { request in
+            guard request.httpMethod == "POST", let body = request.httpBody else { return }
+            let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+            pageSizes.mutate { $0.append((json?["changes"] as? [Any])?.count ?? -1) }
+        })
+
+        for index in 0..<501 {
+            try await env.repository.saveContact(
+                makeContact(name: "C\(index)", email: "c\(index)@example.com")
+            )
+        }
+        _ = try await env.repository.sync()
+
+        #expect(pageSizes.value == [500, 1])
+    }
+
+    /// Exactly the limit is one request, not two — an off-by-one here would
+    /// send an empty second page on every 500-change sync.
+    @Test func aPushExactlyAtTheLimitIsASingleRequest() async throws {
+        let posts = Box<Int>(0)
+        let env = try makeEnvironment(client: stubClient(json: #"{"cursor": 1}"#) { request in
+            if request.httpMethod == "POST" { posts.mutate { $0 += 1 } }
+        })
+
+        for index in 0..<500 {
+            try await env.repository.saveContact(
+                makeContact(name: "C\(index)", email: "c\(index)@example.com")
+            )
+        }
+        _ = try await env.repository.sync()
+
+        #expect(posts.value == 1)
+    }
+
+    /// Every page carries the SAME baseCursor. The server computes each delta
+    /// from the cursor the request carries, so holding it still is what makes
+    /// the final response a superset of the earlier ones.
+    @Test func everyPageSendsTheSameBaseCursor() async throws {
+        let cursors = Box<[Int]>([])
+        let env = try makeEnvironment(client: stubClient(json: #"{"cursor": 9}"#) { request in
+            guard request.httpMethod == "POST", let body = request.httpBody else { return }
+            let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+            cursors.mutate { $0.append((json?["baseCursor"] as? Int) ?? -1) }
+        })
+        env.cursorStore.advance(to: 4)
+
+        for index in 0..<501 {
+            try await env.repository.saveContact(
+                makeContact(name: "C\(index)", email: "c\(index)@example.com")
+            )
+        }
+        _ = try await env.repository.sync()
+
+        #expect(cursors.value == [4, 4])
+    }
+
     @Test func fullSyncAssignsUidWithoutDuplicating() async throws {
         let json = """
         {

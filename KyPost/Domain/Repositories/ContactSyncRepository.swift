@@ -172,11 +172,12 @@ final class ContactSyncRepository {
         if changes.isEmpty {
             response = try await client.pull(serverUrl: pairing.srv, auth: auth, since: cursor)
         } else {
-            response = try await client.push(
+            response = try await push(
                 serverUrl: pairing.srv,
                 auth: auth,
                 baseCursor: cursor,
-                changes: changes
+                changes: changes,
+                pendingCreates: pushable.filter { $0.uid == nil }
             )
         }
 
@@ -192,17 +193,6 @@ final class ContactSyncRepository {
 
         let changed = response.changed ?? []
         let deleted = response.deleted ?? []
-
-        // Reconcile before applying so the server's copy of a local create
-        // updates the existing row (matched by its new uid) instead of
-        // inserting a duplicate.
-        let creates = pushable.filter { $0.uid == nil }
-        for assignment in ContactSyncReconciliation.reconcile(
-            localPending: creates,
-            responseChanged: changed
-        ) {
-            try await contactDAO.assignUid(localId: assignment.localId, uid: assignment.uid)
-        }
 
         var applied = 0
         for dto in changed {
@@ -245,6 +235,66 @@ final class ContactSyncRepository {
             applied: applied,
             newCursor: cursorStore.lastCursor
         )
+    }
+
+    /// The relay answers 413 above this many changes in one request
+    /// (`contacts_handlers.go: maxContactsSyncChanges`), and its own comment
+    /// says a client with more than this to push pages it.
+    private static let maxChangesPerPush = 500
+
+    /// Pushes `changes` in pages the relay will accept, and returns the last
+    /// response — which is a superset of the earlier ones, because the server
+    /// computes every delta from the `baseCursor` the request carries and
+    /// every page sends the same one.
+    ///
+    /// Reconciliation happens after **each** page rather than once at the end.
+    /// Each page is applied atomically server-side (`ApplyBatch` commits all
+    /// or none), so a failure on page three leaves pages one and two
+    /// committed. Reconciling only at the end would leave those creates with
+    /// no local uid, and the next sync would push them again as new contacts
+    /// — turning one interrupted sync into a duplicated address book.
+    private func push(
+        serverUrl: String,
+        auth: RelayAuth,
+        baseCursor: Int,
+        changes: [ContactDTO],
+        pendingCreates: [Contact]
+    ) async throws -> ContactSyncPullResponse {
+        var unreconciled = pendingCreates
+        var last: ContactSyncPullResponse?
+
+        for start in stride(from: 0, to: changes.count, by: Self.maxChangesPerPush) {
+            let page = Array(changes[start..<min(start + Self.maxChangesPerPush, changes.count)])
+            let response = try await client.push(
+                serverUrl: serverUrl,
+                auth: auth,
+                baseCursor: baseCursor,
+                changes: page
+            )
+            last = response
+            // tooOld means the cursor predates the server's history window and
+            // the caller is about to discard the local cache entirely, so
+            // there is nothing left to reconcile against and no point sending
+            // the remaining pages into a delta that will be thrown away.
+            if response.tooOld == true { break }
+
+            if !unreconciled.isEmpty {
+                let assignments = ContactSyncReconciliation.reconcile(
+                    localPending: unreconciled,
+                    responseChanged: response.changed ?? []
+                )
+                for assignment in assignments {
+                    try await contactDAO.assignUid(localId: assignment.localId, uid: assignment.uid)
+                }
+                let assigned = Set(assignments.map(\.localId))
+                unreconciled.removeAll { assigned.contains($0.localId) }
+            }
+        }
+
+        // `changes` is non-empty at the only call site, so the loop always
+        // runs at least once.
+        guard let last else { throw ContactSyncError.notPaired }
+        return last
     }
 
     // MARK: - Dedupe

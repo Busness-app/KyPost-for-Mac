@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Picked up automatically: the KyPost folder is a synchronized root
+	     group (objectVersion 77), so this file needs no pbxproj entry. Only
+	     Info.plist and Presentation/AGENTS.md are membership exceptions. -->
+
+	<key>NSPrivacyTracking</key>
+	<false/>
+
+	<!-- No ATT, no ad networks, no analytics SDKs, and the app talks to
+	     exactly one host: the relay the user paired it to. There is no
+	     domain we could list here that is not the user's own server. -->
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+
+	<!-- Deliberately empty, and this is the entry most likely to be
+	     questioned in review, so the reasoning lives here rather than in a
+	     commit message.
+	     
+	     Apple defines "collect" as transmitting data off the device in a way
+	     that lets the DEVELOPER or their partners access it. KyPost is
+	     self-hosted: mail and contacts go to a relay the user runs, under a
+	     per-user `srv` URL captured at pairing, over a connection this app
+	     certificate-pins. No build of this app reports to any infrastructure
+	     the developer operates — there is none.
+	     
+	     This is a claim about the developer's access, not about whether the
+	     data is sensitive. If that ever stops being true — a hosted tier, a
+	     crash reporter, any default relay — this array stops being empty and
+	     the App Store Connect nutrition label changes with it.
+	     
+	     Note the nutrition label in App Store Connect is a SEPARATE artifact
+	     from this file and has to be answered on its own terms. -->
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<!-- The only required-reason API in the tree. Audited across all
+		     five categories: no file-timestamp, disk-space, boot-time or
+		     active-keyboard APIs are used. Re-check that before adding a
+		     dependency, not after an upload is rejected. -->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<!-- CA92.1: access limited to the app itself, its group and
+				     its extensions. KyPost stores its own settings and
+				     nothing else here; credentials live in the Keychain and
+				     mail in the SwiftData store. -->
+				<string>CA92.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

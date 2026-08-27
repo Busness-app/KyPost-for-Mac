@@ -81,7 +81,7 @@ private func certificate(fromBase64 base64: String) throws -> SecCertificate {
     }
 
     @Test @MainActor func pinnedHashRoundTripsThroughThePairingStore() throws {
-        let keychain = KeychainStorage(service: "com.urlxl.mail.tests.\(UUID().uuidString)")
+        let keychain = KeychainStorage(service: "org.kysecurity.mail.tests.\(UUID().uuidString)")
         let store = SecurePairingStore(keychain: keychain)
         #expect(store.pinnedSpkiHash == nil)
 

@@ -83,23 +83,47 @@ final class PushPairingViewModel {
 
     /// Parses a pasted kypost://native-pair link and asks for confirmation.
     func pairFromPastedLink() async {
-        guard let url = URL(string: pastedLink.trimmingCharacters(in: .whitespacesAndNewlines)),
-              let params = try? PairingLinkParser.parse(url) else {
+        guard let url = URL(string: pastedLink.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             state = .failed("That doesn't look like a valid pairing link.")
             return
         }
-        present(params: params)
+        do {
+            present(params: try PairingLinkParser.parse(url))
+        } catch {
+            state = .failed(Self.message(for: error))
+        }
     }
 
     /// Parses a scanned QR code containing a kypost://native-pair link and
     /// asks for confirmation.
     func pairFromScannedCode(_ payload: String) async {
-        guard let url = URL(string: payload.trimmingCharacters(in: .whitespacesAndNewlines)),
-              let params = try? PairingLinkParser.parse(url) else {
+        guard let url = URL(string: payload.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             state = .failed("That QR code isn't a KyPost pairing code.")
             return
         }
-        present(params: params)
+        do {
+            present(params: try PairingLinkParser.parse(url))
+        } catch {
+            state = .failed(Self.message(for: error, scanned: true))
+        }
+    }
+
+    /// A refused link is not the same as an unrecognised one, and the
+    /// certificate-pin case in particular must not read as "try again" —
+    /// retrying is exactly the wrong response to it.
+    private static func message(for error: Error, scanned: Bool = false) -> String {
+        switch error {
+        case PairingLinkError.malformedCertificatePin:
+            return "This pairing link carries a damaged certificate pin, so KyPost stopped rather than pairing without one. Generate a fresh link on your server's Security page. If a new link does the same thing, something is altering it in transit — do not pair on this network."
+        case PairingLinkError.registrationHostMismatch:
+            return "This pairing link names one server but registers with another. KyPost refused it."
+        case PairingLinkError.insecureServerURL:
+            return "This pairing link points at a server over plain http. KyPost refused it."
+        default:
+            return scanned
+                ? "That QR code isn't a KyPost pairing code."
+                : "That doesn't look like a valid pairing link."
+        }
     }
 
     /// Back to the scan/paste screen after a failure.

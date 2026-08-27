@@ -42,7 +42,7 @@ private let validDesktopLink = URL(
         return DesktopPairingService(
             client: DesktopRegistrationClient(httpClient: client),
             sessionStore: DesktopSessionStore(
-                keychain: KeychainStorage(service: "com.urlxl.mail.tests.\(UUID().uuidString)")
+                keychain: KeychainStorage(service: "org.kysecurity.mail.tests.\(UUID().uuidString)")
             )
         )
     }
@@ -82,7 +82,7 @@ private let validDesktopLink = URL(
 @MainActor
 @Suite struct DesktopPairingViewModelTests {
     private func makeViewModel(existingSession: Bool = false) throws -> DesktopPairingViewModel {
-        let keychain = KeychainStorage(service: "com.urlxl.mail.tests.\(UUID().uuidString)")
+        let keychain = KeychainStorage(service: "org.kysecurity.mail.tests.\(UUID().uuidString)")
         let sessionStore = DesktopSessionStore(keychain: keychain)
         if existingSession {
             try sessionStore.saveSession(DesktopSession(
@@ -133,7 +133,7 @@ private let validDesktopLink = URL(
     }
 
     @Test func confirmingThenPairStillCompletesRegistration() async throws {
-        let keychain = KeychainStorage(service: "com.urlxl.mail.tests.\(UUID().uuidString)")
+        let keychain = KeychainStorage(service: "org.kysecurity.mail.tests.\(UUID().uuidString)")
         let sessionStore = DesktopSessionStore(keychain: keychain)
         let json = """
         {"ok": true, "sessionToken": "jwt-token", "expiresIn": 86400, \
@@ -326,7 +326,7 @@ private let validDesktopLink = URL(
         return DesktopPairingService(
             client: DesktopRegistrationClient(httpClient: client),
             sessionStore: DesktopSessionStore(
-                keychain: KeychainStorage(service: "com.urlxl.mail.tests.\(UUID().uuidString)")
+                keychain: KeychainStorage(service: "org.kysecurity.mail.tests.\(UUID().uuidString)")
             ),
             now: { clock.value }
         )

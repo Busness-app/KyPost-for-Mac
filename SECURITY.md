@@ -165,6 +165,27 @@ is minted by the server at registration and returned exactly once.
   envelope. If it cannot, the wipe reports itself incomplete and the app fails closed;
   see **App lock** above.
 
+### Keychain items from before the identifier rename
+
+On 2026-08-27 the bundle identifier and Keychain access group moved from
+`com.urlxl.mail` to `org.kysecurity.mail`. Keychain items are scoped to their
+access group, so anything a pre-rename build stored is unreachable to the app
+now — including by the wipe paths, which delete by the current service name.
+
+No migration was added, because no build of this app has ever reached an end
+user. Two bases: there is no app release and no version tag, and no
+distribution pipeline existed before that date; and the maintainer attested on
+2026-08-27 that no build has ever existed outside their control. Developer machines that ran a pre-rename build are
+the exception. Those items stay in the data-protection Keychain,
+this-device-only, reachable only by something signed with the old
+team-and-group pair — but **the "erase everything" guarantee below does not
+reach them**, and on a machine where that matters they should be cleared by
+hand.
+
+This is stated rather than left to be inferred so that it is auditable, and so
+that the decision is revisited if the premise turns out to be wrong. See the
+comment in `KyPost/KyPost.entitlements` for what to do in that case.
+
 ### What is out of scope
 
 - **A machine with an attacker at the keyboard, unlocked, with the app open.** Every
@@ -175,6 +196,32 @@ is minted by the server at registration and returned exactly once.
   server-repository concerns.
 - **Attachments after they leave the app** — anything saved, moved, or opened into
   another app is beyond this app's reach.
+
+## Export compliance
+
+`ITSAppUsesNonExemptEncryption` is set to **true** in the build settings, so every upload
+answers the questionnaire the same way instead of a person answering it from memory once
+per release.
+
+That value is deliberate and is the conservative reading. KyPost implements OpenPGP for
+the **confidentiality of message content**, using GopenPGP rather than the encryption
+Apple's operating systems provide. That is what makes it non-exempt:
+
+- It is not limited to authentication, digital signatures, or decryption only, which is
+  the exemption most often claimed (Category 5 Part 2, exemption (c)). KyPost encrypts
+  outgoing mail.
+- It is not "encryption available only through Apple's operating system", which is the
+  other common route. The crypto is a third-party binary in this repository.
+
+Declaring `false` here would be faster and would be a misdeclaration.
+
+**This is not the whole obligation, and the remaining part is not a code change.** An app
+declaring non-exempt encryption is normally self-classified as mass market under ECCN
+5D992.c, which carries an annual self-classification report to BIS and the NSA, and App
+Store Connect will ask for the resulting documentation. That filing is a human step and
+it has not been done. Someone with the authority to make an export-control declaration
+on behalf of this project needs to confirm the classification before the first
+submission — treat the plist key as recording a decision, not as making one.
 
 ## Supported versions
 

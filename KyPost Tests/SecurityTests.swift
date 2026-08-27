@@ -70,7 +70,7 @@ private final class StubGatedStore: GatedCredentialStoring {
     }
 
     private func makeEnvironment(paired: Bool = true) throws -> Environment {
-        let keychain = KeychainStorage(service: "com.urlxl.mail.tests.\(UUID().uuidString)")
+        let keychain = KeychainStorage(service: "org.kysecurity.mail.tests.\(UUID().uuidString)")
         let pairingStore = SecurePairingStore(keychain: keychain)
         if paired {
             try pairingStore.savePairing(Pairing(
@@ -285,7 +285,7 @@ private final class StubGatedStore: GatedCredentialStoring {
 
         let graph = try SingletonGraph(
             userDefaults: defaults,
-            keychain: KeychainStorage(service: "com.urlxl.mail.tests.\(UUID().uuidString)")
+            keychain: KeychainStorage(service: "org.kysecurity.mail.tests.\(UUID().uuidString)")
         )
 
         #expect(graph.database.isInMemory)

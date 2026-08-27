@@ -46,7 +46,7 @@ final class EnrollmentVault: @unchecked Sendable {
 
     /// Separate from the pairing store's service so a device unpair does not
     /// silently take the enrollment with it, and vice versa.
-    init(keychain: KeychainStorage, keyTag: String = "com.urlxl.mail.enrollment.deviceKey") {
+    init(keychain: KeychainStorage, keyTag: String = "org.kysecurity.mail.enrollment.deviceKey") {
         self.keychain = keychain
         self.keyTag = Data(keyTag.utf8)
     }
