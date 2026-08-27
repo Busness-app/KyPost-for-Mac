@@ -44,6 +44,13 @@ nonisolated final class PinnedSessionDelegate: NSObject, URLSessionTaskDelegate,
     /// single Bool it would consume an unrelated host's pin failure and
     /// report interception on the wrong request.
     private var pinFailedHosts: Set<String> = []
+    /// Pins armed for a pairing that has not been persisted yet, keyed by
+    /// lowercased host. The registration POST is the request that discloses
+    /// the pairing token and receives the device secret, so a link-supplied
+    /// pin has to be enforced on THAT handshake — by the time there is a
+    /// `Pairing` in the Keychain to read a pin from, the disclosure already
+    /// happened. In memory only, and cleared as soon as the attempt ends.
+    private var pendingPinsByHost: [String: String] = [:]
 
     init(pinnedHash: @escaping @Sendable (_ host: String) -> String?) {
         self.pinnedHash = pinnedHash
@@ -66,7 +73,7 @@ nonisolated final class PinnedSessionDelegate: NSObject, URLSessionTaskDelegate,
         let observed = Self.spkiSHA256(of: trust)
         // Both of these read outside the lock: `pinnedHash` goes to the
         // Keychain, and holding a lock across that buys nothing.
-        let decision = Self.decision(pinned: pinnedHash(host), observed: observed)
+        let decision = Self.decision(pinned: pinToEnforce(forHost: host), observed: observed)
 
         lock.lock()
         if let observed { lastSeenByHost[host] = observed }
@@ -147,6 +154,39 @@ nonisolated final class PinnedSessionDelegate: NSObject, URLSessionTaskDelegate,
         guard let pinned, !pinned.isEmpty else { return .proceed }
         guard let observed, observed == pinned else { return .refuse }
         return .proceed
+    }
+
+    /// Arms `pin` for `host` for the duration of a pairing attempt, or clears
+    /// it when `pin` is nil. A pending pin OUTRANKS the persisted one: a
+    /// freshly scanned link carries the pin the server publishes today, which
+    /// is the more current fact when a certificate has just been renewed.
+    func setPendingPin(_ pin: String?, forHost host: String) {
+        let key = host.lowercased()
+        lock.lock()
+        defer { lock.unlock() }
+        if let pin, !pin.isEmpty {
+            pendingPinsByHost[key] = pin
+        } else {
+            pendingPinsByHost.removeValue(forKey: key)
+        }
+    }
+
+    /// The pin to enforce for `host`: an armed pairing pin first, then
+    /// whatever the pairing store holds.
+    ///
+    /// The lock covers only the dictionary read. `pinnedHash` goes to the
+    /// Keychain and holding a lock across that buys nothing — the same reason
+    /// the caller already reads it outside the lock.
+    ///
+    /// Not private so the precedence rule can be tested directly; getting it
+    /// backwards would silently prefer a stale pin over the one the user just
+    /// scanned, and no TLS-level test would catch that.
+    func pinToEnforce(forHost host: String) -> String? {
+        lock.lock()
+        let pending = pendingPinsByHost[host.lowercased()]
+        lock.unlock()
+        if let pending { return pending }
+        return pinnedHash(host)
     }
 
     /// The SPKI hash observed on the most recent handshake with `host` —

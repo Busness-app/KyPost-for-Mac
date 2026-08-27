@@ -17,7 +17,12 @@ extension PairingParams {
             sub: pairing.sub,
             srv: pairing.srv,
             pt: pairing.pairingToken,
-            reg: pairing.registrationUrl
+            reg: pairing.registrationUrl,
+            // Deliberately no pin. Re-registration is not a user handing the
+            // app a fresh link; the pin persisted at pairing already governs
+            // this host, and synthesising one here would let a stored value
+            // re-arm itself forever.
+            pin: nil
         )
     }
 }
@@ -39,6 +44,10 @@ final class DeviceRegistrationService {
     /// the registration rode a pooled or resumed connection and no challenge
     /// ever fired. Wired by SingletonGraph; nil in tests.
     var probeSpkiHash: ((_ url: URL) async -> String?)?
+    /// Arms a link-supplied pin on the transport for the duration of a
+    /// pairing attempt, and clears it afterwards (nil pin). Wired by
+    /// SingletonGraph to the pinned session's delegate; nil in tests.
+    var setPendingPin: ((_ pin: String?, _ host: String) -> Void)?
 
     /// One registration per (pairing token, device token). A pairing deep
     /// link is delivered to every open main window and each auto-pairs, so
@@ -85,6 +94,20 @@ final class DeviceRegistrationService {
         deviceToken: String,
         deviceId: String?
     ) async -> RegistrationOutcome {
+        // Arm BEFORE the POST, not after it. This request carries the
+        // pairing token and the push endpoint up and brings the device
+        // secret back down, so a pin applied once the response has landed
+        // has already missed everything it was meant to protect.
+        let srvHost = URL(string: params.srv)?.host()
+        if let linkPin = params.pin, let srvHost {
+            setPendingPin?(linkPin, srvHost)
+        }
+        defer {
+            if params.pin != nil, let srvHost {
+                setPendingPin?(nil, srvHost)
+            }
+        }
+
         let outcome = await client.register(
             deviceToken: deviceToken,
             params: params,
@@ -121,7 +144,17 @@ final class DeviceRegistrationService {
             // way to re-pin, which is the documented rotation recovery.
             // Best effort: a Keychain hiccup must not fail a good registration.
             // Empty counts as unpinned, matching the delegate's own lookup.
-            if (securePairingStore.pinnedSpkiHash ?? "").isEmpty,
+            if let linkPin = params.pin {
+                // The link's pin is authoritative and overwrites whatever was
+                // pinned before, which is safe precisely because only a freshly
+                // parsed link ever carries one — `PairingParams(pairing:)`
+                // passes nil, so no re-registration can reach this branch. The
+                // handshake this registration just completed was already
+                // enforced against it, so persisting it records a fact rather
+                // than adopting a hope. It is also how a certificate renewal
+                // recovers: re-scan, and the new pin replaces the old.
+                try? securePairingStore.setPinnedSpkiHash(linkPin)
+            } else if (securePairingStore.pinnedSpkiHash ?? "").isEmpty,
                let srvURL = URL(string: params.srv),
                let host = srvURL.host() {
                 // `observedSpkiHash` only has a value when this registration

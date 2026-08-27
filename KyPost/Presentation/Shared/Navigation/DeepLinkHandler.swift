@@ -20,6 +20,11 @@ struct PairingParams: Equatable, Sendable {
     var pt: String
     /// Optional registration URL override.
     var reg: String?
+    /// Server-published leaf SPKI pin, already normalised to the lowercase
+    /// hex `PinnedSessionDelegate` compares against (see `SpkiPin`). Nil
+    /// means the link carried none, and this pairing is trust-on-first-use —
+    /// never that one was present and discarded, which the parser refuses.
+    var pin: String?
 
     /// Registration endpoint: a `reg` override on the same host as `srv` wins,
     /// otherwise derived from srv (mirrors the pull-endpoint derivation rule in
@@ -54,6 +59,12 @@ enum PairingLinkError: Error, Equatable {
     /// displayed one host and contacted another. The relay always emits both
     /// on the same host, so requiring that costs nothing.
     case registrationHostMismatch
+    /// `pin=` was present but is not a base64 SHA-256 SPKI hash. Refused
+    /// rather than ignored: a link that carries a pin is a link whose author
+    /// intended the registration POST to be pinned, and silently downgrading
+    /// that to trust-on-first-use hands the pairing token to whoever mangled
+    /// it. Android refuses the same case.
+    case malformedCertificatePin
 }
 
 enum PairingLinkParser {
@@ -104,11 +115,22 @@ enum PairingLinkParser {
             }
         }
 
+        // Absent is fine (TOFU, and what every 0.3.x relay emits). Present
+        // but unreadable is not — see PairingLinkError.malformedCertificatePin.
+        var pin: String?
+        if let rawPin = query["pin"], !rawPin.isEmpty {
+            guard let normalized = SpkiPin.normalizedHex(fromLinkValue: rawPin) else {
+                throw PairingLinkError.malformedCertificatePin
+            }
+            pin = normalized
+        }
+
         return PairingParams(
             sub: try required("sub"),
             srv: srv,
             pt: try required("pt"),
-            reg: reg
+            reg: reg,
+            pin: pin
         )
     }
 }

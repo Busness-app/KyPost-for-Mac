@@ -266,6 +266,11 @@ final class SingletonGraph {
         service.probeSpkiHash = { [pinnedSessionDelegate] url in
             await PinnedSessionDelegate.probeHash(url: url, delegate: pinnedSessionDelegate)
         }
+        // A pin carried by the pairing link is enforced on the registration
+        // handshake itself, before the pairing exists to read one from.
+        service.setPendingPin = { [pinnedSessionDelegate] pin, host in
+            pinnedSessionDelegate.setPendingPin(pin, forHost: host)
+        }
         return service
     }()
     lazy var desktopPairingService = DesktopPairingService(
