@@ -96,8 +96,9 @@ Default section order:
   Note `parallelizable` belongs on each entry in `testTargets`, not in
   `defaultOptions`, where it is silently ignored.
 
-- **Roughly one run in three dies with a Go runtime crash**, unrelated to any
-  test:
+- **A Go runtime crash that used to kill roughly one run in three**, unrelated
+  to any test. Not reproducing as of 2026-08-27 — see the measurement below
+  before acting on this:
 
   ```
   signal 16 received on thread with no signal stack
@@ -111,10 +112,29 @@ Default section order:
 
   **Measured against `8152c1b`, before the app-lock PIN work, at the same rate**
   (1 of 3 there, 1 of 3 after) — so it arrived with the XCFramework in Phase 8,
-  not with anything since. Re-run before investigating a failing suite; if the
-  only failure is this line, nothing is wrong with the code. It does mean a CI
-  job that runs the tests will be flaky, and retrying the job is the current
-  answer.
+  not with anything since.
+
+  **Re-measured 2026-08-27 and it did not reproduce: 0 crashes in 15
+  consecutive runs** (`test-without-building`, signed, `KyPost Tests` only,
+  Xcode 26.6 / macOS SDK 26.5, GopenPGP v3.4.1), plus six more full
+  `xcodebuild test` runs the same day. At 1-in-3 the chance of a clean run of
+  15 is about 1 in 437, and of 21 about 1 in 5000, so whatever caused it is no
+  longer firing on this toolchain and this machine.
+
+  **Nothing was changed to achieve that**, which is the part to be careful
+  about. `GODEBUG=asyncpreemptoff=1` — signal 16 is `SIGURG`, which is exactly
+  what Go's async preemption uses — is the obvious lever and has deliberately
+  NOT been pulled: adding a workaround for a fault that does not currently
+  reproduce buys nothing measurable and quietly changes Go's scheduling for
+  everyone afterwards. It is the first thing to try if this comes back.
+
+  A local machine is not a CI runner, and this crash was always timing
+  sensitive, so **it is not safe to conclude it cannot happen on CI**. If a
+  CI run dies on this line, re-run it, then set `GODEBUG=asyncpreemptoff=1`
+  in `KyPost.xctestplan`'s `environmentVariableEntries` and measure again
+  before reaching for a retry loop — a bounded retry keyed on this exact
+  signature is the fallback, never a blanket job retry, which would also
+  paper over real failures.
 
 ## Local Contracts
 
