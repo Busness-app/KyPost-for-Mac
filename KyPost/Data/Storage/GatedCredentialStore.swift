@@ -27,7 +27,7 @@ nonisolated final class GatedCredentialStore: GatedCredentialStoring, Sendable {
     private static let account = "gatedDeviceSecret"
     private let service: String
 
-    init(service: String = (Bundle.main.bundleIdentifier ?? "com.urlxl.mail") + ".gated") {
+    init(service: String = (Bundle.main.bundleIdentifier ?? "org.kysecurity.mail") + ".gated") {
         self.service = service
     }
 

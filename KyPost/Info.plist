@@ -42,7 +42,7 @@
 	<string>KyPost uses Face ID to unlock the app and to release your pairing credential.</string>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<string>com.urlxl.mail.pull</string>
+		<string>org.kysecurity.mail.pull</string>
 	</array>
 	<key>UIBackgroundModes</key>
 	<array>

@@ -65,7 +65,7 @@ nonisolated final class Box<T>: @unchecked Sendable {
 /// `paired` is false. The scratch service name keeps parallel suites from
 /// reading each other's pairing.
 func makePairedStore(paired: Bool = true) throws -> SecurePairingStore {
-    let keychain = KeychainStorage(service: "com.urlxl.mail.tests.\(UUID().uuidString)")
+    let keychain = KeychainStorage(service: "org.kysecurity.mail.tests.\(UUID().uuidString)")
     let store = SecurePairingStore(keychain: keychain)
     if paired {
         try store.savePairing(Pairing(

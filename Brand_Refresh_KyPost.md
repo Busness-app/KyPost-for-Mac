@@ -75,10 +75,16 @@ anything not listed — these lists aren't guaranteed exhaustive):
   paired-devices list on another client) or is purely an internal log/registration label; if
   the former, rename it, if the latter, leave it (it's closer to an identifier than a name).
 
+**Done since this document was written — the identifier rename went ahead:**
+- Android's `applicationId` is `org.kysecurity.mail` (`app/build.gradle.kts:81`), with
+  `.github` and `.fdroid` suffixes per channel.
+- The Apple bundle ID is `org.kysecurity.mail` too, along with the Keychain access group,
+  the `BGTaskScheduler` identifier and the Secure Enclave key tag. It had to happen before
+  the first App Store submission: a bundle ID is the store record and cannot be changed
+  after the first release. Nobody had an install to break, which is what made it cheap.
+
 **Explicitly deferred — do not rename these:**
-- Package/application/bundle identifiers: Android `applicationId` (`com.urlxl.mail`), the
-  flatpak app ID `com.urlxl.LlamaMail` (and its icon filenames / `desktop-id`), any iOS/macOS
-  bundle identifier.
+- The flatpak app ID `com.urlxl.LlamaMail` (and its icon filenames / `desktop-id`).
 - The deep-link URL scheme `llamalabels` (Config.swift, Info.plist `CFBundleURLSchemes`,
   Linux `main.cpp`'s scheme check).
 - Qt's `app.setApplicationName(QStringLiteral("LlamaMail"))` in `main.cpp` — this is the

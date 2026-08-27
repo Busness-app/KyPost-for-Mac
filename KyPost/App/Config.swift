@@ -25,7 +25,7 @@ enum Config {
 
     /// iOS background pull task (spec §3: ~15 min platform minimum).
     /// Must match BGTaskSchedulerPermittedIdentifiers in Info.plist.
-    static let backgroundPullTaskId = "com.urlxl.mail.pull"
+    static let backgroundPullTaskId = "org.kysecurity.mail.pull"
     static let backgroundPullInterval: TimeInterval = 15 * 60
 
     // Binding contract: theme names match web theme.ts / Android AppTheme.kt.

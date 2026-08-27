@@ -18,7 +18,7 @@ import UserNotifications
 private func scratchStores() -> (defaults: UserDefaults, keychain: KeychainStorage) {
     (
         UserDefaults(suiteName: "test.\(UUID().uuidString)")!,
-        KeychainStorage(service: "com.urlxl.mail.tests.\(UUID().uuidString)")
+        KeychainStorage(service: "org.kysecurity.mail.tests.\(UUID().uuidString)")
     )
 }
 

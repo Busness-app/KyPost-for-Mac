@@ -4,7 +4,7 @@ A native SwiftUI mail client for macOS and iOS. It connects to a KyPost mail rel
 
 The app talks only to the relay backend. There is no direct IMAP or SMTP. You pair a device one time with a QR code or a deep link. The relay then handles mail access, server-side keyword tabs, push notifications, and contact sync.
 
-> **Naming:** the app uses the name **KyPost** everywhere. This covers the Dock and Home Screen label, the About screen, the permission prompts, the Xcode project, scheme and folders, and the deep-link scheme (`kypost://`). The bundle IDs and the Keychain access group stay unchanged on purpose (`com.urlxl.mail` and related IDs). A rename of those IDs is a separate decision with a higher risk. See `Brand_Refresh_KyPost.md`.
+> **Naming:** the app uses the name **KyPost** everywhere. This covers the Dock and Home Screen label, the About screen, the permission prompts, the Xcode project, scheme and folders, and the deep-link scheme (`kypost://`). The bundle ID and the Keychain access group are `org.kysecurity.mail`, matching the Android client. They were `com.urlxl.mail` until the identifier rename, which had to land before the first App Store submission because a bundle ID cannot be changed afterwards. See `Brand_Refresh_KyPost.md`.
 
 ## Features
 

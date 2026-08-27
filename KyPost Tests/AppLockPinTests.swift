@@ -38,7 +38,7 @@ final class FakePinPepper: PinPepper, @unchecked Sendable {
 func makeLockStore(defaults: UserDefaults? = nil) -> AppLockStore {
     let suite = defaults ?? UserDefaults(suiteName: "tests.\(UUID().uuidString)")!
     return AppLockStore(
-        keychain: KeychainStorage(service: "com.urlxl.mail.tests.\(UUID().uuidString)"),
+        keychain: KeychainStorage(service: "org.kysecurity.mail.tests.\(UUID().uuidString)"),
         defaults: suite
     )
 }
@@ -224,7 +224,7 @@ func makeLockStore(defaults: UserDefaults? = nil) -> AppLockStore {
 
     @Test func aHalfWrittenVerifierIsUnreadableRatherThanAbsent() throws {
         let defaults = UserDefaults(suiteName: "tests.\(UUID().uuidString)")!
-        let keychain = KeychainStorage(service: "com.urlxl.mail.tests.\(UUID().uuidString)")
+        let keychain = KeychainStorage(service: "org.kysecurity.mail.tests.\(UUID().uuidString)")
         let store = AppLockStore(keychain: keychain, defaults: defaults)
         try store.setPin(try PinHasher.hash(pin: "83910472", pepper: FakePinPepper()))
 
@@ -262,7 +262,7 @@ func makeLockStore(defaults: UserDefaults? = nil) -> AppLockStore {
     /// the item to disable the lock looks like.
     @Test func aVanishedPinWithTheMarkerStillSetFiresIt() throws {
         let defaults = UserDefaults(suiteName: "tests.\(UUID().uuidString)")!
-        let keychain = KeychainStorage(service: "com.urlxl.mail.tests.\(UUID().uuidString)")
+        let keychain = KeychainStorage(service: "org.kysecurity.mail.tests.\(UUID().uuidString)")
         let store = AppLockStore(keychain: keychain, defaults: defaults)
         try store.setPin(try PinHasher.hash(pin: "83910472", pepper: FakePinPepper()))
         #expect(!store.tripwireBroken)
@@ -278,7 +278,7 @@ func makeLockStore(defaults: UserDefaults? = nil) -> AppLockStore {
     /// getting it wrong erases the user's mail for a transient status.
     @Test func anUnreadableVerifierDoesNotFireIt() throws {
         let defaults = UserDefaults(suiteName: "tests.\(UUID().uuidString)")!
-        let keychain = KeychainStorage(service: "com.urlxl.mail.tests.\(UUID().uuidString)")
+        let keychain = KeychainStorage(service: "org.kysecurity.mail.tests.\(UUID().uuidString)")
         let store = AppLockStore(keychain: keychain, defaults: defaults)
         try store.setPin(try PinHasher.hash(pin: "83910472", pepper: FakePinPepper()))
 

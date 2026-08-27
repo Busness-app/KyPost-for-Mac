@@ -22,7 +22,7 @@ nonisolated final class KeychainStorage: Sendable {
 
     private let service: String
 
-    init(service: String = (Bundle.main.bundleIdentifier ?? "com.urlxl.mail") + ".secure") {
+    init(service: String = (Bundle.main.bundleIdentifier ?? "org.kysecurity.mail") + ".secure") {
         self.service = service
     }
 
