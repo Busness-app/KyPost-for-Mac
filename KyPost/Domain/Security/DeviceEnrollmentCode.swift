@@ -89,11 +89,20 @@ nonisolated func enrollmentBucket(at date: Date) -> Int64 {
     Int64(date.timeIntervalSince1970.rounded(.down)) / enrollmentBucketSeconds
 }
 
-/// Displayed as two groups of seven: `XXXXXXX-XXXXXXX`.
+/// Displayed in four dash-separated groups of `4-3-4-3`: `XXXX-XXX-XXXX-XXX`.
+/// This grouping is the browser's, so the code the user reads off this screen
+/// lines up character-for-character with the field they type it into.
 nonisolated func formattedEnrollmentCode(_ code: String) -> String {
     guard code.count == enrollmentCodeLength else { return code }
-    let middle = code.index(code.startIndex, offsetBy: enrollmentCodeLength / 2)
-    return "\(code[code.startIndex..<middle])-\(code[middle...])"
+    let groupSizes = [4, 3, 4, 3]
+    var groups: [Substring] = []
+    var index = code.startIndex
+    for size in groupSizes {
+        let end = code.index(index, offsetBy: size)
+        groups.append(code[index..<end])
+        index = end
+    }
+    return groups.joined(separator: "-")
 }
 
 private nonisolated func bigEndianInt64(_ value: Int64) -> Data {

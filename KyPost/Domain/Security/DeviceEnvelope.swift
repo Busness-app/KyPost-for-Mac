@@ -40,7 +40,7 @@ nonisolated struct DeviceEnvelopeFields: Equatable, Sendable {
 nonisolated func parseDeviceEnvelope(_ json: String) -> DeviceEnvelopeFields? {
     guard let data = json.data(using: .utf8),
           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          object["v"] as? String == envelopeVersion,
+          jsonPrimitiveContent(object["v"]) == envelopeVersion,
           object["alg"] as? String == envelopeAlgorithm,
           let epkText = object["epk"] as? String,
           let ivText = object["iv"] as? String,
@@ -53,6 +53,24 @@ nonisolated func parseDeviceEnvelope(_ json: String) -> DeviceEnvelopeFields? {
     guard epk.count == 65, epk.first == 0x04 else { return nil }
     guard iv.count == 12, ct.count > gcmTagBytes else { return nil }
     return DeviceEnvelopeFields(epk: epk, iv: iv, ct: ct)
+}
+
+/// The textual content of a JSON primitive, whether it arrived as a string or
+/// a number — the counterpart of kotlinx's `jsonPrimitive.content`.
+///
+/// The version tag is a JSON **number** on the wire: the browser serialises
+/// `"v": 2` and the normative envelope spec shows `"v": 1`, both unquoted. The
+/// server stores and serves the envelope as an opaque string, so those bytes
+/// reach this device unchanged. Android reads the tag through
+/// `jsonPrimitive.content`, which yields `"2"` for a number or a quoted string
+/// alike; Foundation decodes a JSON number as `NSNumber`, and `NSNumber as?
+/// String` is nil. Comparing `object["v"] as? String` therefore rejected every
+/// well-formed server envelope as **malformed** while Android accepted the same
+/// bytes. Matching Android's leniency here is the fix.
+private nonisolated func jsonPrimitiveContent(_ value: Any?) -> String? {
+    if let string = value as? String { return string }
+    if let number = value as? NSNumber { return number.stringValue }
+    return nil
 }
 
 enum DeviceEnvelopeError: Error, Equatable {
