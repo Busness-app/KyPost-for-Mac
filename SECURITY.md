@@ -176,6 +176,32 @@ is minted by the server at registration and returned exactly once.
 - **Attachments after they leave the app** — anything saved, moved, or opened into
   another app is beyond this app's reach.
 
+## Export compliance
+
+`ITSAppUsesNonExemptEncryption` is set to **true** in the build settings, so every upload
+answers the questionnaire the same way instead of a person answering it from memory once
+per release.
+
+That value is deliberate and is the conservative reading. KyPost implements OpenPGP for
+the **confidentiality of message content**, using GopenPGP rather than the encryption
+Apple's operating systems provide. That is what makes it non-exempt:
+
+- It is not limited to authentication, digital signatures, or decryption only, which is
+  the exemption most often claimed (Category 5 Part 2, exemption (c)). KyPost encrypts
+  outgoing mail.
+- It is not "encryption available only through Apple's operating system", which is the
+  other common route. The crypto is a third-party binary in this repository.
+
+Declaring `false` here would be faster and would be a misdeclaration.
+
+**This is not the whole obligation, and the remaining part is not a code change.** An app
+declaring non-exempt encryption is normally self-classified as mass market under ECCN
+5D992.c, which carries an annual self-classification report to BIS and the NSA, and App
+Store Connect will ask for the resulting documentation. That filing is a human step and
+it has not been done. Someone with the authority to make an export-control declaration
+on behalf of this project needs to confirm the classification before the first
+submission — treat the plist key as recording a decision, not as making one.
+
 ## Supported versions
 
 Security fixes target the current release. There is no long-term support branch for older
