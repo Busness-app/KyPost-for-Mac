@@ -22,9 +22,14 @@ jobs:
     # Whether the tests can run at all comes down to whether this repository
     # has an Apple signing identity. See the "Test" step for why.
     env:
+      # A **Developer ID Application** identity, not a development one.
+      # Development profiles carry an explicit device list, and GitHub's
+      # runners are ephemeral and unregistered, so signing with one fails:
+      # "provisioning profile ... doesn't include the currently selected
+      # device". Developer ID is the one macOS type that provisions all
+      # devices. See KyPost/KyPost_CI.entitlements.
       SIGNING_CERTIFICATE: ${{ secrets.MACOS_SIGNING_CERTIFICATE }}
       SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SIGNING_CERTIFICATE_PASSWORD }}
-      PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE }}
 
     steps:
       - uses: actions/checkout@v5
@@ -64,7 +69,7 @@ jobs:
 
       - name: Install signing identity
         # Only when the secrets are configured; see "Compile only" below.
-        if: env.SIGNING_CERTIFICATE != '' && env.PROVISIONING_PROFILE != ''
+        if: env.SIGNING_CERTIFICATE != ''
         run: |
           set -euo pipefail
           KEYCHAIN=$RUNNER_TEMP/signing.keychain-db
@@ -85,27 +90,31 @@ jobs:
             -k "$PASSWORD" "$KEYCHAIN" > /dev/null
           security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
 
-          PROFILES=~/Library/MobileDevice/Provisioning\ Profiles
-          mkdir -p "$PROFILES"
-          echo "$PROVISIONING_PROFILE" | base64 --decode \
-            > "$PROFILES/ci.provisionprofile"
 
       - name: Test
-        if: env.SIGNING_CERTIFICATE != '' && env.PROVISIONING_PROFILE != ''
+        if: env.SIGNING_CERTIFICATE != ''
         # Unit tests only: the UI target drives a real app instance, is flaky
         # headless, and is not what protects this code.
         #
         # No pretty-printer in the pipeline. `| xcpretty` swallowed the real
         # exit status behind a tool that is not guaranteed on the image, and a
         # formatter is not worth a build step that can fail for its own reasons.
+        # Signed with Developer ID and the CI entitlements, which drop
+        # aps-environment so no push-capable profile is needed. Manual style
+        # with an empty profile specifier: automatic signing would go looking
+        # for a development profile again and fail on the device list.
         run: |
           .github/scripts/run-xcodebuild.sh test \
             -scheme KyPost \
             -destination 'platform=macOS' \
-            -only-testing:"KyPost Tests"
+            -only-testing:"KyPost Tests" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Developer ID Application" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            CODE_SIGN_ENTITLEMENTS=KyPost/KyPost_CI.entitlements
 
       - name: Compile only (no signing identity configured)
-        if: env.SIGNING_CERTIFICATE == '' || env.PROVISIONING_PROFILE == ''
+        if: env.SIGNING_CERTIFICATE == ''
         # The tests cannot run on a stock runner, and this is not a workflow
         # bug that more flags will fix. They run inside the host app, the host
         # app's entitlements include `keychain-access-groups`, and
@@ -116,8 +125,8 @@ jobs:
         #
         # Nor can the entitlement be ad-hoc signed. Xcode refuses outright:
         # "has entitlements that require signing with a development
-        # certificate". Both `keychain-access-groups` and `aps-environment`
-        # need a real certificate and profile.
+        # certificate". `keychain-access-groups` needs a real identity, which
+        # is why the Test step above signs with Developer ID.
         #
         # So without secrets this compiles instead — which still catches the
         # failure mode that caused this workflow to be written, `main` not
@@ -125,7 +134,7 @@ jobs:
         # the notice.
         run: |
           set -euo pipefail
-          echo "::notice::No Apple signing identity configured, so the test suite did NOT run — this check compiled the code only. Set the MACOS_SIGNING_CERTIFICATE, MACOS_SIGNING_CERTIFICATE_PASSWORD and MACOS_PROVISIONING_PROFILE secrets to run the tests."
+          echo "::notice::No Apple signing identity configured, so the test suite did NOT run — this check compiled the code only. Set MACOS_SIGNING_CERTIFICATE (a Developer ID Application .p12, base64) and MACOS_SIGNING_CERTIFICATE_PASSWORD to run the tests."
           .github/scripts/run-xcodebuild.sh build-for-testing \
             -scheme KyPost \
             -destination 'platform=macOS' \
@@ -134,7 +143,7 @@ jobs:
       - name: Remove the signing keychain
         # `always()`: a keychain holding the signing identity should not
         # outlive the job even when the job failed.
-        if: always() && env.SIGNING_CERTIFICATE != '' && env.PROVISIONING_PROFILE != ''
+        if: always() && env.SIGNING_CERTIFICATE != ''
         run: |
           security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
           rm -f ~/Library/MobileDevice/Provisioning\ Profiles/ci.provisionprofile

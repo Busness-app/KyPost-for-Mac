@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- CI only. Never ships.
+	     
+	     The test suite runs inside the host app and KeychainStorage uses the
+	     data-protection Keychain, which returns errSecMissingEntitlement
+	     (-34018) to a process without keychain-access-groups. So the tests
+	     cannot run unsigned — measured: 140 failures.
+	     
+	     A Mac *Development* profile cannot provide that on CI: development
+	     profiles carry an explicit device list and GitHub's runners are
+	     ephemeral and unregistered, so signing fails with "doesn't include
+	     the currently selected device". Developer ID is the one macOS
+	     distribution type whose profile sets ProvisionsAllDevices, which is
+	     why CI signs that way.
+	     
+	     aps-environment is deliberately ABSENT. Developer ID grants only the
+	     production value, which would not match the Debug entitlements, and
+	     the tests do not need push: the app's notification-authorization
+	     request already fails harmlessly under test ("Notifications are not
+	     allowed for this application") and nothing asserts on it. Leaving it
+	     out keeps CI from needing a push-capable profile at all. -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	<key>com.apple.security.personal-information.addressbook</key>
+	<true/>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)org.kysecurity.mail</string>
+	</array>
+</dict>
+</plist>
