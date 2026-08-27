@@ -38,10 +38,6 @@ jobs:
     env:
       DISTRIBUTION_CERTIFICATE: ${{ secrets.APPLE_DISTRIBUTION_CERTIFICATE }}
       DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DISTRIBUTION_CERTIFICATE_PASSWORD }}
-      # Separate from the distribution identity: this one signs the test run,
-      # because an App Store profile cannot be used to run the app locally.
-      DEVELOPER_ID_CERTIFICATE: ${{ secrets.MACOS_SIGNING_CERTIFICATE }}
-      DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SIGNING_CERTIFICATE_PASSWORD }}
       PROVISIONING_PROFILE_MACOS: ${{ secrets.APPLE_PROVISIONING_PROFILE_MACOS }}
       PROVISIONING_PROFILE_IOS: ${{ secrets.APPLE_PROVISIONING_PROFILE_IOS }}
       ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
@@ -62,7 +58,6 @@ jobs:
           set -euo pipefail
           missing=""
           for name in DISTRIBUTION_CERTIFICATE DISTRIBUTION_CERTIFICATE_PASSWORD \
-                      DEVELOPER_ID_CERTIFICATE DEVELOPER_ID_CERTIFICATE_PASSWORD \
                       PROVISIONING_PROFILE_MACOS PROVISIONING_PROFILE_IOS \
                       ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY; do
             eval "value=\${$name:-}"
@@ -110,13 +105,6 @@ jobs:
             -P "$DISTRIBUTION_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           rm -f "$RUNNER_TEMP/dist.p12"
 
-          # Both identities live in the same keychain: the distribution one
-          # signs the archives, the Developer ID one signs the test run.
-          echo "$DEVELOPER_ID_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/devid.p12"
-          security import "$RUNNER_TEMP/devid.p12" -k "$KEYCHAIN" \
-            -P "$DEVELOPER_ID_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          rm -f "$RUNNER_TEMP/devid.p12"
-
           # Without this codesign blocks on a GUI prompt no one can answer and
           # the job hangs until it times out rather than failing.
           security set-key-partition-list -S apple-tool:,apple: \
@@ -139,21 +127,18 @@ jobs:
       # fork or without secrets, so a tag is the first point at which a green
       # check has actually meant the tests passed.
       - name: Test
-        # Signed with Developer ID, exactly as ci.yml does, and for the same
-        # reason: the suite runs inside the host app, needs
-        # keychain-access-groups, and the App Store distribution profile
-        # installed above cannot be used to RUN the app on this machine. A
-        # development profile cannot either — those carry a device list and
-        # the runner is not on it.
+        # On the simulator, which needs no identity: the distribution profile
+        # installed above signs archives but cannot be used to RUN the app,
+        # and a development profile cannot cover an ephemeral runner. Same
+        # arrangement as ci.yml, for the same reasons — see its header.
         run: |
+          set -euo pipefail
+          UDID=$(xcrun simctl list devices available --json \
+            | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k in sorted(d, reverse=True) for x in d[k] if 'iPhone' in x['name']))")
           .github/scripts/run-xcodebuild.sh test \
             -scheme KyPost \
-            -destination 'platform=macOS' \
-            -only-testing:"KyPost Tests" \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="Developer ID Application" \
-            PROVISIONING_PROFILE_SPECIFIER="" \
-            CODE_SIGN_ENTITLEMENTS=KyPost/KyPost_CI.entitlements
+            -destination "platform=iOS Simulator,id=${UDID}" \
+            -only-testing:"KyPost Tests"
 
       - name: Archive macOS
         run: |

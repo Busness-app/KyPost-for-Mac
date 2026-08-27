@@ -2,6 +2,33 @@ name: CI
 
 # Phase 0 of the Android-parity plan: this repository had no CI at all, and
 # `main` shipped in a state that did not compile.
+#
+# The tests run on the **iOS Simulator**, which is what makes this workflow
+# need no secrets at all. That is not an arbitrary choice — it is the only
+# arrangement that works on an ephemeral runner:
+#
+#   * The suite runs inside the host app, and KeychainStorage uses the
+#     data-protection Keychain, which returns errSecMissingEntitlement
+#     (-34018) to a process without `keychain-access-groups`. Measured: 140
+#     tests fail that way with signing disabled. So the tests cannot simply be
+#     run unsigned.
+#   * A Mac **development** profile cannot supply that entitlement here.
+#     Development profiles carry an explicit device list, and GitHub's runners
+#     are ephemeral and unregistered, so signing fails with "provisioning
+#     profile ... doesn't include the currently selected device". Registering
+#     them is not a workaround: each run would consume one of 100 devices a
+#     year.
+#   * Simulator builds sign **ad-hoc** — `Signature=adhoc`,
+#     `TeamIdentifier=not set`, no embedded profile — and the simulator does
+#     not validate the team prefix on `keychain-access-groups`. The
+#     entitlement is honoured, so the Keychain works.
+#
+# Measured, not assumed: 796 tests in 143 suites pass on the simulator with no
+# certificate, no profile and no secrets.
+#
+# It also gives iOS its first automated coverage. Half the product had never
+# been built by CI, which is how KyPost_iOS.entitlements sat unreferenced in
+# project.pbxproj for months without anything noticing.
 
 on:
   pull_request:
@@ -18,18 +45,6 @@ jobs:
     # macos-15 images top out at Xcode 26.3 / SDK 26.3. A deployment target
     # newer than the SDK cannot build, which is what the first run hit.
     runs-on: macos-26
-
-    # Whether the tests can run at all comes down to whether this repository
-    # has an Apple signing identity. See the "Test" step for why.
-    env:
-      # A **Developer ID Application** identity, not a development one.
-      # Development profiles carry an explicit device list, and GitHub's
-      # runners are ephemeral and unregistered, so signing with one fails:
-      # "provisioning profile ... doesn't include the currently selected
-      # device". Developer ID is the one macOS type that provisions all
-      # devices. See KyPost/KyPost_CI.entitlements.
-      SIGNING_CERTIFICATE: ${{ secrets.MACOS_SIGNING_CERTIFICATE }}
-      SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SIGNING_CERTIFICATE_PASSWORD }}
 
     steps:
       - uses: actions/checkout@v5
@@ -54,96 +69,64 @@ jobs:
           sudo xcode-select -s "$XCODE"
           xcodebuild -version
 
-          # Check the SDK actually satisfies the deployment target, and say so
-          # plainly if it does not. Without this the failure is `xcodebuild`
+          # Check the SDKs actually satisfy the deployment targets, and say so
+          # plainly if they do not. Without this the failure is `xcodebuild`
           # exiting 70 with no indication that the toolchain is the problem —
           # which is exactly how the first run read.
-          SDK=$(xcrun --sdk macosx --show-sdk-version)
-          TARGET=$(grep -m1 -oE 'MACOSX_DEPLOYMENT_TARGET = [0-9.]+' \
-            KyPost.xcodeproj/project.pbxproj | grep -oE '[0-9.]+$')
-          echo "macOS SDK $SDK, deployment target $TARGET"
-          if [ "$(printf '%s\n%s\n' "$TARGET" "$SDK" | sort -V | tail -1)" != "$SDK" ]; then
-            echo "::error::macOS SDK $SDK is older than this project's deployment target $TARGET. Use a runner image carrying Xcode $TARGET or newer."
-            exit 1
-          fi
+          for pair in "macosx:MACOSX_DEPLOYMENT_TARGET" "iphoneos:IPHONEOS_DEPLOYMENT_TARGET"; do
+            sdk_name=${pair%%:*}
+            setting=${pair##*:}
+            SDK=$(xcrun --sdk "$sdk_name" --show-sdk-version)
+            TARGET=$(grep -m1 -oE "$setting = [0-9.]+" \
+              KyPost.xcodeproj/project.pbxproj | grep -oE '[0-9.]+$')
+            echo "$sdk_name SDK $SDK, deployment target $TARGET"
+            if [ "$(printf '%s\n%s\n' "$TARGET" "$SDK" | sort -V | tail -1)" != "$SDK" ]; then
+              echo "::error::$sdk_name SDK $SDK is older than this project's deployment target $TARGET. Use a runner image carrying a newer Xcode."
+              exit 1
+            fi
+          done
 
-      - name: Install signing identity
-        # Only when the secrets are configured; see "Compile only" below.
-        if: env.SIGNING_CERTIFICATE != ''
+      - name: Pick a simulator
+        # Resolved from what the image actually has rather than pinned to a
+        # device name. The runner images add and retire devices between
+        # refreshes, and a missing name fails as "Unable to find a destination",
+        # which reads like a project fault rather than an image change.
         run: |
           set -euo pipefail
-          KEYCHAIN=$RUNNER_TEMP/signing.keychain-db
-          PASSWORD=$(uuidgen)
-
-          security create-keychain -p "$PASSWORD" "$KEYCHAIN"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN"
-          security unlock-keychain -p "$PASSWORD" "$KEYCHAIN"
-
-          echo "$SIGNING_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
-            -P "$SIGNING_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          rm -f "$RUNNER_TEMP/cert.p12"
-
-          # Without this codesign blocks on a GUI prompt no one can answer, and
-          # the job hangs until it times out rather than failing.
-          security set-key-partition-list -S apple-tool:,apple: \
-            -k "$PASSWORD" "$KEYCHAIN" > /dev/null
-          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
-
+          UDID=$(xcrun simctl list devices available --json \
+            | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k in sorted(d, reverse=True) for x in d[k] if 'iPhone' in x['name']))")
+          if [ -z "$UDID" ]; then
+            echo "::error::No iPhone simulator on this runner image."
+            xcrun simctl list devices available || true
+            exit 1
+          fi
+          xcrun simctl list devices available | grep "$UDID" || true
+          echo "SIMULATOR_UDID=$UDID" >> "$GITHUB_ENV"
 
       - name: Test
-        if: env.SIGNING_CERTIFICATE != ''
         # Unit tests only: the UI target drives a real app instance, is flaky
         # headless, and is not what protects this code.
         #
         # No pretty-printer in the pipeline. `| xcpretty` swallowed the real
         # exit status behind a tool that is not guaranteed on the image, and a
         # formatter is not worth a build step that can fail for its own reasons.
-        # Signed with Developer ID and the CI entitlements, which drop
-        # aps-environment so no push-capable profile is needed. Manual style
-        # with an empty profile specifier: automatic signing would go looking
-        # for a development profile again and fail on the device list.
+        #
+        # Do NOT add CODE_SIGNING_ALLOWED=NO here as an "it's only a simulator"
+        # tidy-up. That strips the entitlements rather than the certificate,
+        # and puts 178 tests straight back onto -34018.
         run: |
           .github/scripts/run-xcodebuild.sh test \
             -scheme KyPost \
-            -destination 'platform=macOS' \
-            -only-testing:"KyPost Tests" \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="Developer ID Application" \
-            PROVISIONING_PROFILE_SPECIFIER="" \
-            CODE_SIGN_ENTITLEMENTS=KyPost/KyPost_CI.entitlements
+            -destination "platform=iOS Simulator,id=${SIMULATOR_UDID}" \
+            -only-testing:"KyPost Tests"
 
-      - name: Compile only (no signing identity configured)
-        if: env.SIGNING_CERTIFICATE == ''
-        # The tests cannot run on a stock runner, and this is not a workflow
-        # bug that more flags will fix. They run inside the host app, the host
-        # app's entitlements include `keychain-access-groups`, and
-        # KeychainStorage uses the data-protection keychain — which returns
-        # errSecMissingEntitlement (-34018) to a process that does not carry
-        # that entitlement. Measured, not assumed: building with
-        # CODE_SIGNING_ALLOWED=NO produces 140 tests failing on -34018.
-        #
-        # Nor can the entitlement be ad-hoc signed. Xcode refuses outright:
-        # "has entitlements that require signing with a development
-        # certificate". `keychain-access-groups` needs a real identity, which
-        # is why the Test step above signs with Developer ID.
-        #
-        # So without secrets this compiles instead — which still catches the
-        # failure mode that caused this workflow to be written, `main` not
-        # building. It must not be mistaken for a passing test suite, hence
-        # the notice.
+      - name: Build for macOS
+        # The tests already ran on the simulator; this is the compile check for
+        # the other platform, and it catches the failure mode that caused this
+        # workflow to be written — `main` not building. Signing is disabled
+        # because nothing is executed here.
         run: |
-          set -euo pipefail
-          echo "::notice::No Apple signing identity configured, so the test suite did NOT run — this check compiled the code only. Set MACOS_SIGNING_CERTIFICATE (a Developer ID Application .p12, base64) and MACOS_SIGNING_CERTIFICATE_PASSWORD to run the tests."
           .github/scripts/run-xcodebuild.sh build-for-testing \
             -scheme KyPost \
             -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO
-
-      - name: Remove the signing keychain
-        # `always()`: a keychain holding the signing identity should not
-        # outlive the job even when the job failed.
-        if: always() && env.SIGNING_CERTIFICATE != ''
-        run: |
-          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
-          rm -f ~/Library/MobileDevice/Provisioning\ Profiles/ci.provisionprofile
