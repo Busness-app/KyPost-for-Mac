@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- App Store Connect, not Developer ID. See release.yml's header for why
+	     there is no notarisation step: App Store builds are notarised by
+	     Apple during review, and notarytool is for the direct-download
+	     channel this project does not currently have. -->
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>teamID</key>
+	<string>TATYN4X57D</string>
+	<!-- Uploads straight from xcodebuild rather than exporting a .pkg and
+	     handing it to a second tool. -->
+	<key>destination</key>
+	<string>upload</string>
+	<key>signingStyle</key>
+	<string>manual</string>
+	<key>uploadSymbols</key>
+	<true/>
+	<!-- Never let the exporter invent a version. A build whose number was
+	     bumped by the toolchain no longer matches the tag the release gate
+	     just checked. -->
+	<key>manageAppVersionAndBuildNumber</key>
+	<false/>
+</dict>
+</plist>
