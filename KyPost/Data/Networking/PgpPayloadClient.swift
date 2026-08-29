@@ -23,6 +23,22 @@ private struct PgpPayloadDTO: Decodable {
     var signerKeys: [SignerKeyDTO] = []
     var sender: String = ""
     var resolvedSender: String = ""
+
+    private enum CodingKeys: String, CodingKey {
+        case encryptedPayload, signaturePayload, body, signedPartBase64
+        case signerKeys, sender, resolvedSender
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        encryptedPayload = try values.decodeIfPresent(String.self, forKey: .encryptedPayload) ?? ""
+        signaturePayload = try values.decodeIfPresent(String.self, forKey: .signaturePayload) ?? ""
+        body = try values.decodeIfPresent(String.self, forKey: .body) ?? ""
+        signedPartBase64 = try values.decodeIfPresent(String.self, forKey: .signedPartBase64) ?? ""
+        signerKeys = try values.decodeIfPresent([SignerKeyDTO].self, forKey: .signerKeys) ?? []
+        sender = try values.decodeIfPresent(String.self, forKey: .sender) ?? ""
+        resolvedSender = try values.decodeIfPresent(String.self, forKey: .resolvedSender) ?? ""
+    }
 }
 
 private struct SignerKeyDTO: Decodable {
@@ -34,6 +50,19 @@ private struct SignerKeyDTO: Decodable {
     var verified: Bool = false
     var source: String = ""
     var conflict: Bool = false
+
+    private enum CodingKeys: String, CodingKey {
+        case addresses, publicKey, verified, source, conflict
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        addresses = try values.decodeIfPresent([String].self, forKey: .addresses) ?? []
+        publicKey = try values.decodeIfPresent(String.self, forKey: .publicKey) ?? ""
+        verified = try values.decodeIfPresent(Bool.self, forKey: .verified) ?? false
+        source = try values.decodeIfPresent(String.self, forKey: .source) ?? ""
+        conflict = try values.decodeIfPresent(Bool.self, forKey: .conflict) ?? false
+    }
 }
 
 final class PgpPayloadClient: PgpPayloadSource {

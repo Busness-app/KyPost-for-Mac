@@ -45,7 +45,7 @@ final class EncryptedReadViewModel {
     }
 
     /// Whether there is anything to offer at all. False when the device is not
-    /// paired, in which case the screen shows the webmail fallback unchanged.
+    /// paired, so there is no authenticated payload source.
     var isAvailable: Bool { reader != nil }
 
     /// True while the screen should show the Decrypt button.
@@ -79,7 +79,7 @@ final class EncryptedReadViewModel {
         case .cancelled:
             nil
         case .notEnrolled:
-            "This device isn't set up to read encrypted mail. Enroll it in Settings, or open this message in your browser."
+            "This device isn't set up to read encrypted mail. Enroll it in Settings."
         case .noSecureLockScreen:
             "This device has no passcode or biometric lock, so it can't hold your key."
         case .tooLarge:
@@ -97,14 +97,13 @@ final class EncryptedReadViewModel {
         }
     }
 
-    /// Run when the screen appears. Never prompts — an unprompted biometric
-    /// sheet on open is exactly what `unlockIfNeeded` exists to prevent.
+    /// Decrypts immediately when the key is already held. A sealed key returns
+    /// `needsUnlock`, which makes the explicit Decrypt action appear.
     func attemptWithoutPrompting() async {
         await run(unlockIfNeeded: false)
     }
 
-    /// Run when the user presses Decrypt. This is the only path allowed to
-    /// raise the presence prompt.
+    /// Run from the Decrypt action, which may raise the unlock prompt.
     func decrypt() async {
         await run(unlockIfNeeded: true)
     }

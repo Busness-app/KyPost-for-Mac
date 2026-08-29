@@ -14,6 +14,12 @@ struct KyPostCommands: Commands {
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
+        CommandGroup(replacing: .appInfo) {
+            Button("About KyPost") {
+                openWindow(id: "about")
+            }
+        }
+
         CommandGroup(replacing: .newItem) {
             Button("New Email") {
                 openWindow(id: "compose")

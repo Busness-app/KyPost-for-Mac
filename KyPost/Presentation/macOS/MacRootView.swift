@@ -425,6 +425,7 @@ struct MacRootView: View {
                 }
             }
         }
+        .toast(message: inboxViewModel.connectionNotice)
     }
 
     private func contactList(theme: ThemePalette) -> some View {

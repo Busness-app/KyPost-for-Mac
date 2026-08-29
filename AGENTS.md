@@ -217,6 +217,9 @@ Each rule below is a defect someone already found once.
   re-narrow them, and never parse a `From` header to do it. Android shipped
   exactly that and a differential harness caught it disagreeing with the
   server's parser on 27 of 111 adversarial headers.
+- **PGP payload DTO defaults use `decodeIfPresent`.** The relay omits false and
+  empty signer-key fields, so synthesized decoding turns the first ordinary
+  signing key into a fetch failure instead of applying the documented defaults.
 - **Render `resolvedSender`, never the raw `From`,** wherever a verdict is
   shown. The two are separable by an attacker, and a correct verdict displayed
   next to the wrong address is still a lie.
@@ -227,9 +230,10 @@ Each rule below is a defect someone already found once.
   written to SwiftData, not assigned to the cached body field, and not carried
   into a scene value that state restoration would archive. `forget()` runs on
   disappear.
-- **Only a deliberate press may prompt.** The attempt made when a screen opens
-  passes `unlockIfNeeded: false`; a biometric sheet raised merely by opening a
-  message asks for authentication the user has not requested.
+- **Opening client-protected mail decrypts immediately when its key is held.**
+  If the key needs unlocking, opening the message shows Decrypt without
+  prompting; that deliberate action raises the unlock prompt. Cancelling is a
+  non-error and leaves Decrypt available for another attempt.
 - `EnrollmentSession` holds the key as bytes it can zero, and every session
   boundary must clear it: app lock, backgrounding, memory pressure, security
   wipe, unpair. Android's equivalent was missed by the wipe path, which then
@@ -525,4 +529,3 @@ When the user requests a durable behavior change, record it here or in the relev
 - `KyPost/Presentation/AGENTS.md` — SwiftUI views, view models, and
   components: theming and font contracts, MainActor isolation rules, compose
   recipient tokens and contact search, and the macOS/iOS input deviations.
-

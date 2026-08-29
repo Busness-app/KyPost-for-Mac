@@ -98,7 +98,11 @@ import Testing
 
 @Suite struct InboxViewModelTests {
     @MainActor
-    private func makeViewModel(client: HTTPClient) throws -> InboxViewModel {
+    private func makeViewModel(
+        client: HTTPClient,
+        initialRefreshErrorDelay: Duration = .seconds(90),
+        initialRefreshRetryDelay: Duration = .seconds(15)
+    ) throws -> InboxViewModel {
         let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
         let pairingStore = try makePairedStore()
         let db = try AppDatabase(inMemory: true)
@@ -111,7 +115,9 @@ import Testing
             mailRepository: mailRepository,
             keywordRepository: KeywordRepository(
                 settingsStore: KeywordSettingsStore(defaults: defaults)
-            )
+            ),
+            initialRefreshErrorDelay: initialRefreshErrorDelay,
+            initialRefreshRetryDelay: initialRefreshRetryDelay
         )
     }
 
@@ -196,5 +202,103 @@ import Testing
         )
         await viewModel.refresh()
         #expect(viewModel.errorMessage?.contains("Pair this device") == true)
+    }
+
+    @Test @MainActor func initialTransientRefreshErrorRetriesBeforeAppearing() async throws {
+        let attempts = Box(0)
+        let client = HTTPClient { request in
+            attempts.value += 1
+            if attempts.value == 1 { throw URLError(.timedOut) }
+            return (
+                Data(#"{"byTab":{}}"#.utf8),
+                HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )!
+            )
+        }
+        let viewModel = try makeViewModel(
+            client: client,
+            initialRefreshErrorDelay: .milliseconds(60),
+            initialRefreshRetryDelay: .milliseconds(15)
+        )
+
+        await viewModel.load()
+        #expect(viewModel.errorMessage == nil)
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(attempts.value == 2)
+        #expect(viewModel.errorMessage == nil)
+    }
+
+    @Test @MainActor func persistentInitialErrorAppearsAfterTheGracePeriod() async throws {
+        let attempts = Box(0)
+        let viewModel = try makeViewModel(
+            client: HTTPClient { _ in
+                attempts.value += 1
+                throw URLError(.timedOut)
+            },
+            initialRefreshErrorDelay: .milliseconds(60),
+            initialRefreshRetryDelay: .milliseconds(15)
+        )
+
+        await viewModel.load()
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(attempts.value == 2)
+        #expect(viewModel.errorMessage == nil)
+        #expect(viewModel.connectionNotice == nil)
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(viewModel.errorMessage == nil)
+        #expect(viewModel.connectionNotice == "Unable to connect to the mail server.")
+    }
+
+    @Test @MainActor func leavingInboxCancelsItsPendingError() async throws {
+        let attempts = Box(0)
+        let viewModel = try makeViewModel(
+            client: HTTPClient { _ in
+                attempts.value += 1
+                throw URLError(.timedOut)
+            },
+            initialRefreshErrorDelay: .milliseconds(60),
+            initialRefreshRetryDelay: .milliseconds(15)
+        )
+
+        await viewModel.load()
+        viewModel.leaveInbox()
+        try await Task.sleep(for: .milliseconds(80))
+
+        #expect(attempts.value == 1)
+        #expect(viewModel.errorMessage == nil)
+        #expect(viewModel.connectionNotice == nil)
+    }
+
+    @Test @MainActor func manualRefreshFailureUsesSanitizedConnectionNotice() async throws {
+        let viewModel = try makeViewModel(
+            client: HTTPClient { _ in throw URLError(.cannotConnectToHost) }
+        )
+
+        await viewModel.refresh()
+
+        #expect(viewModel.errorMessage == nil)
+        #expect(viewModel.connectionNotice == "Unable to connect to the mail server.")
+    }
+
+    @Test @MainActor func returningToInboxDoesNotReloadIt() async throws {
+        let attempts = Box(0)
+        let client = HTTPClient { request in
+            attempts.value += 1
+            return (
+                Data(#"{"byTab":{}}"#.utf8),
+                HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )!
+            )
+        }
+        let viewModel = try makeViewModel(client: client)
+
+        await viewModel.loadIfNeeded()
+        viewModel.leaveInbox()
+        await viewModel.loadIfNeeded()
+
+        #expect(attempts.value == 1)
+        #expect(viewModel.errorMessage == nil)
     }
 }

@@ -50,8 +50,8 @@ struct MacPreferencesView: View {
 
             SecurityPane()
                 .tabItem { Label("Security", systemImage: "lock") }
+
         }
-        // Widened from 620 for the seventh tab, and so the QR code has room.
         .frame(width: 700, height: 460)
         .tint(themeManager.palette.accent)
         .environment(\.theme, themeManager.palette)
@@ -133,15 +133,6 @@ private struct ConnectionPane: View {
                 } header: {
                     Text("Desktop Session")
                 }
-            }
-
-            Section {
-                LabeledContent(
-                    "Version",
-                    value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-                )
-            } header: {
-                Text("About")
             }
 
             if let message = viewModel.statusMessage {
@@ -227,7 +218,7 @@ private struct KeywordsPane: View {
     let viewModel: SettingsViewModel
 
     var body: some View {
-        Form {
+        List {
             if viewModel.keywordSettings.isEmpty {
                 Section {
                     Text("No keywords yet — they appear after your first inbox refresh.")
@@ -244,14 +235,15 @@ private struct KeywordsPane: View {
                             )
                         )
                     }
+                    .onMove(perform: viewModel.moveKeywords)
                 } header: {
                     Text("Inbox Tabs")
                 } footer: {
-                    Text("Hidden keywords stay on emails but don't get a sidebar tab.")
+                    Text("Drag a keyword row to set its Inbox tab order. Hidden keywords stay on emails but don't get a sidebar tab.")
                 }
             }
         }
-        .formStyle(.grouped)
+        .listStyle(.inset)
         .task { await viewModel.loadKeywordSettings() }
     }
 }
