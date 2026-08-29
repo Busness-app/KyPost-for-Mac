@@ -144,10 +144,9 @@ struct SettingsView: View {
             .listRowBackground(theme.panel)
 
             Section("About") {
-                LabeledContent(
-                    "Version",
-                    value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-                )
+                NavigationLink("Donate / Support KyPost") {
+                    AboutView()
+                }
             }
             .listRowBackground(theme.panel)
 

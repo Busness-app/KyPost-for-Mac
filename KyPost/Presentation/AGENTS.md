@@ -110,16 +110,42 @@ Domain.
   row is deliberately unmarked. `EmailDetailView` shows the signature badge
   **only** for `.decryptedByServer` — for a client-protected message the
   server never saw the plaintext, so `pgpSigned`/`pgpVerified` are not a
-  verdict about anything. The "Open in webmail" link goes through
-  `@Environment(\.openURL)` and must never be routed into an in-app WebView
-  (kypost-server `docs/E2E_PGP.md` requirement 5).
+  verdict about anything. A client-protected message automatically decrypts
+  when its key is already held; otherwise it shows Decrypt, whose deliberate
+  press prompts to unlock the key. Cancelling leaves Decrypt available. The
+  reader has no webmail fallback. PGP explanation and controls disappear once
+  plaintext is visible, and the body has layout priority so it owns the
+  remaining scrollable space without imposing an infinite-height content
+  constraint on its macOS window. The reader navigation bar does not repeat
+  the sender, and client-protected PGP/MIME transport parts are not presented
+  as attachments. Its HTML uses the bundled IBM Plex Mono family, matching
+  plain message bodies, and constrains text, tables, images, and preformatted
+  blocks to the reader width. Decrypt uses `PrimaryButtonStyle`, whose accent
+  fill and `readableOnAccent` foreground are contrast-tested for every theme.
+- **The whole email row is the open target.** `EmailListRow` expands to the
+  list width and supplies a rectangular content shape, including whitespace.
+  The decrypt action uses visible button chrome rather than link styling.
+- **Keyword order is a device-local setting.** Both platforms use native List
+  movement so the whole row is draggable and neighboring rows move live. They
+  persist the complete order in `KeywordSettingsStore` and apply it to Inbox
+  tabs. Newly observed keywords follow the saved names alphabetically.
+  Returning from Settings recomputes tabs locally rather than fetching mail.
+- **Initial inbox refresh failures get a 90-second grace period and one silent
+  retry after 15 seconds.** Cached mail remains usable while a transient launch
+  failure may recover. A persistent connectivity failure is separate toast
+  state whose only copy is "Unable to connect to the mail server." Raw
+  transport descriptions never reach the view; explicit refreshes show the
+  same sanitized toast immediately, while pairing errors remain inline and
+  never wait. Leaving Inbox cancels both pending timers and clears the toast.
+  Returning calls `loadIfNeeded`, so tab switching never starts another cache
+  read or network refresh; only the foreground cadence resumes.
 - Encrypted send is decided by key custody, not by hope.
   `Domain/Models/PgpKeyCustody.swift` maps `/api/pgp/bootstrap` to
   `serverHeld` / `clientHeld` / `noIdentity`, and anything unrecognised
   degrades to `clientHeld`. Compose shows Encrypt/Sign **only** for
   `serverHeld`; `clientHeld` gets the webmail handoff (save a draft, then
-  `openURL` — same rule as the reader's webmail link, above, never an in-app
-  WebView), and `.noIdentity` or a nil custody shows nothing at all.
+  `openURL`, never an in-app WebView), and `.noIdentity` or a nil custody shows
+  nothing at all.
 - **The keyless-recipient confirmation copy is contract.** It lives in
   `ComposeViewModel.pickupConfirmationMessage`, verbatim from
   `Client_Encrypted_Send.md`, and must name every address, say the plaintext
@@ -154,6 +180,14 @@ Domain.
   allow-by-default branch here silently reopens the remote-content beacon.
 
 ## Work Guidance
+
+- About and Support are shared across iOS Settings and the macOS About window.
+  macOS exposes one standard About KyPost app-menu item; it does not duplicate
+  the surface as a Preferences tab. `AboutView` owns the version, 2026
+  Busnes.app copyright, embedded MIT license, and StoreKit 2 donation presentation. `TipJarStore` uses
+  `CupOJoe4Mail` for one-off purchases and `5usdmonth` and
+  `10dolpermonth` for monthly subscriptions; prices come from App Store
+  Connect and must not be hardcoded. There is no restore-purchases control.
 
 - Reuse `ContactSearch` for any contact matching; don't hand-roll a filter.
   `localizedCaseInsensitiveContains` over every contact per keystroke routes

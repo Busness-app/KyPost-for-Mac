@@ -14,6 +14,8 @@ import Observation
 final class InboxViewModel {
     private let mailRepository: MailRepository
     private let keywordRepository: KeywordRepository
+    private let initialRefreshErrorDelay: Duration
+    private let initialRefreshRetryDelay: Duration
 
     private(set) var folder = Config.defaultFolder
     private(set) var emails: [Email] = []
@@ -24,12 +26,23 @@ final class InboxViewModel {
     var selectedTab: String?
     private(set) var isRefreshing = false
     private(set) var errorMessage: String?
+    private(set) var connectionNotice: String?
+    private var hasLoaded = false
 
     private var refreshTask: Task<Void, Never>?
+    private var delayedRefreshErrorTask: Task<Void, Never>?
+    private var initialRefreshRetryTask: Task<Void, Never>?
 
-    init(mailRepository: MailRepository, keywordRepository: KeywordRepository) {
+    init(
+        mailRepository: MailRepository,
+        keywordRepository: KeywordRepository,
+        initialRefreshErrorDelay: Duration = .seconds(90),
+        initialRefreshRetryDelay: Duration = .seconds(15)
+    ) {
         self.mailRepository = mailRepository
         self.keywordRepository = keywordRepository
+        self.initialRefreshErrorDelay = initialRefreshErrorDelay
+        self.initialRefreshRetryDelay = initialRefreshRetryDelay
     }
 
     var filteredEmails: [Email] {
@@ -53,6 +66,7 @@ final class InboxViewModel {
         emails = []
         tabs = []
         errorMessage = nil
+        connectionNotice = nil
         await load()
     }
 
@@ -196,11 +210,30 @@ final class InboxViewModel {
         if let cached = try? await mailRepository.cachedFolder(folder), !cached.isEmpty {
             apply(emails: cached)
         }
-        await refresh()
+        await refresh(delaysTransientError: true)
     }
 
-    func refresh(forceFullResync: Bool = false) async {
+    /// A tab switch reconstructs InboxView and reruns its `.task`; the shared
+    /// view model already owns the loaded rows, so that must not become another
+    /// cache read and network request.
+    func loadIfNeeded() async {
+        guard !hasLoaded else { return }
+        hasLoaded = true
+        await load()
+    }
+
+    /// Applies device-local visibility and ordering changes without a network
+    /// request when the user returns from Settings.
+    func refreshKeywordTabs() {
+        tabs = keywordRepository.visibleTabs(from: emails)
+    }
+
+    func refresh(forceFullResync: Bool = false, delaysTransientError: Bool = false) async {
         guard !isRefreshing else { return }
+        delayedRefreshErrorTask?.cancel()
+        delayedRefreshErrorTask = nil
+        initialRefreshRetryTask?.cancel()
+        initialRefreshRetryTask = nil
         isRefreshing = true
         defer { isRefreshing = false }
         do {
@@ -209,10 +242,54 @@ final class InboxViewModel {
                 forceFullResync: forceFullResync
             ))
             errorMessage = nil
+            connectionNotice = nil
         } catch MailSourceError.notPaired {
+            connectionNotice = nil
             errorMessage = "Pair this device (Settings → Connection) to load mail."
         } catch {
-            errorMessage = "Could not refresh: \(error.localizedDescription)"
+            let message = "Unable to connect to the mail server."
+            errorMessage = nil
+            if delaysTransientError {
+                connectionNotice = nil
+                delayedRefreshErrorTask = Task { [weak self] in
+                    guard let self else { return }
+                    try? await Task.sleep(for: self.initialRefreshErrorDelay)
+                    guard !Task.isCancelled else { return }
+                    self.connectionNotice = message
+                    self.delayedRefreshErrorTask = nil
+                }
+                initialRefreshRetryTask = Task { [weak self] in
+                    guard let self else { return }
+                    try? await Task.sleep(for: self.initialRefreshRetryDelay)
+                    guard !Task.isCancelled else { return }
+                    await self.retryInitialRefresh()
+                }
+            } else {
+                connectionNotice = message
+            }
+        }
+    }
+
+    /// One silent retry inside the initial grace window. A second transient
+    /// failure leaves the original 90-second banner timer in place.
+    private func retryInitialRefresh() async {
+        initialRefreshRetryTask = nil
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+        do {
+            apply(emails: try await mailRepository.refreshFolder(folder))
+            delayedRefreshErrorTask?.cancel()
+            delayedRefreshErrorTask = nil
+            errorMessage = nil
+            connectionNotice = nil
+        } catch MailSourceError.notPaired {
+            delayedRefreshErrorTask?.cancel()
+            delayedRefreshErrorTask = nil
+            connectionNotice = nil
+            errorMessage = "Pair this device (Settings → Connection) to load mail."
+        } catch {
+            // The delayed task reports the persistent failure at 90 seconds.
         }
     }
 
@@ -230,6 +307,18 @@ final class InboxViewModel {
     func stopAutoRefresh() {
         refreshTask?.cancel()
         refreshTask = nil
+    }
+
+    /// Stops work owned by the visible Inbox tab. SwiftUI retains this view
+    /// model while Settings is selected, so delayed tasks must not publish a
+    /// stale toast behind that tab and reveal it when Inbox returns.
+    func leaveInbox() {
+        stopAutoRefresh()
+        delayedRefreshErrorTask?.cancel()
+        delayedRefreshErrorTask = nil
+        initialRefreshRetryTask?.cancel()
+        initialRefreshRetryTask = nil
+        connectionNotice = nil
     }
 
     func markRead(_ email: Email) async {

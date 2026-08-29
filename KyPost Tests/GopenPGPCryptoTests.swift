@@ -69,6 +69,37 @@ import Testing
         #expect(!result.signature.valid)
     }
 
+    @Test func anUnsignedEncryptedMessageStillDecryptsWhenASignerKeyIsOffered() throws {
+        let pgp = try #require(CryptoPGP())
+        let recipient = try #require(CryptoKey(fromArmored: TestPgpFixtures.armoredPublic))
+        let recipients = try #require(CryptoKeyRing(recipient))
+        let builder = try #require(pgp.encryption())
+        builder.recipients(recipients)
+        let handle = try builder.new()
+        let message = try handle.encrypt(Data("unsigned".utf8))
+        var armorError: NSError?
+        let armored = message.armor(&armorError)
+        try #require(armorError == nil)
+
+        let result = try crypto.decrypt(
+            armoredCiphertext: armored,
+            privateKey: privateKey,
+            signerKeys: [TestPgpFixtures.unrelatedPublicKey]
+        )
+        #expect(String(decoding: result.body, as: UTF8.self) == "unsigned")
+        #expect(!result.signature.present)
+    }
+
+    @Test func anUnparseableSignerKeyCannotBreakDecryption() throws {
+        let result = try crypto.decrypt(
+            armoredCiphertext: TestPgpFixtures.armoredMessage,
+            privateKey: privateKey,
+            signerKeys: ["not a public key"]
+        )
+        #expect(String(decoding: result.body, as: UTF8.self) == TestPgpFixtures.expectedPlaintext)
+        #expect(!result.signature.valid)
+    }
+
     /// Only a key we were **offered** may validate a signature.
     ///
     /// The message here is signed by one key and encrypted to another, and the

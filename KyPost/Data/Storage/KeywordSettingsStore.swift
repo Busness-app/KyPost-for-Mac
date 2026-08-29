@@ -9,7 +9,8 @@
 import Foundation
 
 final class KeywordSettingsStore {
-    private static let key = "keywords.visibility"
+    private static let visibilityKey = "keywords.visibility"
+    private static let orderKey = "keywords.order"
 
     private let defaults: UserDefaults
 
@@ -24,11 +25,19 @@ final class KeywordSettingsStore {
     func setVisible(_ visible: Bool, for keyword: String) {
         var map = overrides()
         map[keyword] = visible
-        defaults.set(map, forKey: Self.key)
+        defaults.set(map, forKey: Self.visibilityKey)
     }
 
     /// All stored visibility overrides (keywords never toggled are absent).
     func overrides() -> [String: Bool] {
-        defaults.dictionary(forKey: Self.key) as? [String: Bool] ?? [:]
+        defaults.dictionary(forKey: Self.visibilityKey) as? [String: Bool] ?? [:]
+    }
+
+    func order() -> [String] {
+        defaults.stringArray(forKey: Self.orderKey) ?? []
+    }
+
+    func setOrder(_ keywords: [String]) {
+        defaults.set(keywords, forKey: Self.orderKey)
     }
 }

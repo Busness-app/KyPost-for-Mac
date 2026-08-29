@@ -59,6 +59,13 @@ private func makeEmail(
         store.setVisible(true, for: "Work")
         #expect(store.isVisible("Work"))
     }
+
+    @Test func keywordOrderRoundTrips() {
+        let store = KeywordSettingsStore(defaults: scratchDefaults())
+        #expect(store.order().isEmpty)
+        store.setOrder(["Work", "Important"])
+        #expect(store.order() == ["Work", "Important"])
+    }
 }
 
 // MARK: - NotificationCursorStore

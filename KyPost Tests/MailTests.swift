@@ -685,6 +685,17 @@ private func makeOutgoing(
         let settings = repository.allSettings(from: emails)
         #expect(settings.first { $0.name == "Work" }?.visible == false)
     }
+
+    @Test func savedOrderDrivesTabsAndSettings() {
+        let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        let repository = KeywordRepository(settingsStore: KeywordSettingsStore(defaults: defaults))
+        repository.setOrder(["Work", "Important"])
+
+        #expect(repository.visibleTabs(from: emails).map(\.name)
+                == ["Work", "Important", "work happens later alphabetically"])
+        #expect(repository.allSettings(from: emails).map(\.name)
+                == ["Work", "Important", "work happens later alphabetically"])
+    }
 }
 
 // MARK: - MailRepository

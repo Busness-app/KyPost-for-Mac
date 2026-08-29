@@ -22,18 +22,24 @@ struct KeywordSettingsView: View {
                 )
                 .frame(maxHeight: .infinity, alignment: .top)
             } else {
-                List(viewModel.keywordSettings) { setting in
-                    Toggle(
-                        setting.name,
-                        isOn: Binding(
-                            get: { setting.visible },
-                            set: { viewModel.setKeywordVisible($0, for: setting.name) }
+                List {
+                    ForEach(viewModel.keywordSettings) { setting in
+                        Toggle(
+                            setting.name,
+                            isOn: Binding(
+                                get: { setting.visible },
+                                set: { viewModel.setKeywordVisible($0, for: setting.name) }
+                            )
                         )
-                    )
-                    .font(AppFont.ui(15))
-                    .listRowBackground(theme.panel)
+                        .font(AppFont.ui(15))
+                        .listRowBackground(theme.panel)
+                    }
+                    .onMove(perform: viewModel.moveKeywords)
                 }
                 .scrollContentBackground(.hidden)
+#if os(iOS)
+                .environment(\.editMode, .constant(.active))
+#endif
             }
         }
         .background(theme.bg)

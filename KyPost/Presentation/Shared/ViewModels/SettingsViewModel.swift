@@ -8,6 +8,7 @@
 
 import Foundation
 import Observation
+import SwiftUI
 #if os(macOS)
 import AppKit
 #elseif os(iOS)
@@ -306,5 +307,10 @@ final class SettingsViewModel {
         if let index = keywordSettings.firstIndex(where: { $0.name == keyword }) {
             keywordSettings[index].visible = visible
         }
+    }
+
+    func moveKeywords(from source: IndexSet, to destination: Int) {
+        keywordSettings.move(fromOffsets: source, toOffset: destination)
+        keywordRepository.setOrder(keywordSettings.map(\.name))
     }
 }

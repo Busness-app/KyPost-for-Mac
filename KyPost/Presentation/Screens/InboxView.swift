@@ -76,6 +76,7 @@ struct InboxView: View {
             }
         }
         .background(theme.bg)
+        .toast(message: viewModel.connectionNotice)
         .navigationTitle(viewModel.folderDisplayName)
         .toolbarTitleMenu {
             folderPicker
@@ -115,12 +116,13 @@ struct InboxView: View {
             ComposeView().environment(\.theme, theme)
         }
         .task {
-            await viewModel.load()
+            await viewModel.loadIfNeeded()
+            viewModel.refreshKeywordTabs()
             viewModel.startAutoRefresh()
             openPendingMessageIfNeeded()
             await viewModel.loadSubfolders()
         }
-        .onDisappear { viewModel.stopAutoRefresh() }
+        .onDisappear { viewModel.leaveInbox() }
         .onChange(of: router.pendingMessageId) {
             openPendingMessageIfNeeded()
         }

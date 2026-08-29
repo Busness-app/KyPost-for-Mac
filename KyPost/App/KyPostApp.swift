@@ -33,6 +33,19 @@ struct KyPostApp: App {
                 KyPostCommands(router: router)
             }
 
+        WindowGroup("About KyPost", id: "about") {
+            AboutView()
+                .id(environment.generation)
+                .environment(themeManager)
+                .environment(router)
+                .environment(\.theme, themeManager.palette)
+                .preferredColorScheme(themeManager.palette.preferredColorScheme)
+                .overlay { LockedOverlay().environment(\.theme, themeManager.palette) }
+                .protectedFromCapture()
+                .lockAwareRouting(router)
+        }
+        .defaultSize(width: 480, height: 620)
+
         // Pop-out reader: one window per email, keyed by relay server id.
         WindowGroup("Email", id: "email", for: String.self) { $serverId in
             EmailWindowView(serverId: serverId ?? "")

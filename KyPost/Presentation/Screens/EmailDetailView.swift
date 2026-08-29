@@ -19,7 +19,6 @@ struct EmailDetailView: View {
     @Environment(\.deviceIsEnrolled) private var deviceIsEnrolled
     @Environment(\.self) private var environment
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.openURL) private var openURL
 #if os(macOS)
     @Environment(\.openWindow) private var openWindow
 #endif
@@ -36,10 +35,6 @@ struct EmailDetailView: View {
     /// Reply/forward prefill; non-nil presents the compose sheet (iOS only —
     /// macOS opens the "compose" window instead).
     @State private var composeDraft: ComposeDraft?
-    /// Resolved once in `.task` rather than computed in `body` — building it
-    /// reads the pairing out of the Keychain, and SwiftUI re-evaluates `body`
-    /// far too often for that.
-    @State private var webmailURL: URL?
     /// Drives the Decrypt affordance. Built in `.task` because constructing it
     /// reads the pairing out of the Keychain, which `body` must not do.
     @State private var encryptedRead: EncryptedReadViewModel?
@@ -60,29 +55,35 @@ struct EmailDetailView: View {
                     .padding(.top, 10)
             }
 
-            if pgpState != .none {
+            if showsPgpChrome {
                 pgpBadges
                     .padding(.horizontal)
                     .padding(.top, 10)
-                pgpBanner
-                    .padding(.horizontal)
-                    .padding(.top, 8)
+                if pgpState != .clientProtected || !deviceIsEnrolled {
+                    pgpBanner
+                        .padding(.horizontal)
+                        .padding(.top, 8)
+                }
                 decryptControls
                     .padding(.horizontal)
                     .padding(.top, 6)
             }
 
-            if !attachments.isEmpty {
+            // A client-protected message's outer attachments are its PGP/MIME
+            // transport parts, not files the sender attached for the reader.
+            if pgpState != .clientProtected, !attachments.isEmpty {
                 attachmentBar
             }
 
             if let decrypted = encryptedRead?.body {
                 decryptedBodyView(decrypted)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .layoutPriority(1)
             } else if suppressesBody {
                 Spacer(minLength: 0)
             } else if !rendersAsPlainText {
                 EmailBodyWebView(html: themedHTML(emailBodyToHTML(email.body, mode: email.bodyMode)))
-                    .padding()
+                    .layoutPriority(1)
             } else {
                 ScrollView {
                     Text(email.body)
@@ -92,10 +93,14 @@ struct EmailDetailView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding()
                 }
+                .layoutPriority(1)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(theme.bg)
-        .navigationTitle(email.senderName.isEmpty ? "Email" : email.senderName)
+        // The sender already belongs in the message header. Repeating it in
+        // the navigation bar wastes the scarce vertical space on iPhone.
+        .navigationTitle("")
         .toolbar {
             // Reply/Reply All/Forward + Archive/Junk/Delete, matching Android
             // EmailDetailActivity's action row. On iOS they live in the
@@ -139,7 +144,6 @@ struct EmailDetailView: View {
             }
         }
         .task {
-            resolveWebmailURL()
             await prepareEncryptedRead()
             await inboxViewModel.markRead(email)
             attachments = await inboxViewModel.attachments(for: email)
@@ -291,10 +295,9 @@ struct EmailDetailView: View {
         }
     }
 
-    /// Builds the reader and makes one attempt that is **not** allowed to
-    /// prompt. A biometric sheet raised merely by opening a message would be
-    /// the app demanding authentication for something the user has not asked
-    /// for yet; the sheet belongs to the Decrypt button.
+    /// Builds the reader and decrypts immediately when the key is already
+    /// held. A sealed key leaves the explicit Decrypt action to raise the
+    /// unlock prompt.
     @MainActor
     private func prepareEncryptedRead() async {
         guard pgpState == .clientProtected else {
@@ -342,11 +345,11 @@ struct EmailDetailView: View {
                             .foregroundStyle(theme.ink)
                     }
                     if model.showsDecryptButton {
-                        Button("Decrypt on this device") {
+                        Button("Decrypt this email") {
                             Task { await model.decrypt() }
                         }
-                        .font(AppFont.ui(12, weight: .medium))
-                        .buttonStyle(.borderless)
+                        .buttonStyle(PrimaryButtonStyle())
+                        .frame(width: 180)
                     }
                     // Only where retrying could actually change the answer.
                     // `noEncryptedContent` is terminal, and a Retry that
@@ -381,20 +384,6 @@ struct EmailDetailView: View {
                 }
             }
         }
-    }
-
-    private func resolveWebmailURL() {
-        guard pgpState == .clientProtected,
-              let pairing = try? SingletonGraph.shared.securePairingStore.loadPairing()
-        else {
-            webmailURL = nil
-            return
-        }
-        webmailURL = webmailMessageURL(
-            serverUrl: pairing.srv,
-            mailbox: email.folder,
-            messageId: email.serverId
-        )
     }
 
     private var header: some View {
@@ -480,6 +469,12 @@ struct EmailDetailView: View {
         )
     }
 
+    /// PGP controls explain or unlock an unreadable message. Once plaintext is
+    /// visible they are redundant and the message gets the space back.
+    private var showsPgpChrome: Bool {
+        pgpState != .none && encryptedRead?.body == nil
+    }
+
     /// Neither unreadable state has content to render; showing an empty
     /// WebView for them is the defect this change fixes.
     private var suppressesBody: Bool {
@@ -496,7 +491,7 @@ struct EmailDetailView: View {
             <meta name="viewport" content="width=device-width, initial-scale=1" />
             <style>
                 body {
-                    font-family: ui-monospace, Menlo, monospace;
+                    font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
                     font-size: 14px;
                     line-height: 1.5;
                     color: \(cssHex(theme.inkStrong));
@@ -504,10 +499,20 @@ struct EmailDetailView: View {
                     margin: 0;
                     padding: 12px;
                     word-break: break-word;
+                    overflow-wrap: anywhere;
+                }
+                *, *::before, *::after {
+                    box-sizing: border-box;
+                    max-width: 100%;
+                    overflow-wrap: anywhere !important;
+                    word-break: break-word !important;
+                    white-space: normal !important;
                 }
                 a { color: \(cssHex(theme.accent)); }
                 img { max-width: 100%; height: auto; }
-                pre { white-space: pre-wrap; }
+                table { width: 100% !important; table-layout: fixed; }
+                td, th { overflow-wrap: anywhere; word-break: break-word; }
+                body pre { white-space: pre-wrap !important; overflow-wrap: anywhere; }
             </style>
         </head>
         <body>\(body)</body>
@@ -556,11 +561,6 @@ struct EmailDetailView: View {
                 .foregroundStyle(theme.ink)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 8)
-            if let webmailURL {
-                Button("Open in webmail") { openURL(webmailURL) }
-                    .font(AppFont.ui(12, weight: .medium))
-                    .buttonStyle(.borderless)
-            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -577,10 +577,8 @@ struct EmailDetailView: View {
             // is worse than saying nothing.
             if deviceIsEnrolled {
                 "This message is end-to-end encrypted. This device holds your key, so it can be decrypted here."
-            } else if webmailURL == nil {
-                "This message is end-to-end encrypted. Only your browser holds the key, so it can't be read here.\nCouldn't work out this server's web address — open this message in your browser."
             } else {
-                "This message is end-to-end encrypted. Only your browser holds the key, so it can't be read here."
+                "This message is end-to-end encrypted. Enroll this device in Settings to decrypt it here."
             }
         case .decryptFailed:
             "This message is encrypted and couldn't be decrypted: \(email.pgpDecryptError)"
@@ -644,6 +642,8 @@ struct EmailBodyWebView: View {
         VStack(alignment: .leading, spacing: 0) {
             if !allowsRemoteContent {
                 remoteContentBanner
+                    .padding(.horizontal)
+                    .padding(.vertical, 10)
             }
             Group {
                 if let page {

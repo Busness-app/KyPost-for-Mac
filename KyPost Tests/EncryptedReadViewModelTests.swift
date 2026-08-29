@@ -66,8 +66,6 @@ private func model(
 
 @Suite(.serialized) @MainActor struct EncryptedReadViewModelTests {
 
-    /// Opening a message must not raise a prompt. The screen ends up offering
-    /// Decrypt, having asked the user for nothing.
     @Test func openingAMessageOffersDecryptWithoutPrompting() async {
         let subject = model(opener: .cancelled)
         await subject.attemptWithoutPrompting()

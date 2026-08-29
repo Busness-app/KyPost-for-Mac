@@ -38,7 +38,7 @@ final class KeywordRepository {
 
     /// Tabs to show in the inbox tab bar (hidden keywords filtered out).
     func visibleTabs(from emails: [Email]) -> [KeywordTab] {
-        Self.computeTabs(from: emails)
+        orderedTabs(from: emails)
             .filter { !isSystemKeyword($0.name) && settingsStore.isVisible($0.name) }
     }
 
@@ -46,12 +46,32 @@ final class KeywordRepository {
     func allSettings(from emails: [Email]) -> [KeywordSetting] {
         // System keywords are not offered here either: there is nothing
         // useful to toggle, and the phishing warning must not be hideable.
-        Self.computeTabs(from: emails).filter { !isSystemKeyword($0.name) }.map {
+        orderedTabs(from: emails).filter { !isSystemKeyword($0.name) }.map {
             KeywordSetting(name: $0.name, visible: settingsStore.isVisible($0.name))
         }
     }
 
     func setVisible(_ visible: Bool, for keyword: String) {
         settingsStore.setVisible(visible, for: keyword)
+    }
+
+    func setOrder(_ keywords: [String]) {
+        settingsStore.setOrder(keywords)
+    }
+
+    private func orderedTabs(from emails: [Email]) -> [KeywordTab] {
+        let ranks = Dictionary(
+            settingsStore.order().enumerated().map { ($1, $0) },
+            uniquingKeysWith: min
+        )
+        return Self.computeTabs(from: emails).sorted { left, right in
+            switch (ranks[left.name], ranks[right.name]) {
+            case let (leftRank?, rightRank?): leftRank < rightRank
+            case (_?, nil): true
+            case (nil, _?): false
+            case (nil, nil):
+                left.name.localizedCaseInsensitiveCompare(right.name) == .orderedAscending
+            }
+        }
     }
 }

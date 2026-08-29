@@ -661,6 +661,32 @@ private let validPairingLink = URL(
         #expect(payload.rawSender == "Bob <bob@example.com>")
     }
 
+    @Test func decodesTheServersOmittedSignerKeyDefaults() async throws {
+        let json = """
+        {
+          "encryptedPayload": "ciphertext",
+          "signerKeys": [{
+            "addresses": ["bob@example.com"],
+            "publicKey": "public-key"
+          }]
+        }
+        """
+        let outcome = try await PgpPayloadClient(
+            httpClient: stubClient(status: 200, json: json),
+            serverUrl: "https://relay.example.com",
+            auth: auth
+        ).fetch(mailbox: "INBOX", messageId: "42")
+
+        guard case .success(let payload) = outcome else {
+            Issue.record("expected success, got \(outcome)")
+            return
+        }
+        #expect(payload.signerKeys == [SignerKey(
+            addresses: ["bob@example.com"],
+            publicKey: "public-key"
+        )])
+    }
+
     /// The three status codes each map to their own row rather than a generic
     /// failure, because each is a different sentence to the reader.
     @Test(arguments: [

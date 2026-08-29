@@ -266,7 +266,13 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting {
         }
 
         // No key id and no attribution means nothing claimed to sign this.
-        let present = verified || !keyID.isEmpty || !fingerprint.isEmpty
+        // GopenPGP returns sixteen zeroes as the issuer id for an unsigned
+        // encrypted message when verification keys were configured. That is
+        // a sentinel, not a signature: treating it as present made merely
+        // learning a sender key turn unsigned mail into an invalid-signature
+        // result.
+        let hasKeyID = !keyID.isEmpty && keyID.contains(where: { $0 != "0" })
+        let present = verified || hasKeyID || !fingerprint.isEmpty
         guard present else { return RawSignature() }
 
         return RawSignature(
